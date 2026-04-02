@@ -113,5 +113,5 @@ if __name__ == "__main__":
     test_decoder(encoder, encoded)
     print()
     print("=" * 50)
-    print("모든 테스트 통과")
+    print("모든 테스트 통과함")
     print("=" * 50)
