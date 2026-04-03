@@ -18,8 +18,17 @@ def get_mask(state, flights, assigned, constraint):
     for f in flights:
         if assigned[f["id"]]:
             mask.append(0)
-        else:
-            mask.append(1)
+            continue
+
+        flight_time = f["arr_time"] - f["dep_time"]
+
+        valid = (
+            f["origin"] == state["current_airport"] and
+            f["dep_time"] >= state["current_time"] and
+            state["duty_time"] + flight_time <= constraint["max_duty"]
+        )
+
+        mask.append(1 if valid else 0)
 
     mask.append(1)  # END 항상 허용
     return mask
