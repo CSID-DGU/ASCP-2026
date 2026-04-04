@@ -16,7 +16,7 @@ class PointerDecoder(nn.Module):
         super().__init__()
 
         # state → query 변환용 MLP: 공항 embedding + current_time + duty_time
-        state_input_dim = airport_emb_dim + 2  # 공항 ID + 현재 시간 + 근무 시간
+        state_input_dim = airport_emb_dim + 3  # 공항 ID + 현재 시간 + 근무 시간 + leg 수
         self.state_mlp = nn.Sequential( # 현재 에이전트의 상태 정보를 고차원 벡터인 d_model 크기로 확장 (이 결과값이 나중에 쿼리가 됨)
             nn.Linear(state_input_dim, d_model),
             nn.ReLU(),
