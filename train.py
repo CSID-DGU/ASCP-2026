@@ -17,8 +17,12 @@ from model import FlightEncoder, PointerDecoder
 # 혜린 코드 (RL/ 폴더)
 sys.path.insert(0, "RL")
 from loader import load_flights
-from environment import get_mask, step, init_state, final_reward
+from environment import get_mask, step, final_reward
+from RL.constraints import get_delta_constraints
+from RL.state import init_state
 
+PAIRING_PENALTY = -1.0
+BASE_PENALTY = -2.0
 
 def flights_to_tensors(flights):
     """혜린 flight dict → 찬주 encoder 입력 tensor 변환"""
@@ -29,13 +33,17 @@ def flights_to_tensors(flights):
     return origins, dests, dep_times, arr_times
 
 
-def state_to_vec(state, encoder):
+def state_to_vec(state, encoder, constraint):
     """혜린 state dict → 찬주 decoder 입력 tensor 변환"""
     airport_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
+    
     return torch.cat([
         airport_emb,
-        torch.tensor([state["current_time"]], dtype=torch.float32),
-        torch.tensor([state["duty_time"]], dtype=torch.float32),
+        torch.tensor([
+            state["current_time"] / 24.0,
+            state["duty_time"] / constraint["max_duty"],
+            state["legs"] / constraint["max_legs"],
+        ], dtype=torch.float32)
     ])
 
 
@@ -47,7 +55,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         total_reward, log_probs, entropies, n_pairings
     """
     assigned = {f["id"]: False for f in flights}
-    state = init_state(flights)
+    state = init_state(flights, constraint)
 
     log_probs = []
     entropies = []
@@ -62,7 +70,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         # valid한 flight가 없으면 (END만 남으면) 종료
         if sum(mask_list[:-1]) == 0:
             n_pairings += 1
-            total_reward += -1.0
+            total_reward += PAIRING_PENALTY
 
             # 미배정 flight 남아있으면 새 pairing 시작
             unassigned = [f for f in flights if not assigned[f["id"]]]
@@ -70,18 +78,21 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
                 break
 
             # 가장 이른 미배정 flight로 새 pairing 시작
-            start = unassigned[0]
+            start = sorted(unassigned, key=lambda x: x["dep_time"])[0] # dep_time 기준 정렬 필요
             assigned[start["id"]] = True
+
             state = {
                 "current_airport": start["dest"],
                 "current_time": start["arr_time"],
                 "duty_time": start["arr_time"] - start["dep_time"],
+                "duty_start_time": start["dep_time"],
+                "legs": 1,
                 "remaining": sum(1 for v in assigned.values() if not v),
             }
             continue
 
         # 찬주 decoder
-        state_vec = state_to_vec(state, encoder)
+        state_vec = state_to_vec(state, encoder, constraint)
         probs = decoder(encoded, state_vec, mask)
 
         if greedy:
@@ -96,19 +107,25 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         # END action
         if action == len(flights):
             n_pairings += 1
-            total_reward += -1.0
+            
+            if state["current_airport"] != constraint["base_airport"]:
+                total_reward += BASE_PENALTY
+
+            total_reward += PAIRING_PENALTY
 
             # 미배정 flight 남아있으면 새 pairing 시작
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if len(unassigned) == 0:
                 break
 
-            start = unassigned[0]
+            start = sorted(unassigned, key=lambda x: x["dep_time"])[0]
             assigned[start["id"]] = True
             state = {
                 "current_airport": start["dest"],
                 "current_time": start["arr_time"],
                 "duty_time": start["arr_time"] - start["dep_time"],
+                "duty_start_time": start["dep_time"],
+                "legs": 1,
                 "remaining": sum(1 for v in assigned.values() if not v),
             }
             continue
@@ -152,7 +169,7 @@ def train():
 
     for episode in range(1000):
         # constraint 번갈아 (FiLM 검증용)
-        constraint = {"max_duty": 8.0 if episode % 2 == 0 else 14.0}
+        constraint = get_delta_constraints()
         c_tensor = torch.tensor([constraint["max_duty"]], dtype=torch.float32)
 
         # encode (에피소드당 1번)
@@ -173,12 +190,13 @@ def train():
                 flights, constraint, encoder, decoder, encoded_g, greedy=True
             )
 
-        # advantage = sample - greedy (sample이 나았으면 양수)
-        advantage = (reward_s - reward_g) / 10.0
+        # scaling (reward 범위에 따라 advantage가 너무 커지는 문제 방지)
+        # advantage = sample - greedy
+        advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
         # REINFORCE loss + entropy bonus
         loss = torch.stack([
-            -lp * advantage - 0.01 * ent
+            -lp * advantage - 0.005 * ent
             for lp, ent in zip(log_probs, entropies)
         ]).sum()
 
@@ -207,8 +225,16 @@ def train():
         c = torch.tensor([duty], dtype=torch.float32)
         with torch.no_grad():
             enc = encoder(origins, dests, dep_times, arr_times, c)
+            base_constraint = get_delta_constraints()
+            base_constraint["max_duty"] = duty
+
             reward, _, _, n_pair = run_episode(
-                flights, {"max_duty": duty}, encoder, decoder, enc, greedy=True
+                flights,
+                base_constraint,
+                encoder,
+                decoder,
+                enc,
+                greedy=True
             )
         print(f"  max_duty={duty:4.0f}h → pairings: {n_pair:3d}, reward: {reward:7.1f}")
 

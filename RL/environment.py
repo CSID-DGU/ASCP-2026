@@ -21,18 +21,32 @@ def get_mask(state, flights, assigned, constraint):
             continue
 
         flight_time = f["arr_time"] - f["dep_time"]
+        gap = f["dep_time"] - state["current_time"]
 
-        valid = (
-            f["origin"] == state["current_airport"] and
-            f["dep_time"] >= state["current_time"] and
-            state["duty_time"] + flight_time <= constraint["max_duty"]
-        )
+        valid = True
+
+        # 1. 공항 연결
+        if f["origin"] != state["current_airport"]:
+            valid = False
+
+        # 2. connection time
+        if gap < constraint["min_conn"] or gap > constraint["max_conn"]:
+            valid = False
+
+        # 3. duty 제한
+        if state["duty_time"] + flight_time > constraint["max_duty"]:
+            valid = False
+
+        # 4. leg 제한
+        if state["legs"] + 1 > constraint["max_legs"]:
+            valid = False
 
         mask.append(1 if valid else 0)
 
-    mask.append(1)  # END 항상 허용
-    return mask
+    # END action
+    mask.append(1)
 
+    return mask
 
 def step(state, action, flights, assigned, constraint):
     f = flights[action]
@@ -44,37 +58,13 @@ def step(state, action, flights, assigned, constraint):
         "current_airport": f["dest"],
         "current_time": f["arr_time"],
         "duty_time": state["duty_time"] + flight_time,
-        "remaining": state["remaining"] - 1
+        "duty_start_time": state["duty_start_time"],
+        "legs": state["legs"] + 1,
+        "remaining": state["remaining"] - 1,
     }
 
-    reward = 0
-
-    # ---------------------------
-    # ✔ 1. 연결 보상 / penalty
-    # ---------------------------
-    if state["current_airport"] == f["origin"]:
-        reward += 1.0
-    else:
-        reward -= 1.0  # deadhead 개념
-
-    # ---------------------------
-    # ✔ 2. waiting time penalty
-    # ---------------------------
-    if state["current_time"] > 0:
-        wait = f["dep_time"] - state["current_time"]
-        reward -= 0.05 * abs(wait)
-
-    # ---------------------------
-    # ✔ 3. duty time penalty
-    # ---------------------------
-    if next_state["duty_time"] > constraint["max_duty"]:
-        excess = next_state["duty_time"] - constraint["max_duty"]
-        reward -= 2.0 * excess
-
-    # ---------------------------
-    # ✔ 4. early / late imbalance
-    # ---------------------------
-    reward -= 0.01 * f["dep_time"]
+    # reward = cost 기반으로 단순화
+    reward = -1.0
 
     return next_state, reward, False
 
@@ -83,4 +73,4 @@ def final_reward(assigned):
     remaining = sum(1 for v in assigned.values() if not v)
 
     # 덜 사용할수록 좋음
-    return -3 * remaining
+    return -5 * remaining
