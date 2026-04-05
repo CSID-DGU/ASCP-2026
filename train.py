@@ -18,17 +18,16 @@ from model import FlightEncoder, PointerDecoder
 sys.path.insert(0, "RL")
 from loader import load_flights
 from environment import get_mask, step, final_reward
-from RL.constraints import get_delta_constraints
+from RL.constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from RL.state import init_state
 
 PAIRING_PENALTY = -1.0
 BASE_PENALTY = -2.0
 
-CONSTRAINT_KEYS = ["max_duty", "min_conn", "max_conn", "max_legs"]
 
 def constraint_to_tensor(constraint):
     """constraint dict → FiLM 입력 tensor"""
-    return torch.tensor([constraint[k] for k in CONSTRAINT_KEYS], dtype=torch.float32)
+    return torch.tensor([constraint[k] for k in FILM_CONSTRAINT_KEYS], dtype=torch.float32)
 
 def flights_to_tensors(flights):
     """혜린 flight dict → 찬주 encoder 입력 tensor 변환"""
@@ -160,7 +159,7 @@ def train():
     # 찬주 모델 생성
     encoder = FlightEncoder(
         n_airports=n_airports,
-        constraint_dim=len(CONSTRAINT_KEYS),  # 4개: max_duty, min_conn, max_conn, max_legs
+        constraint_dim=len(FILM_CONSTRAINT_KEYS),  # 4개: max_duty, min_conn, max_conn, max_legs
         airport_emb_dim=32,
         d_model=128,
     )
