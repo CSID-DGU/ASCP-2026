@@ -1,20 +1,21 @@
 """
-찬주 model/ + 혜린 RL/environment 통합 학습 스크립트
-- encoder: 찬주 (FlightEncoder — Embedding + FiLM + Transformer)
-- decoder: 찬주 (PointerDecoder — Pointer Attention + hard masking)
-- environment: 혜린 (mask + step + reward)
-- loader: 혜린 (BTS CSV → flight dict)
+수렴 테스트: seed 고정 + constraint 고정 + 처음 vs 마지막 비교
+→ 월요일 회의에서 "수렴한다/안 한다" 확인하기 위해 !! 
 """
 
 import sys
+import random
 import torch
 import torch.optim as optim
 from torch.distributions import Categorical
 
-# 찬주 모델 (model/ 폴더 먼저 잡히도록)
+# seed 고정
+SEED = 42
+random.seed(SEED)
+torch.manual_seed(SEED)
+
 from model import FlightEncoder, PointerDecoder
 
-# 혜린 코드 (RL/ 폴더)
 sys.path.insert(0, "RL")
 from loader import load_flights
 from environment import get_mask, step, final_reward
@@ -24,14 +25,8 @@ from RL.state import init_state
 PAIRING_PENALTY = -1.0
 BASE_PENALTY = -2.0
 
-CONSTRAINT_KEYS = ["max_duty", "min_conn", "max_conn", "max_legs"]
-
-def constraint_to_tensor(constraint):
-    """constraint dict → FiLM 입력 tensor"""
-    return torch.tensor([constraint[k] for k in CONSTRAINT_KEYS], dtype=torch.float32)
 
 def flights_to_tensors(flights):
-    """혜린 flight dict → 찬주 encoder 입력 tensor 변환"""
     origins = torch.tensor([f["origin"] for f in flights])
     dests = torch.tensor([f["dest"] for f in flights])
     dep_times = torch.tensor([f["dep_time"] for f in flights], dtype=torch.float32)
@@ -40,9 +35,7 @@ def flights_to_tensors(flights):
 
 
 def state_to_vec(state, encoder, constraint):
-    """혜린 state dict → 찬주 decoder 입력 tensor 변환"""
     airport_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
-    
     return torch.cat([
         airport_emb,
         torch.tensor([
@@ -54,12 +47,6 @@ def state_to_vec(state, encoder, constraint):
 
 
 def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
-    """
-    혜린 environment + 찬주 model로 에피소드 진행
-
-    Returns:
-        total_reward, log_probs, entropies, n_pairings
-    """
     assigned = {f["id"]: False for f in flights}
     state = init_state(flights, constraint)
 
@@ -69,57 +56,13 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     n_pairings = 0
 
     while True:
-        # 혜린 mask
         mask_list = get_mask(state, flights, assigned, constraint)
         mask = torch.tensor(mask_list, dtype=torch.float32)
 
-        # valid한 flight가 없으면 (END만 남으면) 종료
         if sum(mask_list[:-1]) == 0:
             n_pairings += 1
             total_reward += PAIRING_PENALTY
 
-            # 미배정 flight 남아있으면 새 pairing 시작
-            unassigned = [f for f in flights if not assigned[f["id"]]]
-            if len(unassigned) == 0:
-                break
-
-            # 가장 이른 미배정 flight로 새 pairing 시작
-            start = sorted(unassigned, key=lambda x: x["dep_time"])[0] # dep_time 기준 정렬 필요
-            assigned[start["id"]] = True
-
-            state = {
-                "current_airport": start["dest"],
-                "current_time": start["arr_time"],
-                "duty_time": start["arr_time"] - start["dep_time"],
-                "duty_start_time": start["dep_time"],
-                "legs": 1,
-                "remaining": sum(1 for v in assigned.values() if not v),
-            }
-            continue
-
-        # 찬주 decoder
-        state_vec = state_to_vec(state, encoder, constraint)
-        probs = decoder(encoded, state_vec, mask)
-
-        if greedy:
-            action = probs.argmax().item()
-        else:
-            dist = Categorical(probs)
-            a = dist.sample()
-            log_probs.append(dist.log_prob(a))
-            entropies.append(dist.entropy())
-            action = a.item()
-
-        # END action
-        if action == len(flights):
-            n_pairings += 1
-            
-            if state["current_airport"] != constraint["base_airport"]:
-                total_reward += BASE_PENALTY
-
-            total_reward += PAIRING_PENALTY
-
-            # 미배정 flight 남아있으면 새 pairing 시작
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if len(unassigned) == 0:
                 break
@@ -136,52 +79,80 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
             }
             continue
 
-        # 혜린 step (assigned도 내부에서 업데이트)
+        state_vec = state_to_vec(state, encoder, constraint)
+        probs = decoder(encoded, state_vec, mask)
+
+        if greedy:
+            action = probs.argmax().item()
+        else:
+            dist = Categorical(probs)
+            a = dist.sample()
+            log_probs.append(dist.log_prob(a))
+            entropies.append(dist.entropy())
+            action = a.item()
+
+        if action == len(flights):
+            n_pairings += 1
+
+            if state["current_airport"] != constraint["base_airport"]:
+                total_reward += BASE_PENALTY
+
+            total_reward += PAIRING_PENALTY
+
+            unassigned = [f for f in flights if not assigned[f["id"]]]
+            if len(unassigned) == 0:
+                break
+
+            start = sorted(unassigned, key=lambda x: x["dep_time"])[0]
+            assigned[start["id"]] = True
+            state = {
+                "current_airport": start["dest"],
+                "current_time": start["arr_time"],
+                "duty_time": start["arr_time"] - start["dep_time"],
+                "duty_start_time": start["dep_time"],
+                "legs": 1,
+                "remaining": sum(1 for v in assigned.values() if not v),
+            }
+            continue
+
         state, r, done = step(state, action, flights, assigned, constraint)
         total_reward += r
 
         if done:
             break
 
-    # 혜린 final reward
     total_reward += final_reward(assigned)
-
     return total_reward, log_probs, entropies, n_pairings
 
 
-def train():
-    # 데이터 로드 (혜린 loader)
+def test_convergence():
     flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=50)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
+    # constraint 고정 (max_duty=10h)
+    constraint = get_delta_constraints()
+    constraint["max_duty"] = 10.0
+    c_tensor = torch.tensor([constraint["max_duty"]], dtype=torch.float32)
+
+    print("=== 수렴 테스트 ===")
     print(f"flights: {len(flights)}개, airports: {n_airports}개")
+    print(f"constraint: max_duty={constraint['max_duty']}h (고정)")
+    print(f"seed: {SEED}")
     print()
 
-    # 찬주 모델 생성
-    encoder = FlightEncoder(
-        n_airports=n_airports,
-        constraint_dim=len(CONSTRAINT_KEYS),  # 4개: max_duty, min_conn, max_conn, max_legs
-        airport_emb_dim=32,
-        d_model=128,
-    )
-    decoder = PointerDecoder(d_model=128, airport_emb_dim=32)
+    encoder = FlightEncoder(n_airports=n_airports)
+    decoder = PointerDecoder()
 
-    # 전체 파라미터 합쳐서 optimizer
     params = list(encoder.parameters()) + list(decoder.parameters())
-    optimizer = optim.Adam(params, lr=1e-4)  # lr 낮춤 (안정성)
+    optimizer = optim.Adam(params, lr=1e-4)
 
-    # flight → tensor (1번만)
     origins, dests, dep_times, arr_times = flights_to_tensors(flights)
 
-    for episode in range(1000):
-        # constraint 번갈아 (FiLM 검증용)
-        constraint = get_delta_constraints()
-        c_tensor = constraint_to_tensor(constraint)
+    greedy_pairings = []
 
-        # encode (에피소드당 1번)
+    for episode in range(1500):
         encoded = encoder(origins, dests, dep_times, arr_times, c_tensor)
 
-        # ── sample rollout (학습용) ──
         reward_s, log_probs, entropies, pairings_s = run_episode(
             flights, constraint, encoder, decoder, encoded, greedy=False
         )
@@ -189,18 +160,16 @@ def train():
         if len(log_probs) == 0:
             continue
 
-        # ── greedy rollout (baseline) ──
         with torch.no_grad():
             encoded_g = encoder(origins, dests, dep_times, arr_times, c_tensor)
             reward_g, _, _, pairings_g = run_episode(
                 flights, constraint, encoder, decoder, encoded_g, greedy=True
             )
 
-        # scaling (reward 범위에 따라 advantage가 너무 커지는 문제 방지)
-        # advantage = sample - greedy
+        greedy_pairings.append(pairings_g)
+
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
-        # REINFORCE loss + entropy bonus
         loss = torch.stack([
             -lp * advantage - 0.005 * ent
             for lp, ent in zip(log_probs, entropies)
@@ -208,42 +177,60 @@ def train():
 
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)  # gradient clipping
+        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
         optimizer.step()
 
-        if episode % 20 == 0:
+        if episode % 100 == 0:
+            recent = greedy_pairings[-50:] if len(greedy_pairings) >= 50 else greedy_pairings
+            avg = sum(recent) / len(recent)
             print(
                 f"Ep {episode:4d} | "
-                f"sample: {reward_s:7.1f} (p={pairings_s:2d}) | "
-                f"greedy: {reward_g:7.1f} (p={pairings_g:2d}) | "
-                f"adv: {advantage:6.2f} | "
-                f"duty: {constraint['max_duty']:2.0f}h | "
-                f"loss: {loss.item():8.3f}"
+                f"greedy: {pairings_g:2d} (avg50: {avg:5.1f}) | "
+                f"sample: {pairings_s:2d}"
             )
 
-    # ── FiLM 검증: constraint별 greedy 결과 비교 ──
+    # 수렴 판정
     print()
     print("=" * 60)
-    print("FiLM 검증: 같은 flights, 다른 constraint")
+    print("수렴 판정")
     print("=" * 60)
 
+    first100 = greedy_pairings[:100]
+    last100 = greedy_pairings[-100:]
+    mid100 = greedy_pairings[len(greedy_pairings)//2 - 50 : len(greedy_pairings)//2 + 50]
+
+    avg_first = sum(first100) / len(first100)
+    avg_mid = sum(mid100) / len(mid100)
+    avg_last = sum(last100) / len(last100)
+    best = min(greedy_pairings)
+
+    print(f"  처음 100ep 평균: {avg_first:.1f}")
+    print(f"  중간 100ep 평균: {avg_mid:.1f}")
+    print(f"  마지막 100ep 평균: {avg_last:.1f}")
+    print(f"  전체 최저: {best}")
+    print()
+
+    if avg_last < avg_first:
+        print("  → 수렴 중 (마지막 < 처음)")
+    elif avg_last > avg_first * 1.1:
+        print("  → 발산 (마지막이 처음보다 10% 이상 나쁨)")
+    else:
+        print("  → 정체 (줄어들지 않음)")
+
+    # FiLM 검증도 같이
+    print()
+    print("FiLM 검증:")
     for duty in [6.0, 8.0, 10.0, 12.0, 14.0]:
+        c = torch.tensor([duty], dtype=torch.float32)
         with torch.no_grad():
+            enc = encoder(origins, dests, dep_times, arr_times, c)
             test_constraint = get_delta_constraints()
             test_constraint["max_duty"] = duty
-            c = constraint_to_tensor(test_constraint)
-
-            enc = encoder(origins, dests, dep_times, arr_times, c)
-            reward, _, _, n_pair = run_episode(
-                flights,
-                test_constraint,
-                encoder,
-                decoder,
-                enc,
-                greedy=True
+            _, _, _, n_pair = run_episode(
+                flights, test_constraint, encoder, decoder, enc, greedy=True
             )
-        print(f"  max_duty={duty:4.0f}h → pairings: {n_pair:3d}, reward: {reward:7.1f}")
+        print(f"  max_duty={duty:4.0f}h → pairings: {n_pair:3d}")
 
 
 if __name__ == "__main__":
-    train()
+    test_convergence()
