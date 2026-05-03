@@ -10,7 +10,7 @@ from torch.distributions import Categorical
 
 sys.path.insert(0, "RL")
 from loader import load_flights
-from environment import get_mask, step
+from environment import get_mask, step, step_end_duty, END_DUTY
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from state import init_state
 
@@ -32,12 +32,19 @@ def flights_to_tensors(flights):
 
 def state_to_vec(state, encoder, constraint):
     airport_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
+    max_pairing_days = constraint.get("max_pairing_days", 5)
+    time_of_day      = (state["current_time"] % 24.0) / 24.0
+    day_norm         = (state["current_time"] // 24.0) / max(max_pairing_days, 1)
+    duty_period_norm = state.get("duty_period", 0) / max(constraint.get("max_duty_periods", 4), 1)
     return torch.cat([
         airport_emb,
         torch.tensor([
-            state["current_time"] / 24.0,
-            state["duty_time"]    / constraint["max_duty"],
-            float(state["legs"])  / constraint["max_legs"],
+            time_of_day,
+            day_norm,
+            state["duty_time"]               / constraint["max_duty"],
+            state.get("legs", 0)             / constraint["max_legs"],
+            duty_period_norm,
+            1.0 if state.get("is_resting", False) else 0.0,
         ], dtype=torch.float32)
     ])
 
@@ -90,20 +97,25 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
     assigned[first["id"]] = True
     start_new_pairing(first)
     state = {
-        "current_airport":  first["dest"],
-        "current_time":     first["arr_time"],
-        "duty_time":        first["arr_time"] - first["dep_time"],
-        "duty_start_time":  first["dep_time"],
-        "legs":             1,
-        "remaining":        sum(1 for v in assigned.values() if not v),
+        "current_airport":    first["dest"],
+        "current_time":       first["arr_time"],
+        "duty_time":          first["arr_time"] - first["dep_time"],
+        "duty_start_time":    first["dep_time"],
+        "legs":               1,
+        "remaining":          sum(1 for v in assigned.values() if not v),
+        "pairing_start":      False,
+        "duty_period":        0,
+        "pairing_start_time": first["dep_time"],
+        "is_resting":         False,
+        "rest_end_time":      None,
     }
 
     while True:
         mask_list = get_mask(state, flights, assigned, constraint)
         mask      = torch.tensor(mask_list, dtype=torch.float32)
 
-        # 갈 수 있는 flight 없음 → pairing 강제 종료
-        if sum(mask_list[:-1]) == 0:
+        # 갈 수 있는 flight 없고 END_DUTY도 불가 → pairing 강제 종료
+        if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0:
             flush_pairing()
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
@@ -112,12 +124,17 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
             assigned[nxt["id"]] = True
             start_new_pairing(nxt)
             state = {
-                "current_airport":  nxt["dest"],
-                "current_time":     nxt["arr_time"],
-                "duty_time":        nxt["arr_time"] - nxt["dep_time"],
-                "duty_start_time":  nxt["dep_time"],
-                "legs":             1,
-                "remaining":        sum(1 for v in assigned.values() if not v),
+                "current_airport":    nxt["dest"],
+                "current_time":       nxt["arr_time"],
+                "duty_time":          nxt["arr_time"] - nxt["dep_time"],
+                "duty_start_time":    nxt["dep_time"],
+                "legs":               1,
+                "remaining":          sum(1 for v in assigned.values() if not v),
+                "pairing_start":      False,
+                "duty_period":        0,
+                "pairing_start_time": nxt["dep_time"],
+                "is_resting":         False,
+                "rest_end_time":      None,
             }
             continue
 
@@ -129,8 +146,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
         else:
             action = Categorical(probs).sample().item()
 
-        # END 선택 → pairing 종료
+        # END_DUTY 선택 → rest period 진입, pairing 계속
         if action == len(flights):
+            state = step_end_duty(state, constraint)
+            continue
+
+        # END_PAIRING 선택 → pairing 종료
+        if action == len(flights) + 1:
             flush_pairing()
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
@@ -139,12 +161,17 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
             assigned[nxt["id"]] = True
             start_new_pairing(nxt)
             state = {
-                "current_airport":  nxt["dest"],
-                "current_time":     nxt["arr_time"],
-                "duty_time":        nxt["arr_time"] - nxt["dep_time"],
-                "duty_start_time":  nxt["dep_time"],
-                "legs":             1,
-                "remaining":        sum(1 for v in assigned.values() if not v),
+                "current_airport":    nxt["dest"],
+                "current_time":       nxt["arr_time"],
+                "duty_time":          nxt["arr_time"] - nxt["dep_time"],
+                "duty_start_time":    nxt["dep_time"],
+                "legs":               1,
+                "remaining":          sum(1 for v in assigned.values() if not v),
+                "pairing_start":      False,
+                "duty_period":        0,
+                "pairing_start_time": nxt["dep_time"],
+                "is_resting":         False,
+                "rest_end_time":      None,
             }
             continue
 
