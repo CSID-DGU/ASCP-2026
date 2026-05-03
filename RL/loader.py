@@ -19,9 +19,6 @@ def load_flights(path, limit=50):
         "FL_DATE"
     ]].dropna()
 
-    # ✔ 먼저 limit 적용 (핵심)
-    df = df.head(limit)
-
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
     df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
 
@@ -34,6 +31,7 @@ def load_flights(path, limit=50):
     df["arr_time"] += df["day_offset"] * 24
 
     df = df.sort_values("dep_time")
+    df = df.head(limit)
 
     airports = pd.concat([df["ORIGIN"], df["DEST"]]).unique()
     airport_map = {a: i for i, a in enumerate(airports)}
