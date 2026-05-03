@@ -31,7 +31,7 @@ from model import FlightEncoder, PointerDecoder
 from RL.cppsc_loader import load_cppsc_flights, get_cppsc_constraints
 from RL.constraints import FILM_CONSTRAINT_KEYS
 from RL.state import init_state
-from RL.environment import get_mask, step, final_reward
+from RL.environment import get_mask, step, step_end_duty, final_reward
 from torch.distributions import Categorical
 
 TAHIR_RESULTS = os.path.join(
@@ -57,12 +57,19 @@ def flights_to_tensors(flights):
 
 def state_to_vec(state, encoder, constraint):
     airport_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
+    max_pairing_days = constraint.get("max_pairing_days", 5)
+    time_of_day = (state["current_time"] % 24.0) / 24.0
+    day_norm = (state["current_time"] // 24.0) / max(max_pairing_days, 1)
+    duty_period_norm = state.get("duty_period", 0) / max(constraint.get("max_duty_periods", 4), 1)
     return torch.cat([
         airport_emb,
         torch.tensor([
-            state["current_time"] / 24.0,
-            state["duty_time"]    / constraint["max_duty"],
-            state.get("legs", 0)  / constraint.get("max_legs", 1),
+            time_of_day,
+            day_norm,
+            state["duty_time"]   / constraint["max_duty"],
+            state.get("legs", 0) / constraint["max_legs"],
+            duty_period_norm,
+            1.0 if state.get("is_resting", False) else 0.0,
         ], dtype=torch.float32),
     ])
 
@@ -79,20 +86,25 @@ def run_greedy(flights, constraint, encoder, decoder):
         mask_list = get_mask(state, flights, assigned, constraint)
         mask = torch.tensor(mask_list, dtype=torch.float32)
 
-        if sum(mask_list[:-1]) == 0:
+        if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0:
+            # flight도 없고 END_DUTY도 불가 → END_PAIRING 강제
             n_pairings += 1
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
                 break
             earliest = sorted(unassigned, key=lambda x: x["dep_time"])[0]
             state = {
-                "current_airport":  earliest["origin"],
-                "current_time":     earliest["dep_time"],
-                "duty_time":        0.0,
-                "duty_start_time":  earliest["dep_time"],
-                "legs":             0,
-                "remaining":        sum(1 for v in assigned.values() if not v),
-                "pairing_start":    True,
+                "current_airport":    earliest["origin"],
+                "current_time":       earliest["dep_time"],
+                "duty_time":          0.0,
+                "duty_start_time":    earliest["dep_time"],
+                "legs":               0,
+                "remaining":          sum(1 for v in assigned.values() if not v),
+                "pairing_start":      True,
+                "duty_period":        0,
+                "pairing_start_time": earliest["dep_time"],
+                "is_resting":         False,
+                "rest_end_time":      None,
             }
             continue
 
@@ -100,20 +112,32 @@ def run_greedy(flights, constraint, encoder, decoder):
         probs = decoder(encoded, state_vec, mask)
         action = probs.argmax().item()
 
-        if action == len(flights):
+        n_flights = len(flights)
+
+        if action == n_flights:
+            # END_DUTY: 현재 duty 종료 → rest period 진입
+            state = step_end_duty(state, constraint)
+            continue
+
+        if action == n_flights + 1:
+            # END_PAIRING: pairing 종료 → 다음 미배정 flight로 이동
             n_pairings += 1
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
                 break
             earliest = sorted(unassigned, key=lambda x: x["dep_time"])[0]
             state = {
-                "current_airport":  earliest["origin"],
-                "current_time":     earliest["dep_time"],
-                "duty_time":        0.0,
-                "duty_start_time":  earliest["dep_time"],
-                "legs":             0,
-                "remaining":        sum(1 for v in assigned.values() if not v),
-                "pairing_start":    True,
+                "current_airport":    earliest["origin"],
+                "current_time":       earliest["dep_time"],
+                "duty_time":          0.0,
+                "duty_start_time":    earliest["dep_time"],
+                "legs":               0,
+                "remaining":          sum(1 for v in assigned.values() if not v),
+                "pairing_start":      True,
+                "duty_period":        0,
+                "pairing_start_time": earliest["dep_time"],
+                "is_resting":         False,
+                "rest_end_time":      None,
             }
             continue
 
