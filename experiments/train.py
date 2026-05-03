@@ -8,19 +8,17 @@
 
 import os
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "RL"))
 import torch
 import torch.optim as optim
 from torch.distributions import Categorical
 
-# 찬주 모델 (model/ 폴더 먼저 잡히도록)
 from model import FlightEncoder, PointerDecoder
-
-# 혜린 코드 (RL/ 폴더)
-sys.path.insert(0, "RL")
 from loader import load_flights
 from environment import get_mask, step, step_end_duty, final_reward, END_DUTY
-from RL.constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
-from RL.state import init_state
+from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
+from state import init_state
 
 PAIRING_COST = 1.0        # pairing 완성/강제종료 시 -1 (최소화 대상)
 BASE_PENALTY = 5.0        # base 미복귀 시 -5 (feasibility 강제)
@@ -188,7 +186,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
 def train():
     # 데이터 로드 (혜린 loader)
-    flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=50)
+    flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=200, hub_only=True)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
     print(f"flights: {len(flights)}개, airports: {n_airports}개")
