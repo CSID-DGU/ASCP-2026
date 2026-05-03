@@ -34,8 +34,9 @@ class FlightEncoder(nn.Module):
             nn.Linear(d_model, d_model),
         )
 
-        # FiLM: constraint로 flight 벡터 변조 (Transformer 전에 적용)
-        self.film = FiLM(constraint_dim, d_model, use_skip=skip_film)
+        # FiLM: constraint로 flight 벡터 변조 (Transformer 전+후 양쪽)
+        self.film_before = FiLM(constraint_dim, d_model, use_skip=skip_film)  # Transformer 전
+        self.film_after  = FiLM(constraint_dim, d_model, use_skip=skip_film)  # Transformer 후
 
         # Transformer: flight 간 관계 파악
         encoder_layer = nn.TransformerEncoderLayer(
@@ -79,8 +80,8 @@ class FlightEncoder(nn.Module):
         x = torch.cat([o_emb, d_emb, times], dim=-1)  # 전부 가로로 붙이기
         x = self.flight_mlp(x)                         # 128차원으로 압축/변환
 
-        # 2. FiLM — Transformer 전에 constraint 반영
-        x = self.film(x, constraint)                   # (N, d_model)
+        # 2. FiLM (before) — Transformer 전에 constraint 반영
+        x = self.film_before(x, constraint)            # (N, d_model)
 
         # 3. Transformer — flight 간 관계 파악
         x_before_transformer = x                       # skip_transformer용: Transformer 전 벡터 저장
@@ -89,5 +90,8 @@ class FlightEncoder(nn.Module):
         x = x.squeeze(0)                               # 배치 차원 제거 (N, d_model)
         if self.skip_transformer:
             x = x + x_before_transformer               # skip: Transformer가 FiLM 정보를 잃지 않도록
+
+        # 4. FiLM (after) — Transformer 후에 constraint 한번 더 반영
+        x = self.film_after(x, constraint)             # (N, d_model)
 
         return x
