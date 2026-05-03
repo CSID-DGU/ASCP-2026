@@ -20,6 +20,8 @@ class FlightEncoder(nn.Module):
         d_model: int = 128,
         nhead: int = 4,
         num_layers: int = 2,
+        skip_film: bool = False,
+        skip_transformer: bool = False,
     ):
         super().__init__()
 
@@ -33,7 +35,7 @@ class FlightEncoder(nn.Module):
         )
 
         # FiLM: constraint로 flight 벡터 변조 (Transformer 전에 적용)
-        self.film = FiLM(constraint_dim, d_model)
+        self.film = FiLM(constraint_dim, d_model, use_skip=skip_film)
 
         # Transformer: flight 간 관계 파악
         encoder_layer = nn.TransformerEncoderLayer(
@@ -43,6 +45,9 @@ class FlightEncoder(nn.Module):
             batch_first=True,
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # skip_transformer: FiLM 출력을 Transformer 출력에 더함
+        self.skip_transformer = skip_transformer
 
     def forward(
         self,
@@ -78,8 +83,11 @@ class FlightEncoder(nn.Module):
         x = self.film(x, constraint)                   # (N, d_model)
 
         # 3. Transformer — flight 간 관계 파악
-        x = x.unsqueeze(0)                             # 배치 차원 추가 (1, N, d_model) 
+        x_before_transformer = x                       # skip_transformer용: Transformer 전 벡터 저장
+        x = x.unsqueeze(0)                             # 배치 차원 추가 (1, N, d_model)
         x = self.transformer(x)                        # 비행기들끼리 서로 정보를 주고 받음 (attention) (1, N, d_model)
         x = x.squeeze(0)                               # 배치 차원 제거 (N, d_model)
+        if self.skip_transformer:
+            x = x + x_before_transformer               # skip: Transformer가 FiLM 정보를 잃지 않도록
 
         return x
