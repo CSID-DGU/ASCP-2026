@@ -5,3 +5,10 @@ __pycache__/
 data/
 logs/
 results/
+checkpoints/
+*.md
+!README.md
+*.txt
+
+
+
