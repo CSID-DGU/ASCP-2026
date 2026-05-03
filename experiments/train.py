@@ -25,6 +25,7 @@ from RL.state import init_state
 PAIRING_COST = 1.0        # pairing 완성/강제종료 시 -1 (최소화 대상)
 BASE_PENALTY = 5.0        # base 미복귀 시 -5 (feasibility 강제)
 UNCOVERED_PENALTY = 10.0  # 미배정 flight당 -10 (coverage 강제)
+OVERNIGHT_PENALTY = 8.0   # END_DUTY 1회당 -8 (dead time 1h = -1 기준으로 1박 ≈ 8h)
 
 
 def constraint_to_tensor(constraint):
@@ -133,6 +134,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         # END_DUTY (index N): 현재 duty 종료 → rest period 진입
         if action == n_flights:
             state = step_end_duty(state, constraint)
+            total_reward -= OVERNIGHT_PENALTY
             continue
 
         # END_PAIRING (index N+1): pairing 전체 종료

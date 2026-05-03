@@ -109,7 +109,11 @@ def step(state, action, flights, assigned, constraint):
         "rest_end_time":      None,
     }
 
-    reward = 0.0
+    # dead time: duty 내 flight 간 연결 대기 시간 (pairing 첫 flight나 rest 직후는 제외)
+    if not state.get("pairing_start", False) and not state.get("is_resting", False):
+        reward = -(f["dep_time"] - state["current_time"])
+    else:
+        reward = 0.0
 
     return next_state, reward, False
 
