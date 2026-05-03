@@ -20,10 +20,11 @@ from environment import get_mask, step, step_end_duty, final_reward, END_DUTY
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from state import init_state
 
-PAIRING_COST = 1.0        # pairing 완성/강제종료 시 -1 (최소화 대상)
-BASE_PENALTY = 5.0        # base 미복귀 시 -5 (feasibility 강제)
+PAIRING_COST      = 5.0   # pairing 완성/강제종료 시 -5 (deadhead 억제)
+BASE_PENALTY      = 5.0   # base 미복귀 시 -5 (feasibility 강제)
 UNCOVERED_PENALTY = 10.0  # 미배정 flight당 -10 (coverage 강제)
-OVERNIGHT_PENALTY = 8.0   # END_DUTY 1회당 -8 (dead time 1h = -1 기준으로 1박 ≈ 8h)
+OVERNIGHT_PENALTY = 0.5   # END_DUTY 1회당 -0.5 (overnight rest 허용)
+LEG_BONUS         = 1.5   # 2번째 leg부터 +1.5 (연결 장려)
 
 
 def constraint_to_tensor(constraint):
@@ -164,8 +165,11 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
             continue
 
         # flight action
+        prev_legs = state.get("legs", 0)
         state, r, done = step(state, action, flights, assigned, constraint)
         total_reward += r
+        if prev_legs >= 1:              # 2번째 leg부터 보너스 (연결 장려)
+            total_reward += LEG_BONUS
 
         if done:
             break
@@ -184,111 +188,147 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     return total_reward, log_probs, entropies, metrics
 
 
+def run_curriculum_stage(
+    stage, flights, encoder, decoder, optimizer, origins, dests, dep_times, arr_times,
+    n_episodes, constraint_override, save_dir
+):
+    """
+    커리큘럼 1단계 실행.
+    constraint_override: 이 단계에서 사용할 constraint dict.
+    """
+    best_avg_pairings = float("inf")
+    greedy_pairings = []
+
+    print(f"\n{'='*60}")
+    print(f"Curriculum Stage {stage}: max_duty_periods={constraint_override['max_duty_periods']}, "
+          f"max_pairing_days={constraint_override['max_pairing_days']}")
+    print(f"{'='*60}")
+
+    params = list(encoder.parameters()) + list(decoder.parameters())
+
+    for ep in range(n_episodes):
+        c_tensor = constraint_to_tensor(constraint_override)
+        encoded  = encoder(origins, dests, dep_times, arr_times, c_tensor)
+
+        reward_s, log_probs, entropies, metrics_s = run_episode(
+            flights, constraint_override, encoder, decoder, encoded, greedy=False
+        )
+        if len(log_probs) == 0:
+            continue
+
+        with torch.no_grad():
+            encoded_g = encoder(origins, dests, dep_times, arr_times, c_tensor)
+            reward_g, _, _, metrics_g = run_episode(
+                flights, constraint_override, encoder, decoder, encoded_g, greedy=True
+            )
+
+        greedy_pairings.append(metrics_g["n_pairings"])
+        advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
+
+        loss = torch.stack([
+            -lp * advantage - 0.01 * ent
+            for lp, ent in zip(log_probs, entropies)
+        ]).sum()
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+        optimizer.step()
+
+        # best checkpoint: greedy pairings 25ep 이동평균 기준
+        if len(greedy_pairings) >= 25:
+            recent_avg = sum(greedy_pairings[-25:]) / 25
+            if recent_avg < best_avg_pairings:
+                best_avg_pairings = recent_avg
+                torch.save({
+                    "encoder":   encoder.state_dict(),
+                    "decoder":   decoder.state_dict(),
+                    "stage":     stage,
+                    "episode":   ep,
+                    "best_avg_pairings": best_avg_pairings,
+                }, os.path.join(save_dir, f"stage{stage}_best.pt"))
+
+        if ep % 25 == 0:
+            avg25 = sum(greedy_pairings[-25:]) / len(greedy_pairings[-25:])
+            print(
+                f"  Ep {ep:4d} | "
+                f"sample: p={metrics_s['n_pairings']:3d} dh={metrics_s['n_deadheads']:3d} | "
+                f"greedy: p={metrics_g['n_pairings']:3d} (avg25={avg25:5.1f}) | "
+                f"adv: {advantage:6.3f}"
+            )
+
+    print(f"  → best avg pairings: {best_avg_pairings:.1f}  "
+          f"(saved: checkpoints/stage{stage}_best.pt)")
+    return best_avg_pairings
+
+
 def train():
-    # 데이터 로드 (혜린 loader)
-    flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=200, hub_only=True)
+    flights    = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=200, hub_only=True)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
     print(f"flights: {len(flights)}개, airports: {n_airports}개")
-    print()
 
-    # 찬주 모델 생성
     encoder = FlightEncoder(
         n_airports=n_airports,
         constraint_dim=len(FILM_CONSTRAINT_KEYS),
         airport_emb_dim=32,
         d_model=128,
     )
-    decoder = PointerDecoder(d_model=128, airport_emb_dim=32)
+    decoder   = PointerDecoder(d_model=128, airport_emb_dim=32)
+    params    = list(encoder.parameters()) + list(decoder.parameters())
+    optimizer = optim.Adam(params, lr=1e-4)
 
-    # 전체 파라미터 합쳐서 optimizer
-    params = list(encoder.parameters()) + list(decoder.parameters())
-    optimizer = optim.Adam(params, lr=1e-4)  # lr 낮춤 (안정성)
-
-    # flight → tensor (1번만)
-    origins, dests, dep_times, arr_times = flights_to_tensors(flights)
-
-    for episode in range(1000):
-        # constraint 번갈아 (FiLM 검증용)
-        constraint = get_delta_constraints()
-        c_tensor = constraint_to_tensor(constraint)
-
-        # encode (에피소드당 1번)
-        encoded = encoder(origins, dests, dep_times, arr_times, c_tensor)
-
-        # ── sample rollout (학습용) ──
-        reward_s, log_probs, entropies, metrics_s = run_episode(
-            flights, constraint, encoder, decoder, encoded, greedy=False
-        )
-
-        if len(log_probs) == 0:
-            continue
-
-        # ── greedy rollout (baseline) ──
-        with torch.no_grad():
-            encoded_g = encoder(origins, dests, dep_times, arr_times, c_tensor)
-            reward_g, _, _, metrics_g = run_episode(
-                flights, constraint, encoder, decoder, encoded_g, greedy=True
-            )
-
-        # scaling (reward 범위에 따라 advantage가 너무 커지는 문제 방지)
-        # advantage = sample - greedy
-        advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
-
-        # REINFORCE loss + entropy bonus
-        loss = torch.stack([
-            -lp * advantage - 0.005 * ent
-            for lp, ent in zip(log_probs, entropies)
-        ]).sum()
-
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)  # gradient clipping
-        optimizer.step()
-
-        if episode % 20 == 0:
-            print(
-                f"Ep {episode:4d} | "
-                f"sample: {reward_s:7.1f} (p={metrics_s['n_pairings']:2d} dh={metrics_s['n_deadheads']:2d} cov={metrics_s['coverage_pct']:5.1f}%) | "
-                f"greedy: {reward_g:7.1f} (p={metrics_g['n_pairings']:2d}) | "
-                f"adv: {advantage:6.2f} | "
-                f"duty: {constraint['max_duty']:2.0f}h | "
-                f"loss: {loss.item():8.3f}"
-            )
-
-    # ── FiLM 검증: constraint별 greedy 결과 비교 ──
-    print()
-    print("=" * 60)
-    print("FiLM 검증: 같은 flights, 다른 constraint")
-    print("=" * 60)
-
-    for duty in [6.0, 8.0, 10.0, 12.0, 14.0]:
-        with torch.no_grad():
-            test_constraint = get_delta_constraints()
-            test_constraint["max_duty"] = duty
-            c = constraint_to_tensor(test_constraint)
-
-            enc = encoder(origins, dests, dep_times, arr_times, c)
-            reward, _, _, metrics = run_episode(
-                flights,
-                test_constraint,
-                encoder,
-                decoder,
-                enc,
-                greedy=True
-            )
-        print(f"  max_duty={duty:4.0f}h → pairings: {metrics['n_pairings']:3d}  "
-              f"deadheads: {metrics['n_deadheads']:2d}  "
-              f"coverage: {metrics['coverage_pct']:5.1f}%  "
-              f"reward: {reward:7.1f}")
-
-    # ── 모델 저장 ──
     save_dir = os.path.join(os.path.dirname(__file__), "..", "checkpoints")
     os.makedirs(save_dir, exist_ok=True)
+
+    origins, dests, dep_times, arr_times = flights_to_tensors(flights)
+
+    base = get_delta_constraints()
+
+    # ── Stage 1: 단일 duty (overnight 없음) ──────────────────────────
+    # max_duty_periods=1 → END_DUTY 불가 → 당일 connection만 학습
+    stage1_c = {**base, "max_duty_periods": 1, "max_pairing_days": 1}
+    run_curriculum_stage(1, flights, encoder, decoder, optimizer,
+                         origins, dests, dep_times, arr_times,
+                         n_episodes=1000, constraint_override=stage1_c,
+                         save_dir=save_dir)
+
+    # ── Stage 2: 1박 overnight ────────────────────────────────────────
+    stage2_c = {**base, "max_duty_periods": 2, "max_pairing_days": 2}
+    run_curriculum_stage(2, flights, encoder, decoder, optimizer,
+                         origins, dests, dep_times, arr_times,
+                         n_episodes=1000, constraint_override=stage2_c,
+                         save_dir=save_dir)
+
+    # ── Stage 3: full multi-day ───────────────────────────────────────
+    stage3_c = {**base, "max_duty_periods": 4, "max_pairing_days": 5}
+    run_curriculum_stage(3, flights, encoder, decoder, optimizer,
+                         origins, dests, dep_times, arr_times,
+                         n_episodes=2000, constraint_override=stage3_c,
+                         save_dir=save_dir)
+
+    # ── FiLM 검증: constraint별 greedy 결과 비교 ─────────────────────
+    print()
+    print("=" * 60)
+    print("FiLM 검증: 같은 flights, 다른 max_duty")
+    print("=" * 60)
+
+    encoder.eval()
+    decoder.eval()
+    with torch.no_grad():
+        for duty in [6.0, 8.0, 10.0, 12.0, 14.0]:
+            c = {**stage3_c, "max_duty": duty}
+            enc = encoder(origins, dests, dep_times, arr_times, constraint_to_tensor(c))
+            _, _, _, metrics = run_episode(flights, c, encoder, decoder, enc, greedy=True)
+            print(f"  max_duty={duty:4.0f}h → pairings: {metrics['n_pairings']:3d}  "
+                  f"deadheads: {metrics['n_deadheads']:3d}  "
+                  f"coverage: {metrics['coverage_pct']:5.1f}%")
+
+    # ── 최종 모델 저장 ────────────────────────────────────────────────
     torch.save({
-        "encoder": encoder.state_dict(),
-        "decoder": decoder.state_dict(),
-        "n_airports": n_airports,
+        "encoder":        encoder.state_dict(),
+        "decoder":        decoder.state_dict(),
+        "n_airports":     n_airports,
         "constraint_dim": len(FILM_CONSTRAINT_KEYS),
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt")
