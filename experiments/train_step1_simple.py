@@ -12,7 +12,8 @@ from model import FlightEncoder, PointerDecoder
 
 sys.path.insert(0, "RL")
 from loader import load_flights
-from environment import get_mask, init_state
+from environment import get_mask
+from RL.state import init_state
 
 
 def flights_to_tensors(flights):
@@ -48,7 +49,7 @@ def simple_step(state, action, flights, assigned):
 
 def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     assigned = {f["id"]: False for f in flights}
-    state = init_state(flights)
+    state = init_state(flights, constraint)
 
     log_probs = []
     entropies = []
