@@ -1,6 +1,6 @@
 """
-Curriculum Step 2: 300 flights + constraint 고정 (max_duty=10h)
-목표: 스케일업해도 수렴하는지 확인
+Curriculum Step 1: 50 flights + constraint 고정 (max_duty=10h)
+목표: constraint 고정 상태에서 reward가 올라가는지 (수렴 확인)
 """
 
 import sys
@@ -9,7 +9,6 @@ import torch
 import torch.optim as optim
 from torch.distributions import Categorical
 
-# 시드 고정 — 매번 같은 결과 나오도록
 SEED = 42
 random.seed(SEED)
 torch.manual_seed(SEED)
@@ -18,7 +17,8 @@ from model import FlightEncoder, PointerDecoder
 
 sys.path.insert(0, "RL")
 from loader import load_flights
-from environment import get_mask, step, init_state, final_reward
+from environment import get_mask, step, final_reward
+from RL.state import init_state
 
 
 def flights_to_tensors(flights):
@@ -40,7 +40,7 @@ def state_to_vec(state, encoder):
 
 def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     assigned = {f["id"]: False for f in flights}
-    state = init_state(flights)
+    state = init_state(flights, constraint)
 
     log_probs = []
     entropies = []
@@ -110,14 +110,14 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
 
 def train():
-    # ★ 300 flights로 스케일업
-    flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=300)
+    flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=50)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
+    # ★ constraint 고정
     CONSTRAINT = {"max_duty": 10.0}
     c_tensor = torch.tensor([CONSTRAINT["max_duty"]], dtype=torch.float32)
 
-    print(f"=== Curriculum Step 2 ===")
+    print(f"=== Curriculum Step 1 ===")
     print(f"flights: {len(flights)}개, airports: {n_airports}개")
     print(f"constraint: max_duty={CONSTRAINT['max_duty']}h (고정)")
     print()
@@ -130,12 +130,14 @@ def train():
 
     origins, dests, dep_times, arr_times = flights_to_tensors(flights)
 
+    # 기록용
     greedy_rewards = []
     greedy_pairings = []
 
-    for episode in range(500):
+    for episode in range(1000):
         encoded = encoder(origins, dests, dep_times, arr_times, c_tensor)
 
+        # sample rollout
         reward_s, log_probs, entropies, pairings_s = run_episode(
             flights, CONSTRAINT, encoder, decoder, encoded, greedy=False
         )
@@ -143,6 +145,7 @@ def train():
         if len(log_probs) == 0:
             continue
 
+        # greedy rollout (baseline)
         with torch.no_grad():
             encoded_g = encoder(origins, dests, dep_times, arr_times, c_tensor)
             reward_g, _, _, pairings_g = run_episode(
@@ -164,20 +167,25 @@ def train():
         torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
         optimizer.step()
 
-        if episode % 25 == 0:
-            recent_p = greedy_pairings[-25:] if len(greedy_pairings) >= 25 else greedy_pairings
+        if episode % 50 == 0:
+            # 최근 50개 평균
+            recent_r = greedy_rewards[-50:]
+            recent_p = greedy_pairings[-50:]
+            avg_r = sum(recent_r) / len(recent_r)
             avg_p = sum(recent_p) / len(recent_p)
 
             print(
                 f"Ep {episode:4d} | "
-                f"greedy pairings: {pairings_g:3d} (avg25: {avg_p:6.1f}) | "
-                f"sample pairings: {pairings_s:3d} | "
+                f"greedy reward: {reward_g:7.1f} (avg50: {avg_r:6.1f}) | "
+                f"greedy pairings: {pairings_g:2d} (avg50: {avg_p:5.1f}) | "
+                f"sample pairings: {pairings_s:2d} | "
                 f"adv: {advantage:6.2f}"
             )
 
+    # 최종 결과
     print()
     print("=" * 60)
-    print("Step 2 결과")
+    print("Step 1 결과")
     print("=" * 60)
 
     first50 = greedy_pairings[:50]
@@ -187,6 +195,8 @@ def train():
 
     improved = sum(first50)/len(first50) > sum(last50)/len(last50)
     print(f"  수렴 여부: {'줄어듦 (수렴 중)' if improved else '안 줄어듦 (수렴 안 함)'}")
+
+    return encoder, decoder
 
 
 if __name__ == "__main__":
