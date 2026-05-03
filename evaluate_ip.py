@@ -49,10 +49,16 @@ def state_to_vec(state, encoder, constraint):
     ])
 
 
+LEG_BONUS_IP      = 1.5   # legs 많을수록 IP cost 감소 (train.py LEG_BONUS와 동일)
+DEADHEAD_PENALTY_IP = 5.0  # 강제 시작 pairing의 IP cost 증가 (연결 못 찾은 pairing 억제)
+
+
 def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
     """
     RL rollout 1번 실행.
     각 pairing의 legs(flight id 리스트), fly, elapsed, cost를 반환.
+
+    IP 비용 = dead_time - LEG_BONUS_IP*(n_legs-1) + DEADHEAD_PENALTY_IP*(강제종료여부)
     """
     assigned = {f["id"]: False for f in flights}
     state    = init_state(flights, constraint)
@@ -65,18 +71,26 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
     pairing_fly      = 0.0
     pairing_last_arr = 0.0
 
-    def flush_pairing():
-        """현재 pairing 완성 → pairings에 추가"""
+    def flush_pairing(is_forced=False):
+        """현재 pairing 완성 → pairings에 추가
+        is_forced=True: 연결 못 찾아서 강제 종료된 deadhead pairing
+        """
         if len(current_legs) < 1 or pairing_dep is None:
             return
         elapsed  = pairing_last_arr - pairing_dep
         fly      = pairing_fly
-        cost     = elapsed - fly   # dead time
+        n_legs   = len(current_legs)
+        dead_time = max(elapsed - fly, 0.0)
+        rl_bonus  = LEG_BONUS_IP * max(n_legs - 1, 0)      # 2번째 leg부터 보너스
+        dh_penalty = DEADHEAD_PENALTY_IP if is_forced else 0.0
+        cost = dead_time - rl_bonus + dh_penalty
         pairings.append({
-            "legs":    list(current_legs),
-            "fly":     fly,
-            "elapsed": elapsed,
-            "cost":    max(cost, 0.0),
+            "legs":        list(current_legs),
+            "fly":         fly,
+            "elapsed":     elapsed,
+            "cost":        cost,
+            "is_deadhead": is_forced,
+            "n_legs":      n_legs,
         })
 
     def start_new_pairing(f):
@@ -114,9 +128,9 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
         mask_list = get_mask(state, flights, assigned, constraint)
         mask      = torch.tensor(mask_list, dtype=torch.float32)
 
-        # 갈 수 있는 flight 없고 END_DUTY도 불가 → pairing 강제 종료
+        # 갈 수 있는 flight 없고 END_DUTY도 불가 → pairing 강제 종료 (deadhead)
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0:
-            flush_pairing()
+            flush_pairing(is_forced=True)
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
                 break
@@ -151,9 +165,9 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
             state = step_end_duty(state, constraint)
             continue
 
-        # END_PAIRING 선택 → pairing 종료
+        # END_PAIRING 선택 → pairing 정상 종료
         if action == len(flights) + 1:
-            flush_pairing()
+            flush_pairing(is_forced=False)
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
                 break
@@ -183,7 +197,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
 
         state, _, done = step(state, action, flights, assigned, constraint)
         if done:
-            flush_pairing()
+            flush_pairing(is_forced=False)
             break
 
     return pairings
