@@ -263,7 +263,7 @@ def run_curriculum_stage(
 
 
 def train():
-    flights    = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=200, hub_only=True)
+    flights    = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=200, hub_only=True, n_days_max=4)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
     print(f"flights: {len(flights)}개, airports: {n_airports}개")
