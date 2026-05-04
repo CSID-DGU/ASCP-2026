@@ -38,7 +38,7 @@ def get_mask(state, flights, assigned, constraint):
                 valid = False
 
         legs_after = state.get("legs", 0) + 1
-        effective_max_duty = get_max_duty(legs_after, constraint)
+        effective_max_duty = min(get_max_duty(legs_after, constraint), constraint.get("max_duty", 13.0))
 
         if pairing_start:
             if state.get("duty_time", 0.0) + flight_time > effective_max_duty:

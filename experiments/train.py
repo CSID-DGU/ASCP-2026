@@ -79,21 +79,27 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     n_pairings = 0
     n_deadheads = 0  # 강제 시작된 pairing 수 (connection 못 찾아서)
 
+    max_steps = len(flights) * 20  # 무한루프 방지 (flight당 최대 20 step)
+    step_count = 0
     while True:
+        step_count += 1
+        if step_count > max_steps:
+            break
         # 혜린 mask
         mask_list = get_mask(state, flights, assigned, constraint)
         mask = torch.tensor(mask_list, dtype=torch.float32)
 
-        # flight도 없고 END_DUTY도 불가 → END_PAIRING 강제 (deadhead)
+        # flight도 없고 END_DUTY도 불가 → 다음 미배정 flight로 강제 이동
         no_flight = sum(mask_list[:-2]) == 0
         no_end_duty = mask_list[-2] == 0
-        if no_flight and no_end_duty and not state.get("pairing_start", False):
-            n_pairings += 1
-            n_deadheads += 1
-
-            if state["current_airport"] != constraint["base_airport"]:
-                total_reward -= BASE_PENALTY
-            total_reward -= PAIRING_COST
+        if no_flight and no_end_duty:
+            # pairing_start=False (진행 중 막힌 경우)만 deadhead 패널티
+            if not state.get("pairing_start", False):
+                n_pairings += 1
+                n_deadheads += 1
+                if state["current_airport"] != constraint["base_airport"]:
+                    total_reward -= BASE_PENALTY
+                total_reward -= PAIRING_COST
 
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if len(unassigned) == 0:
