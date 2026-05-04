@@ -1,7 +1,7 @@
 """
 RL rollout → pairing 후보 pool 생성 → Set Partitioning IP로 최적 조합 선택
 
-비용함수: cost = elapsed - fly  (dead time = 낭비 시간)
+비용함수: cost = dead_time - LEG_BONUS*(n_legs-1) + DEADHEAD_PENALTY*(강제종료여부)
 """
 
 import sys
