@@ -8,6 +8,7 @@
 
 import os
 import sys
+import random
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "RL"))
 import torch
@@ -15,7 +16,7 @@ import torch.optim as optim
 from torch.distributions import Categorical
 
 from model import FlightEncoder, PointerDecoder
-from loader import load_flights
+from loader import load_flights, load_flights_multiday
 from environment import get_mask, step, step_end_duty, final_reward, END_DUTY
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from state import init_state
@@ -196,28 +197,32 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
 def run_curriculum_stage(
     stage, flights, encoder, decoder, optimizer, origins, dests, dep_times, arr_times,
-    n_episodes, constraint_override, save_dir
+    n_episodes, constraint_override, save_dir, constraint_sampler=None
 ):
     """
     커리큘럼 1단계 실행.
-    constraint_override: 이 단계에서 사용할 constraint dict.
+    constraint_override: 기본 constraint dict.
+    constraint_sampler: 매 에피소드 constraint를 샘플링하는 함수 (FiLM 학습용).
+                        None이면 constraint_override 고정 사용.
     """
     best_avg_pairings = float("inf")
     greedy_pairings = []
 
     print(f"\n{'='*60}")
     print(f"Curriculum Stage {stage}: max_duty_periods={constraint_override['max_duty_periods']}, "
-          f"max_pairing_days={constraint_override['max_pairing_days']}")
+          f"max_pairing_days={constraint_override['max_pairing_days']}"
+          + (" [constraint 랜덤 샘플링]" if constraint_sampler else ""))
     print(f"{'='*60}")
 
     params = list(encoder.parameters()) + list(decoder.parameters())
 
     for ep in range(n_episodes):
-        c_tensor = constraint_to_tensor(constraint_override)
+        c = constraint_sampler() if constraint_sampler else constraint_override
+        c_tensor = constraint_to_tensor(c)
         encoded  = encoder(origins, dests, dep_times, arr_times, c_tensor)
 
         reward_s, log_probs, entropies, metrics_s = run_episode(
-            flights, constraint_override, encoder, decoder, encoded, greedy=False
+            flights, c, encoder, decoder, encoded, greedy=False
         )
         if len(log_probs) == 0:
             continue
@@ -225,7 +230,7 @@ def run_curriculum_stage(
         with torch.no_grad():
             encoded_g = encoder(origins, dests, dep_times, arr_times, c_tensor)
             reward_g, _, _, metrics_g = run_episode(
-                flights, constraint_override, encoder, decoder, encoded_g, greedy=True
+                flights, c, encoder, decoder, encoded_g, greedy=True
             )
 
         greedy_pairings.append(metrics_g["n_pairings"])
@@ -269,7 +274,7 @@ def run_curriculum_stage(
 
 
 def train():
-    flights    = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=200, hub_only=True, n_days_max=4)
+    flights    = load_flights_multiday("RL/data/T_ONTIME_MARKETING.csv", limit=50, n_days=4, hub_only=True)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
     print(f"flights: {len(flights)}개, airports: {n_airports}개")
@@ -299,19 +304,25 @@ def train():
                          n_episodes=1000, constraint_override=stage1_c,
                          save_dir=save_dir)
 
-    # ── Stage 2: 1박 overnight ────────────────────────────────────────
-    stage2_c = {**base, "max_duty_periods": 2, "max_pairing_days": 2}
+    # ── Stage 2: full multi-day ───────────────────────────────────────
+    # overnight connection 포함 전체 multi-day pairing 학습
+    stage2_c = {**base, "max_duty_periods": 4, "max_pairing_days": 5}
     run_curriculum_stage(2, flights, encoder, decoder, optimizer,
                          origins, dests, dep_times, arr_times,
-                         n_episodes=1000, constraint_override=stage2_c,
+                         n_episodes=2000, constraint_override=stage2_c,
                          save_dir=save_dir)
 
-    # ── Stage 3: full multi-day ───────────────────────────────────────
-    stage3_c = {**base, "max_duty_periods": 4, "max_pairing_days": 5}
+    # ── Stage 3: constraint 랜덤 augmentation (FiLM 학습) ────────────
+    # 매 에피소드 max_duty를 6~14h 사이 랜덤 샘플링
+    # → FiLM이 constraint 변화에 반응하도록 학습
+    stage3_base = {**base, "max_duty_periods": 4, "max_pairing_days": 5}
+    def sample_constraint():
+        return {**stage3_base, "max_duty": random.uniform(6.0, 14.0)}
+
     run_curriculum_stage(3, flights, encoder, decoder, optimizer,
                          origins, dests, dep_times, arr_times,
-                         n_episodes=2000, constraint_override=stage3_c,
-                         save_dir=save_dir)
+                         n_episodes=2000, constraint_override=stage3_base,
+                         save_dir=save_dir, constraint_sampler=sample_constraint)
 
     # ── FiLM 검증: constraint별 greedy 결과 비교 ─────────────────────
     print()
@@ -323,7 +334,7 @@ def train():
     decoder.eval()
     with torch.no_grad():
         for duty in [6.0, 8.0, 10.0, 12.0, 14.0]:
-            c = {**stage3_c, "max_duty": duty}
+            c = {**stage3_base, "max_duty": duty}
             enc = encoder(origins, dests, dep_times, arr_times, constraint_to_tensor(c))
             _, _, _, metrics = run_episode(flights, c, encoder, decoder, enc, greedy=True)
             print(f"  max_duty={duty:4.0f}h → pairings: {metrics['n_pairings']:3d}  "
