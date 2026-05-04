@@ -70,37 +70,41 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
     pairing_dep      = None
     pairing_fly      = 0.0
     pairing_last_arr = 0.0
+    pairing_rest     = 0.0   # overnight rest 누적 (dead_time에서 제외)
 
     def flush_pairing(is_forced=False):
         """현재 pairing 완성 → pairings에 추가
         is_forced=True: 연결 못 찾아서 강제 종료된 deadhead pairing
+        dead_time = elapsed - fly - rest  (overnight rest는 낭비가 아니므로 제외)
         """
         if len(current_legs) < 1 or pairing_dep is None:
             return
-        elapsed  = pairing_last_arr - pairing_dep
-        fly      = pairing_fly
-        n_legs   = len(current_legs)
-        dead_time = max(elapsed - fly, 0.0)
-        rl_bonus  = LEG_BONUS_IP * max(n_legs - 1, 0)      # 2번째 leg부터 보너스
+        elapsed   = pairing_last_arr - pairing_dep
+        fly       = pairing_fly
+        n_legs    = len(current_legs)
+        dead_time = max(elapsed - fly - pairing_rest, 0.0)   # overnight rest 제외
+        rl_bonus  = LEG_BONUS_IP * max(n_legs - 1, 0)        # 2번째 leg부터 보너스
         dh_penalty = DEADHEAD_PENALTY_IP if is_forced else 0.0
         cost = dead_time - rl_bonus + dh_penalty
         pairings.append({
             "legs":        list(current_legs),
             "fly":         fly,
             "elapsed":     elapsed,
-            "cost":        cost,
+            "dead_time":   dead_time,   # 실제 dead_time (overnight rest 제외, bonus/penalty 미포함)
+            "cost":        cost,        # IP 최적화용 비용
             "is_deadhead": is_forced,
             "n_legs":      n_legs,
         })
 
     def start_new_pairing(f):
         """새 pairing 시작"""
-        nonlocal pairing_dep, pairing_fly, pairing_last_arr
+        nonlocal pairing_dep, pairing_fly, pairing_last_arr, pairing_rest
         current_legs.clear()
         current_legs.append(f["id"])
         pairing_dep      = f["dep_time"]
         pairing_fly      = f["arr_time"] - f["dep_time"]
         pairing_last_arr = f["arr_time"]
+        pairing_rest     = 0.0
 
     # 첫 flight 강제 시작
     unassigned = [f for f in flights if not assigned[f["id"]]]
@@ -162,6 +166,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
 
         # END_DUTY 선택 → rest period 진입, pairing 계속
         if action == len(flights):
+            pairing_rest += constraint.get("min_rest", 9.5)  # overnight rest는 dead_time에서 제외
             state = step_end_duty(state, constraint)
             continue
 
@@ -233,7 +238,7 @@ def collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts=100)
 def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
              n_rollouts=100, max_duty=10.0):
 
-    flights    = load_flights(data_path, limit=200, hub_only=True)
+    flights    = load_flights(data_path, limit=200, hub_only=True, n_days_max=4)
     n_flights  = len(flights)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
@@ -273,8 +278,8 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
     print(f"  status:       {result['status']}")
 
     if result["selected"]:
-        fly_total  = sum(p["fly"]  for p in result["selected"])
-        dead_total = sum(p["cost"] for p in result["selected"])
+        fly_total  = sum(p["fly"]       for p in result["selected"])
+        dead_total = sum(p.get("dead_time", p["cost"]) for p in result["selected"])
         print(f"  fly time:     {fly_total:.2f}h")
         print(f"  dead time:    {dead_total:.2f}h")
         print(f"  FTC:          {dead_total / fly_total * 100:.2f}%")
