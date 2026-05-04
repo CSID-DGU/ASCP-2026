@@ -24,7 +24,7 @@ def solve_lp_relaxation(
     verbose: bool = False,
 ) -> Optional[Dict]:
     """
-    Klabjan Step 2: Set Partitioning LP relaxation
+    Set Partitioning LP relaxation (Klabjan et al. 2001)
     x_j ∈ [0,1] (continuous) → dual variable 추출 → reduced cost 계산
 
     reduced cost: rc_j = c_j - Σ_{i ∈ legs_j} π_i
@@ -98,7 +98,7 @@ def column_reduction(
     threshold: float = 1e-6,
 ) -> List[Dict]:
     """
-    Klabjan Step 3: reduced cost 기반 column reduction
+    reduced cost 기반 column reduction
 
     rc_j ≤ threshold인 pairing만 유지.
     단, 각 flight를 커버하는 pairing이 최소 1개는 남도록 보장

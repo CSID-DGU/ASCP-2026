@@ -15,7 +15,7 @@ def load_flights(path, limit=50, seed=42, n_days_max=None, hub_only=False):
 
     hub_only=True: 가장 빈도 높은 공항(허브)에 출발 또는 도착하는 flight만 포함.
         → 모든 flight이 허브를 경유하므로 base-to-base pairing 항상 가능 → dummy 0개.
-        → Klabjan/RL 공정 비교를 위한 고정 데이터셋에 사용.
+        → 모든 flight이 허브를 경유하므로 base-to-base pairing 항상 가능.
 
     공항 인덱스: 빈도 내림차순 정렬 → index 0 = 허브 = base_airport.
     """
@@ -165,9 +165,9 @@ def load_flights(path, limit=50, seed=42, n_days_max=None, hub_only=False):
 
 
 def load_flights_multiday(path, limit=200, n_days=4, seed=42, hub_only=False):
-    """200 flights를 n_days일치로 복제 — Klabjan 방식과 동일.
+    """같은 flight set을 n_days일치로 복제하여 multi-day 데이터 생성.
 
-    같은 flight set을 매일 반복 → overnight connection이 자연 생성됨.
+    동일한 flights를 매일 반복 → overnight connection이 자연 생성됨.
     결과: limit × n_days 개의 flight (ID는 day * limit + original_id)
     """
     base = load_flights(path, limit=limit, seed=seed, hub_only=hub_only)
