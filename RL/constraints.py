@@ -3,7 +3,7 @@ def get_delta_constraints():
         # 현재 적용 (5개)
         "max_duty":         13.0,   # duty 최대 경과 시간 (시간, FAA Part 117 테이블 최댓값)
         "min_conn":          0.5,   # 최소 연결 시간 (30분)
-        "max_conn":          4.0,   # 최대 연결 시간 (4시간)
+        "max_conn":          8.0,   # 최대 연결 시간 (8시간)
         "max_legs":          4,     # duty당 최대 flights
         "base_airport":      0,     # base 공항 ID (FiLM 제외)
 
