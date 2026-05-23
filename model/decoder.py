@@ -13,9 +13,15 @@ class PointerDecoder(nn.Module):
     """
 
     def __init__(self, d_model: int = 128, airport_emb_dim: int = 32, skip_state_mlp: bool = False):
+        """
+        d_model: attention 공간 차원 (encoder d_model과 일치해야 함)
+        airport_emb_dim: state_vec 내 공항 embedding 차원 (encoder airport_emb_dim과 일치해야 함)
+        skip_state_mlp: ablation용 — True면 MLP(Linear→ReLU→Linear) 대신 linear projection만 사용
+        """
         super().__init__()
 
-        # state_to_vec: airport_emb(32) + [time_of_day, day_norm, duty_time, legs, duty_period, is_resting] = 38
+        # state_vec(38,) = airport_emb(airport_emb_dim) + 6개 스칼라
+        # 6개: time_of_day, day_norm, duty_time/max, legs/max, duty_period/max, is_resting
         state_input_dim = airport_emb_dim + 6
         self.state_mlp = nn.Sequential(
             nn.Linear(state_input_dim, d_model),
