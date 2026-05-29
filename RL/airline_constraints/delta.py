@@ -7,8 +7,8 @@ DELTA_CONSTRAINTS = {
     "min_conn":         0.5,  # 최소 연결 시간 (h, 30분)
     "max_conn":         8.0,  # 최대 연결 시간 (h)
     "max_legs":           4,  # duty당 최대 flight 수
-    "base_airport":       0,  # base 공항 ID (FiLM 입력 제외, 마스킹 전용)
     "min_rest":         9.5,  # duty 간 최소 휴식 (h), FAA Part 117 기준
     "max_duty_periods":   4,  # pairing당 최대 duty 수
     "max_pairing_days":   5,  # pairing 최대 기간 (일)
+    # base_airport 제외 — get_delta_constraints(base_airport) 호출 시 에피소드별 주입
 }

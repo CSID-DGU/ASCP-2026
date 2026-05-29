@@ -16,13 +16,16 @@ from airline_constraints.delta import DELTA_CONSTRAINTS
 # from airline_constraints.ua import TURKISH_CONSTRAINTS  # 이런식으로 추후 추가
 
 
-def get_delta_constraints():
+def get_delta_constraints(base_airport: int):
     """Delta 항공사 constraint dict 반환
 
+    base_airport: 에피소드별 base 공항 ID
+    # TODO: loader.py [Base Input] 단계에서 사용자가 입력한 base를 train.py가 받아서 여기에 주입하는 구조
+    # loader.py가 선택된 base를 train.py에 어떻게 넘겨주는지 혜린 PR 확인 후 train.py 호출 위치 확정 필요
     FiLM constraint vector(7,) 입력 및 environment.py 마스킹에 사용.
-    base_airport는 FiLM 입력에서 제외 (카테고리형 → FILM_CONSTRAINT_KEYS에 없음).
+    base_airport는 FiLM 입력에서 제외 (카테고리형 → FILM_CONSTRAINT_KEYS에 없음)
     """
-    return DELTA_CONSTRAINTS
+    return {**DELTA_CONSTRAINTS, "base_airport": base_airport}
 
 
 # FiLM 입력 constraint 키 순서 — constraint_to_tensor()가 이 순서대로 tensor 변환 → shape (7,)
