@@ -20,9 +20,11 @@ class PointerDecoder(nn.Module):
         """
         super().__init__()
 
-        # state_vec(38,) = airport_emb(airport_emb_dim) + 6개 스칼라
+        # state_vec(70,) = current_airport_emb(airport_emb_dim) + base_airport_emb(airport_emb_dim) + 6개 스칼라
         # 6개: time_of_day, day_norm, duty_time/max, legs/max, duty_period/max, is_resting
-        state_input_dim = airport_emb_dim + 6
+        # base_airport_emb 추가 이유: multi-base 설계에서 에피소드마다 base가 달라지므로
+        # 모델이 "이번 에피소드 목표 base가 어디인지" 명시적으로 알아야 복귀 경로 계획 가능
+        state_input_dim = airport_emb_dim * 2 + 6
         self.state_mlp = nn.Sequential(
             nn.Linear(state_input_dim, d_model),
             nn.ReLU(),
@@ -47,14 +49,16 @@ class PointerDecoder(nn.Module):
         encoded_flights: torch.Tensor,
         state_vec: torch.Tensor,
         mask: torch.Tensor,
+        return_logits: bool = False,
     ) -> torch.Tensor:
         """
         Args:
             encoded_flights: (N, d_model)
-            state_vec: (airport_emb_dim+6,)
+            state_vec: (airport_emb_dim*2+6,) — current_emb + base_emb + scalars
             mask: (N+2,) — [...flights, END_DUTY, END_PAIRING]
+            return_logits: True면 softmax 전 raw score 반환 — REINFORCE log_prob 계산 시 수치 안정성
         Returns:
-            probs: (N+2,)
+            probs or logits: (N+2,)
         """
         q = self.state_mlp(state_vec)
         if self.skip_state_mlp:
@@ -70,6 +74,7 @@ class PointerDecoder(nn.Module):
 
         scores = (k @ q) / math.sqrt(self.d_model)  # (N+2,)
         scores[mask == 0] = float('-inf')
-        probs = F.softmax(scores, dim=-1)            # (N+2,)
 
-        return probs
+        if return_logits:
+            return scores                            # (N+2,) — F.log_softmax로 안정적 log_prob 계산
+        return F.softmax(scores, dim=-1)             # (N+2,)
