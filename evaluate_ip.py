@@ -9,7 +9,7 @@ import torch
 from torch.distributions import Categorical
 
 sys.path.insert(0, "RL")
-from loader import load_flights_rolling, build_airport_map, get_bases
+from loader import load_flights_rolling, build_airport_map, bases_to_ids
 from environment import get_mask, step, step_end_duty, END_DUTY
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from state import init_state
@@ -252,11 +252,18 @@ def collect_pool_multibase(flights, constraint, encoder, decoder, encoded,
 
 
 def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
-             n_rollouts=100, window_days=5, offset_days=0, n_bases=3,
+             n_rollouts=100, window_days=5, offset_days=0,
+             bases=("ATL", "DTW", "MSP"),
              lambda_dh=1.0):
-
+    """
+    Args:
+        bases: crew base 공항 코드 리스트 (예: ["ATL", "DTW", "MSP"]).
+               airport_map을 통해 내부적으로 정수 ID로 변환된다.
+    """
     airport_map = build_airport_map(data_path)
-    flights     = load_flights_rolling(
+    base_ids    = bases_to_ids(bases, airport_map)
+
+    flights   = load_flights_rolling(
         data_path, window_days=window_days,
         offset_days=offset_days, airport_map=airport_map,
     )
@@ -282,11 +289,10 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
     with torch.no_grad():
         encoded = encoder(origins, dests, dep_norm, arr_norm, fly_norm, c_tensor)
 
-        bases = get_bases(flights, n_bases=n_bases)
-        print(f"bases: {bases}, rollout {n_rollouts}번/base로 pool 생성 중")
+        print(f"bases: {list(bases)} → IDs: {base_ids}, rollout {n_rollouts}번/base로 pool 생성 중")
         pool = collect_pool_multibase(
             flights, constraint, encoder, decoder, encoded,
-            bases, n_rollouts_per_base=n_rollouts,
+            base_ids, n_rollouts_per_base=n_rollouts,
         )
         print(f"pool 크기: {len(pool)}개 후보")
 
