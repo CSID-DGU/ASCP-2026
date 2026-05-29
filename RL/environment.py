@@ -44,7 +44,11 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         valid = True
 
         # 1. 공항 연결 검사
-        if not pairing_start and f["origin"] != state["current_airport"]:
+        # pairing 첫 leg base 출발 강제 (hub_only 제거로 전체 편이 후보에 포함되니까 명시적 체크)
+        if pairing_start:
+            if f["origin"] != c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"]):
+                valid = False
+        elif f["origin"] != state["current_airport"]:
             valid = False
 
         # 2. 시간 연결 검사
@@ -93,10 +97,10 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # END_PAIRING (mask[-1] = mask[N+1])
     pairing_elapsed_days = (state["current_time"] - pairing_start_time) / 24.0
     can_end_pairing = (
-        state["current_airport"] == c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-        and state.get("legs", 0) > 0
+        state.get("legs", 0) > 0
         and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
+    # base 미복귀 시 BASE_PENALTY는 step()에서 reward로 처리 (hard mask 제거 → soft penalty)
     if can_end_pairing:
         mask[config.END_PAIRING] = 1
 
@@ -133,15 +137,22 @@ def step(state, action, flights, assigned, constraint=None):
     # END_PAIRING → pairing 비용 부과 후 새 pairing 시작 (또는 에피소드 종료)
     if action == N + 1:
         p_cost = c.get("pairing_cost", config.DEFAULT_CONSTRAINTS["pairing_cost"])
+        base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
+        # constraint["base_airport"] 에피소드별 주입
+        base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+        reward = -p_cost
+        if state["current_airport"] != base:
+            reward -= base_penalty
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:
             # 모든 flight 커버 완료 → 에피소드 종료
-            return state, -p_cost, True
-        # 미배정 flight 남아있음 → 새 pairing 시작
-        next_time = min(f["dep_time"] for f in unassigned)
+            return state, reward, True
+        # 미배정 flight 남아있음 → 새 pairing 시작 (base 출발 편 중 가장 이른 편 기준)
+        base_unassigned = [f for f in unassigned if f["origin"] == base]
+        next_time = min(f["dep_time"] for f in base_unassigned) if base_unassigned else min(f["dep_time"] for f in unassigned)
         next_state = {
             **state,
-            "current_airport":    c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"]),
+            "current_airport":    base,
             "current_time":       next_time,
             "duty_time":          0.0,
             "duty_start_time":    next_time,
@@ -152,7 +163,7 @@ def step(state, action, flights, assigned, constraint=None):
             "pairing_start":      True,
             "pairing_start_time": next_time,
         }
-        return next_state, -p_cost, False
+        return next_state, reward, False
 
     # Flight 선택
     f = flights[action]

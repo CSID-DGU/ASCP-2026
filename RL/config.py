@@ -19,6 +19,7 @@ DEFAULT_CONSTRAINTS = {
     "max_pairing_days":    5,   # pairing 최대 기간 (일)
     "pairing_cost":      5.0,   # END_PAIRING reward 패널티
     "uncovered_penalty": 10.0,  # 미배정 flight 1개당 패널티
+    "base_penalty":      5.0,   # END_PAIRING 시 base 미복귀 패널티
 }
 
 # 커리큘럼 스테이지별 허용 규칙
