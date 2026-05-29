@@ -36,15 +36,19 @@ def get_bases(flights, n_bases=3):
 def load_flights(path, limit=50, seed=42, n_days_max=None):
     """BTS 데이터에서 flight 로드.
 
-    공항 인덱스: 로드된 subset 기준 빈도 내림차순 → index 0 = 허브.
-    에피소드 간 일관된 공항 ID가 필요하면 build_airport_map()으로 사전 계산하고
-    load_flights_rolling()에 airport_map으로 전달할 것.
+    공항 인덱스: 전체 CSV 기준 빈도 내림차순 → index 0 = 허브.
+    limit과 무관하게 항상 동일한 airport_map이 사용된다.
     """
     df = pd.read_csv(path)
     df = df[[
         "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
     ]].dropna()
     df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
+
+    # 전체 데이터 기준으로 airport_map 구축 (subset 잘라내기 전에 계산)
+    airport_counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
+    airports_sorted = sorted(airport_counts.keys(), key=lambda a: -airport_counts[a])
+    airport_map = {a: i for i, a in enumerate(airports_sorted)}
 
     if n_days_max is not None:
         dates = sorted(df["FL_DATE"].unique())[:n_days_max]
@@ -67,10 +71,6 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
     df["arr_time"] += df["day_offset"] * 24
 
     df = df.sort_values("dep_time").reset_index(drop=True)
-
-    airport_counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
-    airports_sorted = sorted(airport_counts.keys(), key=lambda a: -airport_counts[a])
-    airport_map = {a: i for i, a in enumerate(airports_sorted)}
 
     df["origin"] = df["ORIGIN"].map(airport_map)
     df["dest"]   = df["DEST"].map(airport_map)
