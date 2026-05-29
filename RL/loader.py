@@ -116,23 +116,20 @@ def load_flights_rolling(
     path,
     window_days=5,
     offset_days=0,
-    limit=None,
     airport_map=None,
-    seed=42,
 ):
     """슬라이딩 윈도우 방식으로 실제 날짜 데이터 로드.
 
     에피소드마다 offset_days를 달리하면 서로 다른 flight 구성으로 훈련 가능.
     hub_only 없이 모든 노선(spoke-spoke 포함)을 그대로 사용한다.
+    flight 수는 window_days로만 제어한다 (개수 제한 없음).
 
     Args:
         path:         BTS CSV 경로
         window_days:  윈도우 크기 (일), 기본 5
         offset_days:  전체 날짜 목록 기준 시작 인덱스 (에피소드마다 랜덤 지정)
-        limit:        윈도우 내 최대 flight 수 (None = 전부)
         airport_map:  전체-데이터 기준 공항 ID 맵; None이면 전체 CSV에서 재계산(느림).
                       train 루프에서는 build_airport_map()으로 사전 계산 후 전달 권장.
-        seed:         limit 샘플링 랜덤 시드
 
     Returns:
         flight dict 리스트 (dep_time 오름차순 정렬)
@@ -166,13 +163,6 @@ def load_flights_rolling(
     df["arr_time"] += df["day_offset"] * 24
 
     df = df.sort_values("dep_time").reset_index(drop=True)
-
-    if limit is not None and len(df) > limit:
-        df = (
-            df.sample(n=limit, random_state=seed)
-            .sort_values("dep_time")
-            .reset_index(drop=True)
-        )
 
     df["origin"] = df["ORIGIN"].map(airport_map)
     df["dest"]   = df["DEST"].map(airport_map)
