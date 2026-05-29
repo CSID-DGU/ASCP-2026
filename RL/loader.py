@@ -105,29 +105,6 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
     return flights
 
 
-def load_flights_multiday(path, limit=200, n_days=4, seed=42):
-    """같은 flight set을 n_days일치로 복제하여 multi-day 데이터 생성.
-
-    동일한 flights를 매일 반복 → overnight connection이 자연 생성됨.
-    결과: limit × n_days 개의 flight (ID = day * limit + original_id)
-
-    NOTE: 다양성이 필요한 학습에는 load_flights_rolling() 사용 권장.
-    """
-    base = load_flights(path, limit=limit, seed=seed)
-
-    all_flights = []
-    for day in range(n_days):
-        for f in base:
-            all_flights.append({
-                "id":       day * limit + f["id"],
-                "origin":   f["origin"],
-                "dest":     f["dest"],
-                "dep_time": f["dep_time"] + day * 24.0,
-                "arr_time": f["arr_time"] + day * 24.0,
-            })
-
-    return all_flights
-
 
 def load_flights_rolling(
     path,
