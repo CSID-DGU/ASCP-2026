@@ -21,6 +21,23 @@ def build_airport_map(path):
     return {a: i for i, a in enumerate(airports_sorted)}
 
 
+def bases_to_ids(bases, airport_map):
+    """문자열 base 리스트를 정수 ID로 변환한다.
+
+    Args:
+        bases:       공항 코드 문자열 리스트 (예: ["ATL", "DTW", "MSP"])
+        airport_map: build_airport_map()으로 생성한 공항→int 맵
+
+    Returns:
+        정수 ID 리스트. airport_map에 없는 코드는 무시한다.
+    """
+    ids = [airport_map[b] for b in bases if b in airport_map]
+    if len(ids) < len(bases):
+        missing = [b for b in bases if b not in airport_map]
+        raise ValueError(f"airport_map에 없는 base: {missing}")
+    return ids
+
+
 def get_bases(flights, n_bases=3):
     """flight dict 리스트에서 빈도 상위 n_bases개 공항 ID를 반환한다.
 
