@@ -2,13 +2,17 @@ def init_state(flights, constraint):
     """에피소드 초기 state 생성
 
     flights: loader.py가 반환한 flight dict 리스트 (dep_time 기준 오름차순 정렬)
-    constraint: 미사용 — 시그니처 통일 목적으로만 받음. 실제 제약 적용은 environment.py에서 수행.
+    constraint: 에피소드별 constraint dict — base_airport 등 초기화에 사용
     """
-    first = flights[0]
+    base = constraint["base_airport"]
+    base_flights = [f for f in flights if f["origin"] == base]
+    # base 출발 편이 없으면 flights[0] fallback
+    # TODO: loader.py가 base 출발 편 포함된 window만 보장해주면 이 분기 불필요함! - 추후 혜린 PR 확인 필요
+    first = min(base_flights, key=lambda f: f["dep_time"]) if base_flights else flights[0]
 
     return {
         # 현재 위치 / 시각
-        "current_airport":    first["origin"],       # 현재 승무원 위치 공항 ID
+        "current_airport":    base,                   # 현재 승무원 위치 공항 ID (에피소드 base)
         "current_time":       first["dep_time"],      # 현재 시각 (절대시간, hours)
 
         # duty 내부 추적
