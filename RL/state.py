@@ -7,7 +7,8 @@ def init_state(flights, constraint):
     base = constraint["base_airport"]
     base_flights = [f for f in flights if f["origin"] == base]
     # base 출발 편이 없으면 flights[0] fallback
-    # TODO: loader.py가 base 출발 편 포함된 window만 보장해주면 이 분기 불필요함! - 추후 혜린 PR 확인 필요
+    # load_flights_rolling()은 전체 편 포함 → base 출발 편 미보장
+    # fallback 유지 / base 출발 편 없는 window는 train.py에서 에피소드 스킵 처리 필요
     first = min(base_flights, key=lambda f: f["dep_time"]) if base_flights else flights[0]
 
     return {

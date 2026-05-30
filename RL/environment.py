@@ -1,9 +1,7 @@
 import numpy as np
 import config
 
-# TODO: 혜린 loader.py 확인
-# flight dict 키 이름 ("origin", "dest", "dep_time", "arr_time", "id") 변경 여부
-# environment.py 전체에서 이 키를 직접 참조하므로 이름 바뀌면 같이 수정 필요
+# flight dict 키: "origin", "dest", "dep_time", "arr_time", "id" 
 
 
 def get_max_duty(legs_count, custom_max_duty=None):

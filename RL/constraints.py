@@ -20,8 +20,8 @@ def get_delta_constraints(base_airport: int):
     """Delta 항공사 constraint dict 반환
 
     base_airport: 에피소드별 base 공항 ID
-    # TODO: loader.py [Base Input] 단계에서 사용자가 입력한 base를 train.py가 받아서 여기에 주입하는 구조
-    # loader.py가 선택된 base를 train.py에 어떻게 넘겨주는지 혜린 PR 확인 후 train.py 호출 위치 확정 필요
+    - bases_to_ids(["ATL", "DTW", ...], airport_map) → 정수 ID 리스트 반환
+    - train.py에서 그 중 하나 랜덤 선택하고 여기에 주입하는 구조
     FiLM constraint vector(7,) 입력 및 environment.py 마스킹에 사용.
     base_airport는 FiLM 입력에서 제외 (카테고리형 → FILM_CONSTRAINT_KEYS에 없음)
     """
