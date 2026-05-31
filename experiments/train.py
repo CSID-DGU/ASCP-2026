@@ -1,11 +1,3 @@
-"""
-찬주 model/ + 혜린 RL/environment 통합 학습 스크립트
-- encoder: 찬주 (FlightEncoder — Embedding + FiLM + Transformer)
-- decoder: 찬주 (PointerDecoder — Pointer Attention + hard masking)
-- environment: 혜린 (mask + step + reward)
-- loader: 혜린 (BTS CSV → flight dict)
-"""
-
 import os
 import sys
 import random
@@ -294,17 +286,15 @@ def train():
     # window가 pairing 최대 기간과 맞아야 한 에피소드 안에서 완성된 pairing 학습 가능
     WINDOW_DAYS = 4
 
-    # TODO(loader PR #10 머지 후): bases_to_ids()는 loader.py에서 import해서 사용
-    # 현재는 loader PR #10이 미머지 상태라 build_airport_map + bases_to_ids 직접 호출
-    # DELTA_BASES: 연구자가 도메인 지식으로 직접 입력하는 crew base 목록
-    DELTA_BASES = ["ATL", "DTW", "MSP", "JFK", "LAX"]
+    # 항공사 base 설정 — config.py에서 AIRLINE 바꾸면 자동 반영
+    airline_bases = config.AIRLINE_BASES[config.AIRLINE]
 
     # 전체 CSV 기준 공항 ID 고정 (에피소드 간 ID 일관성 보장)
     airport_map = build_airport_map(DATA_PATH)
-    base_ids    = bases_to_ids(DELTA_BASES, airport_map)
+    base_ids    = bases_to_ids(airline_bases, airport_map)
     n_airports  = len(airport_map)
 
-    print(f"airports: {n_airports}개, bases: {DELTA_BASES}")
+    print(f"airports: {n_airports}개, airline: {config.AIRLINE}, bases: {airline_bases}")
 
     encoder = FlightEncoder(
         n_airports=n_airports,

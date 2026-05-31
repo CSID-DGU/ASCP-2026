@@ -22,6 +22,14 @@ DEFAULT_CONSTRAINTS = {
     "base_penalty":      5.0,   # END_PAIRING 시 base 미복귀 패널티
 }
 
+# 항공사 설정 — 항공사 바꿀 때 AIRLINE만 수정하면 됨 (현재 코드는 예시임 !!)
+AIRLINE = "delta"
+AIRLINE_BASES = {
+    "delta":   ["ATL", "DTW", "MSP", "JFK", "LAX"],
+    "alaska":  ["SEA", "PDX", "ANC"],
+    "jetblue": ["JFK", "BOS", "FLL"],
+}
+
 # 커리큘럼 스테이지별 허용 규칙
 # Stage 1: 단일 duty (END_DUTY 불가) — 기본 연결 패턴 학습
 # Stage 2: multi-day (END_DUTY 가능) — overnight + base 복귀 학습
