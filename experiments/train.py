@@ -349,15 +349,18 @@ def train():
     # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
     stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": 5}
     def sample_constraint():
+        # 범위는 config.STAGE3_CONSTRAINT_RANGES에서 관리
+        # TODO: 범위 확정 후 config.py 범위 수정 
+        r = config.STAGE3_CONSTRAINT_RANGES
         return {
             **stage3_base,
-            "max_duty":         random.uniform(12.0, 14.0),
-            "min_rest":         random.uniform(10.0, 11.0),
-            "min_conn":         random.uniform(0.5,  1.0),
-            "max_conn":         random.uniform(3.0,  4.0),
-            "max_legs":         random.randint(3, 4),
-            "max_duty_periods": random.randint(3, 4),
-            "max_pairing_days": random.randint(3, 5),
+            "max_duty":         random.uniform(*r["max_duty"]),
+            "min_rest":         random.uniform(*r["min_rest"]),
+            "min_conn":         random.uniform(*r["min_conn"]),
+            "max_conn":         random.uniform(*r["max_conn"]),
+            "max_legs":         random.randint(*r["max_legs"]),
+            "max_duty_periods": random.randint(*r["max_duty_periods"]),
+            "max_pairing_days": random.randint(*r["max_pairing_days"]),
         }
 
     run_curriculum_stage(3, encoder, decoder, optimizer,
@@ -399,7 +402,7 @@ def train():
         "decoder":        decoder.state_dict(),
         "n_airports":     n_airports,
         "constraint_dim": len(FILM_CONSTRAINT_KEYS),
-        "bases":          DELTA_BASES,
+        "bases":          airline_bases,
         "window_days":    WINDOW_DAYS,
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt")

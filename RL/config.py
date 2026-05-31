@@ -30,6 +30,19 @@ AIRLINE_BASES = {
     "jetblue": ["JFK", "BOS", "FLL"],
 }
 
+# Stage 3 FiLM augmentation constraint 범위 — 항공사별 constraint 확정 후 채울 것
+# (min, max) 튜플. train.py sample_constraint()에서 random.uniform/randint(*range)로 사용
+# TODO: constraint 확정 후 각 항공사 실제 범위로 교체
+STAGE3_CONSTRAINT_RANGES = {
+    "max_duty":         (12.0, 14.0),   # TODO: constraint 기준 확정 필요
+    "min_rest":         (10.0, 11.0),   # TODO: constraint 기준 확정 필요
+    "min_conn":         (0.5,  1.0),    # TODO: constraint 기준 확정 필요
+    "max_conn":         (3.0,  4.0),    # TODO: constraint 기준 확정 필요
+    "max_legs":         (3,    4),      # TODO: constraint 기준 확정 필요
+    "max_duty_periods": (3,    4),      # TODO: constraint 기준 확정 필요
+    "max_pairing_days": (3,    5),      # TODO: constraint 기준 확정 필요
+}
+
 # 커리큘럼 스테이지별 허용 규칙
 # Stage 1: 단일 duty (END_DUTY 불가) — 기본 연결 패턴 학습
 # Stage 2: multi-day (END_DUTY 가능) — overnight + base 복귀 학습
