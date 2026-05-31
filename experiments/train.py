@@ -22,11 +22,6 @@ from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from state import init_state
 import config
 
-PAIRING_COST      = 5.0   # pairing 완성/강제종료 시 -5 (deadhead 억제)
-BASE_PENALTY      = 5.0   # base 미복귀 시 -5 (feasibility 강제)
-UNCOVERED_PENALTY = 10.0  # 미배정 flight당 -10 (coverage 강제)
-OVERNIGHT_PENALTY = 0.5   # END_DUTY 1회당 -0.5 (overnight rest 허용)
-LEG_BONUS         = 1.5   # 2번째 leg부터 +1.5 (연결 장려)
 
 
 def constraint_to_tensor(constraint):
