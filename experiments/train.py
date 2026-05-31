@@ -231,12 +231,12 @@ def run_curriculum_stage(
         sample = flight_sampler()
         if sample is None:
             continue
-        flights, origins, dests, dep_times, arr_times, base_airport = sample
+        flights, origins, dests, dep_times, arr_times, fly_times, base_airport = sample
 
         c = constraint_sampler() if constraint_sampler else constraint_override
         c = {**c, "base_airport": base_airport}  # 에피소드별 base 주입
         c_tensor = constraint_to_tensor(c)
-        encoded  = encoder(origins, dests, dep_times, arr_times, c_tensor)
+        encoded  = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
 
         reward_s, log_probs, entropies, metrics_s = run_episode(
             flights, c, encoder, decoder, encoded, greedy=False
@@ -245,7 +245,7 @@ def run_curriculum_stage(
             continue
 
         with torch.no_grad():
-            encoded_g = encoder(origins, dests, dep_times, arr_times, c_tensor)
+            encoded_g = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
             reward_g, _, _, metrics_g = run_episode(
                 flights, c, encoder, decoder, encoded_g, greedy=True
             )
@@ -336,8 +336,8 @@ def train():
         # base 출발 편 없는 window는 스킵 (state.py fallback 방지)
         if not any(f["origin"] == base_airport for f in flights):
             return None
-        origins, dests, dep_times, arr_times = flights_to_tensors(flights, WINDOW_DAYS)
-        return flights, origins, dests, dep_times, arr_times, base_airport
+        origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS)
+        return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
 
     base_constraint = get_delta_constraints(base_ids[0])  # base는 에피소드마다 교체됨
 
@@ -395,14 +395,14 @@ def train():
     decoder.eval()
     # 검증용 고정 데이터 (offset=0, base=ATL)
     val_flights = load_flights_rolling(DATA_PATH, WINDOW_DAYS, 0, airport_map)
-    val_origins, val_dests, val_dep_times, val_arr_times = flights_to_tensors(val_flights, WINDOW_DAYS)
+    val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
     val_base = base_ids[0]
 
     with torch.no_grad():
         for duty in [12.0, 12.5, 13.0, 13.5, 14.0]:
             c = {**get_delta_constraints(val_base), "max_duty": duty,
                  "max_duty_periods": 4, "max_pairing_days": 5}
-            enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, constraint_to_tensor(c))
+            enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times, constraint_to_tensor(c))
             _, _, _, metrics = run_episode(val_flights, c, encoder, decoder, enc, greedy=True)
             print(f"  max_duty={duty:4.1f}h → pairings: {metrics['n_pairings']:3d}  "
                   f"deadheads: {metrics['n_deadheads']:3d}  "
