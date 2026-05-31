@@ -202,14 +202,16 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
 
 def run_curriculum_stage(
-    stage, flights, encoder, decoder, optimizer, origins, dests, dep_times, arr_times,
-    n_episodes, constraint_override, save_dir, constraint_sampler=None
+    stage, encoder, decoder, optimizer,
+    n_episodes, constraint_override, save_dir,
+    flight_sampler, constraint_sampler=None,
 ):
     """
     커리큘럼 1단계 실행.
-    constraint_override: 기본 constraint dict.
-    constraint_sampler: 매 에피소드 constraint를 샘플링하는 함수 (FiLM 학습용).
-                        None이면 constraint_override 고정 사용.
+
+    flight_sampler: () → (flights, origins, dests, dep_times, arr_times, base_airport)
+                    에피소드마다 호출 — (base, window) 쌍 랜덤 선택 + flight 로드
+    constraint_sampler: () → constraint dict. None이면 constraint_override 고정 사용.
     """
     best_avg_pairings = float("inf")
     greedy_pairings = []
@@ -223,7 +225,14 @@ def run_curriculum_stage(
     params = list(encoder.parameters()) + list(decoder.parameters())
 
     for ep in range(n_episodes):
+        # 에피소드마다 (base, window) 랜덤 선택
+        sample = flight_sampler()
+        if sample is None:
+            continue
+        flights, origins, dests, dep_times, arr_times, base_airport = sample
+
         c = constraint_sampler() if constraint_sampler else constraint_override
+        c = {**c, "base_airport": base_airport}  # 에피소드별 base 주입
         c_tensor = constraint_to_tensor(c)
         encoded  = encoder(origins, dests, dep_times, arr_times, c_tensor)
 
@@ -280,10 +289,22 @@ def run_curriculum_stage(
 
 
 def train():
-    flights    = load_flights_multiday("RL/data/T_ONTIME_MARKETING.csv", limit=50, n_days=4, hub_only=True)
-    n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
+    DATA_PATH   = "RL/data/T_ONTIME_MARKETING.csv"
+    # TODO: 협의 필요 — 우선 max_pairing_days=4(Delta CBA) 기준으로 4일 설정
+    # window가 pairing 최대 기간과 맞아야 한 에피소드 안에서 완성된 pairing 학습 가능
+    WINDOW_DAYS = 4
 
-    print(f"flights: {len(flights)}개, airports: {n_airports}개")
+    # TODO(loader PR #10 머지 후): bases_to_ids()는 loader.py에서 import해서 사용
+    # 현재는 loader PR #10이 미머지 상태라 build_airport_map + bases_to_ids 직접 호출
+    # DELTA_BASES: 연구자가 도메인 지식으로 직접 입력하는 crew base 목록
+    DELTA_BASES = ["ATL", "DTW", "MSP", "JFK", "LAX"]
+
+    # 전체 CSV 기준 공항 ID 고정 (에피소드 간 ID 일관성 보장)
+    airport_map = build_airport_map(DATA_PATH)
+    base_ids    = bases_to_ids(DELTA_BASES, airport_map)
+    n_airports  = len(airport_map)
+
+    print(f"airports: {n_airports}개, bases: {DELTA_BASES}")
 
     encoder = FlightEncoder(
         n_airports=n_airports,
@@ -298,37 +319,66 @@ def train():
     save_dir = os.path.join(os.path.dirname(__file__), "..", "checkpoints")
     os.makedirs(save_dir, exist_ok=True)
 
-    origins, dests, dep_times, arr_times = flights_to_tensors(flights)
+    # 전체 날짜 수 파악 → offset_days 범위 결정
+    import pandas as pd
+    df_dates = pd.read_csv(DATA_PATH, usecols=["FL_DATE"])
+    df_dates["FL_DATE"] = pd.to_datetime(df_dates["FL_DATE"], format="mixed")
+    total_days = df_dates["FL_DATE"].nunique()
+    max_offset = max(0, total_days - WINDOW_DAYS)
 
-    base = get_delta_constraints()
+    def flight_sampler():
+        """에피소드마다 (base, window) 쌍 랜덤 선택 → flight 로드"""
+        base_airport = random.choice(base_ids)
+        offset_days  = random.randint(0, max_offset)
+        flights = load_flights_rolling(DATA_PATH, WINDOW_DAYS, offset_days, airport_map)
+        if not flights:
+            return None
+        # base 출발 편 없는 window는 스킵 (state.py fallback 방지)
+        if not any(f["origin"] == base_airport for f in flights):
+            return None
+        origins, dests, dep_times, arr_times = flights_to_tensors(flights, WINDOW_DAYS)
+        return flights, origins, dests, dep_times, arr_times, base_airport
+
+    base_constraint = get_delta_constraints(base_ids[0])  # base는 에피소드마다 교체됨
 
     # ── Stage 1: 단일 duty (overnight 없음) ──────────────────────────
     # max_duty_periods=1 → END_DUTY 불가 → 당일 connection만 학습
-    stage1_c = {**base, "max_duty_periods": 1, "max_pairing_days": 1}
-    run_curriculum_stage(1, flights, encoder, decoder, optimizer,
-                         origins, dests, dep_times, arr_times,
+    stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1}
+    run_curriculum_stage(1, encoder, decoder, optimizer,
                          n_episodes=1000, constraint_override=stage1_c,
-                         save_dir=save_dir)
+                         save_dir=save_dir, flight_sampler=flight_sampler)
 
     # ── Stage 2: full multi-day ───────────────────────────────────────
     # overnight connection 포함 전체 multi-day pairing 학습
-    stage2_c = {**base, "max_duty_periods": 4, "max_pairing_days": 5}
-    run_curriculum_stage(2, flights, encoder, decoder, optimizer,
-                         origins, dests, dep_times, arr_times,
+    stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": 5}
+    run_curriculum_stage(2, encoder, decoder, optimizer,
                          n_episodes=2000, constraint_override=stage2_c,
-                         save_dir=save_dir)
+                         save_dir=save_dir, flight_sampler=flight_sampler)
 
-    # ── Stage 3: constraint 랜덤 augmentation (FiLM 학습) ────────────
-    # 매 에피소드 max_duty를 6~14h 사이 랜덤 샘플링
-    # → FiLM이 constraint 변화에 반응하도록 학습
-    stage3_base = {**base, "max_duty_periods": 4, "max_pairing_days": 5}
+    # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
+    # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
+    stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": 5}
     def sample_constraint():
-        return {**stage3_base, "max_duty": random.uniform(6.0, 14.0)}
+        return {
+            **stage3_base,
+            "max_duty":         random.uniform(12.0, 14.0),
+            "min_rest":         random.uniform(10.0, 11.0),
+            "min_conn":         random.uniform(0.5,  1.0),
+            "max_conn":         random.uniform(3.0,  4.0),
+            "max_legs":         random.randint(3, 4),
+            "max_duty_periods": random.randint(3, 4),
+            "max_pairing_days": random.randint(3, 5),
+        }
 
-    run_curriculum_stage(3, flights, encoder, decoder, optimizer,
-                         origins, dests, dep_times, arr_times,
+    run_curriculum_stage(3, encoder, decoder, optimizer,
                          n_episodes=2000, constraint_override=stage3_base,
-                         save_dir=save_dir, constraint_sampler=sample_constraint)
+                         save_dir=save_dir, flight_sampler=flight_sampler,
+                         constraint_sampler=sample_constraint)
+
+    # ── TODO: Phase 2 — CG dual feedback ─────────────────────────────
+    # LP relaxation으로 μ[f] (dual variable) 추출 후 RL reward로 피드백
+    # set_partition.py IP 결과를 활용한 양방향 학습 구조
+    # 혜린 set_partition.py 완성 후 구현 예정
 
     # ── FiLM 검증: constraint별 greedy 결과 비교 ─────────────────────
     print()
@@ -338,12 +388,18 @@ def train():
 
     encoder.eval()
     decoder.eval()
+    # 검증용 고정 데이터 (offset=0, base=ATL)
+    val_flights = load_flights_rolling(DATA_PATH, WINDOW_DAYS, 0, airport_map)
+    val_origins, val_dests, val_dep_times, val_arr_times = flights_to_tensors(val_flights, WINDOW_DAYS)
+    val_base = base_ids[0]
+
     with torch.no_grad():
-        for duty in [6.0, 8.0, 10.0, 12.0, 14.0]:
-            c = {**stage3_base, "max_duty": duty}
-            enc = encoder(origins, dests, dep_times, arr_times, constraint_to_tensor(c))
-            _, _, _, metrics = run_episode(flights, c, encoder, decoder, enc, greedy=True)
-            print(f"  max_duty={duty:4.0f}h → pairings: {metrics['n_pairings']:3d}  "
+        for duty in [12.0, 12.5, 13.0, 13.5, 14.0]:
+            c = {**get_delta_constraints(val_base), "max_duty": duty,
+                 "max_duty_periods": 4, "max_pairing_days": 5}
+            enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, constraint_to_tensor(c))
+            _, _, _, metrics = run_episode(val_flights, c, encoder, decoder, enc, greedy=True)
+            print(f"  max_duty={duty:4.1f}h → pairings: {metrics['n_pairings']:3d}  "
                   f"deadheads: {metrics['n_deadheads']:3d}  "
                   f"coverage: {metrics['coverage_pct']:5.1f}%")
 
@@ -353,6 +409,8 @@ def train():
         "decoder":        decoder.state_dict(),
         "n_airports":     n_airports,
         "constraint_dim": len(FILM_CONSTRAINT_KEYS),
+        "bases":          DELTA_BASES,
+        "window_days":    WINDOW_DAYS,
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt")
 
