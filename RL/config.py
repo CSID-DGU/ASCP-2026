@@ -58,6 +58,14 @@ STAGE3_CONSTRAINT_RANGES = {
     "max_pairing_days": (3,    4),      # TODO: constraint 기준 확정 필요 / 상한은 WINDOW_DAYS(4)로 제한
 }
 
+# Phase 2 CG dual feedback 하이퍼파라미터
+# pool rollout 수: pool이 너무 작으면 LP가 의미없고, 너무 많으면 느림 → 30번이 균형점
+# LP interval: 매 에피소드 LP를 풀면 CBC solver가 병목 → 10 에피소드마다 재풀기
+# (dual_vars는 interval 사이에 캐싱되어 재사용됨)
+PHASE2_POOL_ROLLOUTS = 30    # pool 수집 rollout 수 (stochastic × 30 + greedy × 1)
+PHASE2_LP_INTERVAL   = 10    # LP re-solve 주기 (에피소드)
+PHASE2_N_EPISODES    = 1000  # Phase 2 학습 에피소드 수
+
 # 커리큘럼 스테이지별 허용 규칙
 # Stage 1: 단일 duty (END_DUTY 불가) — 기본 연결 패턴 학습
 # Stage 2: multi-day (END_DUTY 가능) — overnight + base 복귀 학습
