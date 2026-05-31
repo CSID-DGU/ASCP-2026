@@ -28,12 +28,17 @@ def constraint_to_tensor(constraint):
     """constraint dict → FiLM 입력 tensor"""
     return torch.tensor([constraint[k] for k in FILM_CONSTRAINT_KEYS], dtype=torch.float32)
 
-def flights_to_tensors(flights):
-    """혜린 flight dict → 찬주 encoder 입력 tensor 변환"""
+def flights_to_tensors(flights, window_days=5):
+    """혜린 flight dict → 찬주 encoder 입력 tensor 변환
+
+    dep/arr_time을 window_days * 24 기준으로 정규화.
+    encoder.py가 정규화된 시간값을 받도록 설계되어 있음.
+    """
     origins = torch.tensor([f["origin"] for f in flights])
     dests = torch.tensor([f["dest"] for f in flights])
-    dep_times = torch.tensor([f["dep_time"] for f in flights], dtype=torch.float32)
-    arr_times = torch.tensor([f["arr_time"] for f in flights], dtype=torch.float32)
+    max_time = window_days * 24.0
+    dep_times = torch.tensor([f["dep_time"] / max_time for f in flights], dtype=torch.float32)
+    arr_times = torch.tensor([f["arr_time"] / max_time for f in flights], dtype=torch.float32)
     return origins, dests, dep_times, arr_times
 
 
