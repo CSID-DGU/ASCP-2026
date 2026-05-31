@@ -589,7 +589,7 @@ def run_curriculum_stage(
     """
     커리큘럼 1단계 실행.
 
-    flight_sampler: () → (flights, origins, dests, dep_times, arr_times, base_airport)
+    flight_sampler: () → (flights, origins, dests, dep_times, arr_times, fly_times, base_airport)
                     에피소드마다 호출 — (base, window) 쌍 랜덤 선택 + flight 로드
     constraint_sampler: () → constraint dict. None이면 constraint_override 고정 사용.
     """
