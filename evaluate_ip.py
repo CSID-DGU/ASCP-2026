@@ -324,9 +324,12 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
     if result["selected"]:
         fly_total  = sum(p["fly"]       for p in result["selected"])
         dead_total = sum(p.get("dead_time", p["cost"]) for p in result["selected"])
+        legs_total = sum(p.get("n_legs", len(p["legs"])) for p in result["selected"])
+        avg_legs   = legs_total / len(result["selected"]) if result["selected"] else 0.0
         print(f"  fly time:     {fly_total:.2f}h")
         print(f"  dead time:    {dead_total:.2f}h")
         print(f"  FTC:          {dead_total / fly_total * 100:.2f}%")
+        print(f"  avg legs/pairing: {avg_legs:.2f}")
 
     return result
 

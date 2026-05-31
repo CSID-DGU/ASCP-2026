@@ -199,13 +199,17 @@ def solve_set_covering(
         i for i in covered_flights if (d[i].value() or 0) > 0.5
     ]
 
+    total_legs = sum(len(p["legs"]) for p in selected)
+    avg_legs   = total_legs / len(selected) if selected else 0.0
+
     return {
-        "selected":         selected,
-        "n_pairings":       len(selected),
-        "total_cost":       sum(p["cost"] for p in selected),
-        "coverage":         covered_count / n_flights if n_flights > 0 else 0.0,
-        "status":           pulp.LpStatus[prob.status],
-        "uncoverable":      len(uncoverable),
-        "deadhead_count":   len(deadhead_flights),
-        "deadhead_flights": deadhead_flights,
+        "selected":            selected,
+        "n_pairings":          len(selected),
+        "total_cost":          sum(p["cost"] for p in selected),
+        "coverage":            covered_count / n_flights if n_flights > 0 else 0.0,
+        "status":              pulp.LpStatus[prob.status],
+        "uncoverable":         len(uncoverable),
+        "deadhead_count":      len(deadhead_flights),
+        "deadhead_flights":    deadhead_flights,
+        "avg_legs_per_pairing": avg_legs,
     }
