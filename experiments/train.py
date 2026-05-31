@@ -23,15 +23,18 @@ def constraint_to_tensor(constraint):
 def flights_to_tensors(flights, window_days=5):
     """혜린 flight dict → 찬주 encoder 입력 tensor 변환
 
-    dep/arr_time을 window_days * 24 기준으로 정규화.
-    encoder.py가 정규화된 시간값을 받도록 설계되어 있음.
+    dep/arr/fly_time을 window_days * 24 기준으로 정규화.
+    fly_time = arr - dep (비행 시간) — encoder input_dim이 airport_emb*2 + 3이므로 필수.
     """
     origins = torch.tensor([f["origin"] for f in flights])
     dests = torch.tensor([f["dest"] for f in flights])
     max_time = window_days * 24.0
-    dep_times = torch.tensor([f["dep_time"] / max_time for f in flights], dtype=torch.float32)
-    arr_times = torch.tensor([f["arr_time"] / max_time for f in flights], dtype=torch.float32)
-    return origins, dests, dep_times, arr_times
+    dep_raw = torch.tensor([f["dep_time"] for f in flights], dtype=torch.float32)
+    arr_raw = torch.tensor([f["arr_time"] for f in flights], dtype=torch.float32)
+    dep_times = dep_raw / max_time
+    arr_times = arr_raw / max_time
+    fly_times = (arr_raw - dep_raw) / max_time
+    return origins, dests, dep_times, arr_times, fly_times
 
 
 def state_to_vec(state, encoder, constraint):
