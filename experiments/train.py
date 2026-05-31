@@ -340,14 +340,16 @@ def train():
 
     # ── Stage 2: full multi-day ───────────────────────────────────────
     # overnight connection 포함 전체 multi-day pairing 학습
-    stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": 5}
+    # max_pairing_days를 WINDOW_DAYS로 제한 — window 밖 pairing은 데이터 없어 deadhead만 유발
+    stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS}
     run_curriculum_stage(2, encoder, decoder, optimizer,
                          n_episodes=2000, constraint_override=stage2_c,
                          save_dir=save_dir, flight_sampler=flight_sampler)
 
     # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
     # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
-    stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": 5}
+    # max_pairing_days 상한도 WINDOW_DAYS로 제한 (config.STAGE3_CONSTRAINT_RANGES 확인)
+    stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS}
     def sample_constraint():
         # 범위는 config.STAGE3_CONSTRAINT_RANGES에서 관리
         # TODO: 범위 확정 후 config.py 범위 수정 

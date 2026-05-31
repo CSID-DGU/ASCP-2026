@@ -40,7 +40,7 @@ STAGE3_CONSTRAINT_RANGES = {
     "max_conn":         (3.0,  4.0),    # TODO: constraint 기준 확정 필요
     "max_legs":         (3,    4),      # TODO: constraint 기준 확정 필요
     "max_duty_periods": (3,    4),      # TODO: constraint 기준 확정 필요
-    "max_pairing_days": (3,    5),      # TODO: constraint 기준 확정 필요
+    "max_pairing_days": (3,    4),      # TODO: constraint 기준 확정 필요 / 상한은 WINDOW_DAYS(4)로 제한
 }
 
 # 커리큘럼 스테이지별 허용 규칙
