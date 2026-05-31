@@ -13,7 +13,7 @@ class FlightEncoder(nn.Module):
     def __init__(
         self,
         n_airports: int,
-        constraint_dim: int = 1,
+        constraint_dim: int = 7,
         airport_emb_dim: int = 32,
         d_model: int = 128,
         nhead: int = 4,
