@@ -10,10 +10,8 @@ from torch.distributions import Categorical
 
 sys.path.insert(0, "RL")
 from loader import load_flights_rolling, build_airport_map, bases_to_ids
-from environment import get_mask, step, step_end_duty, END_DUTY
+from environment import get_mask, step
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
-from state import init_state
-
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
 
@@ -49,20 +47,37 @@ def flights_to_tensors(flights, max_time=120.0):
 
 
 def state_to_vec(state, encoder, constraint):
-    airport_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
+    """state dict → decoder 입력 tensor (71,) = current_emb(32) + base_emb(32) + scalars(7)"""
+    current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
+    base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]))
+
     max_pairing_days = constraint.get("max_pairing_days", 5)
     time_of_day      = (state["current_time"] % 24.0) / 24.0
     day_norm         = (state["current_time"] // 24.0) / max(max_pairing_days, 1)
     duty_period_norm = state.get("duty_period", 0) / max(constraint.get("max_duty_periods", 4), 1)
+
+    if state.get("is_resting", False) or state.get("pairing_start", False):
+        duty_elapsed = 0.0
+    else:
+        duty_elapsed = max(0.0, state["current_time"] - state.get("duty_start_time", state["current_time"]))
+
+    min_rest = constraint.get("min_rest", 10.0)
+    if state.get("is_resting", False) and state.get("rest_end_time") is not None:
+        rest_remaining = max(0.0, state["rest_end_time"] - state["current_time"]) / min_rest
+    else:
+        rest_remaining = 0.0
+
     return torch.cat([
-        airport_emb,
+        current_emb,
+        base_emb,
         torch.tensor([
             time_of_day,
             day_norm,
-            state["duty_time"]               / constraint["max_duty"],
+            duty_elapsed                     / constraint["max_duty"],
             state.get("legs", 0)             / constraint["max_legs"],
             duty_period_norm,
             1.0 if state.get("is_resting", False) else 0.0,
+            rest_remaining,
         ], dtype=torch.float32)
     ])
 
@@ -77,7 +92,6 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
     각 pairing의 legs, fly, elapsed, cost를 반환.
     """
     assigned = {f["id"]: False for f in flights}
-    state    = init_state(flights, constraint)
 
     pairings = []
 
@@ -120,7 +134,9 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
     if not unassigned:
         return pairings
 
-    first = sorted(unassigned, key=lambda x: x["dep_time"])[0]
+    episode_base = constraint.get("base_airport", 0)
+    base_flights = [f for f in unassigned if f["origin"] == episode_base]
+    first = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
     assigned[first["id"]] = True
     start_new_pairing(first)
     state = {
@@ -135,18 +151,21 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
         "pairing_start_time": first["dep_time"],
         "is_resting":         False,
         "rest_end_time":      None,
+        "base_airport":       episode_base,
     }
 
     while True:
         mask_list = get_mask(state, flights, assigned, constraint)
         mask      = torch.tensor(mask_list, dtype=torch.float32)
 
-        if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0:
-            flush_pairing(is_forced=True)
+        if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
+                flush_pairing(is_forced=False)
                 break
-            nxt = sorted(unassigned, key=lambda x: x["dep_time"])[0]
+            flush_pairing(is_forced=True)
+            base_flights = [f for f in unassigned if f["origin"] == episode_base]
+            nxt = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
             assigned[nxt["id"]] = True
             start_new_pairing(nxt)
             state = {
@@ -161,6 +180,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
                 "pairing_start_time": nxt["dep_time"],
                 "is_resting":         False,
                 "rest_end_time":      None,
+                "base_airport":       episode_base,
             }
             continue
 
@@ -174,7 +194,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
 
         if action == len(flights):
             pairing_rest += constraint.get("min_rest", 9.5)
-            state = step_end_duty(state, constraint)
+            state, _, _ = step(state, action, flights, assigned, constraint)
             continue
 
         if action == len(flights) + 1:
@@ -182,7 +202,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
                 break
-            nxt = sorted(unassigned, key=lambda x: x["dep_time"])[0]
+            base_flights = [f for f in unassigned if f["origin"] == episode_base]
+            nxt = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
             assigned[nxt["id"]] = True
             start_new_pairing(nxt)
             state = {
@@ -197,6 +218,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
                 "pairing_start_time": nxt["dep_time"],
                 "is_resting":         False,
                 "rest_end_time":      None,
+                "base_airport":       episode_base,
             }
             continue
 
@@ -274,7 +296,7 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
     ckpt       = torch.load(checkpoint_path, weights_only=True)
     n_airports = ckpt["n_airports"]
 
-    constraint = get_delta_constraints()
+    constraint = get_delta_constraints(base_ids[0])
     c_tensor   = constraint_to_tensor(constraint)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS))

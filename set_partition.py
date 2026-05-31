@@ -23,12 +23,15 @@ from typing import Dict, List, Optional
 
 def solve_lp_relaxation(
     pairings: List[Dict],
-    n_flights: int,
+    lambda_dh: float = 1.0,
     verbose: bool = False,
 ) -> Optional[Dict]:
     """
     Set Covering LP relaxation
     x_j ∈ [0,1] (continuous) → dual variable 추출 → reduced cost 계산
+
+    IP와 동일한 목적함수(DH 패널티 포함)로 LP를 구성해 column reduction의
+    이론적 근거를 유지한다.
 
     reduced cost: rc_j = c_j - Σ_{i ∈ legs_j} π_i
       - rc_j < 0: 이 pairing을 쓰면 비용이 줄어듦 → IP에 포함할 가치 있음
@@ -54,14 +57,17 @@ def solve_lp_relaxation(
         pulp.LpVariable(f"x_{j}", lowBound=0, upBound=1, cat="Continuous")
         for j in range(M)
     ]
+    d = {i: pulp.LpVariable(f"d_{i}", lowBound=0, cat="Continuous") for i in covered_flights}
 
-    prob += pulp.lpSum(pairings[j]["cost"] * x[j] for j in range(M))
+    prob += (
+        pulp.lpSum(pairings[j]["cost"] * x[j] for j in range(M))
+        + lambda_dh * pulp.lpSum(d.values())
+    )
 
     for i in covered_flights:
-        prob += (
-            pulp.lpSum(x[j] for j in flight_to_pairings[i]) >= 1,
-            f"cover_{i}",
-        )
+        cover_sum = pulp.lpSum(x[j] for j in flight_to_pairings[i])
+        prob += (cover_sum >= 1,          f"cover_{i}")
+        prob += (d[i] >= cover_sum - 1,   f"dh_{i}")
 
     prob.solve(pulp.PULP_CBC_CMD(msg=int(verbose)))
 
