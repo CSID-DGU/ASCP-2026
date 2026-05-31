@@ -81,6 +81,8 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
 
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
     df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
+    # 자정을 넘는 항공편: FL_DATE는 출발일 기준 → arr_time이 dep_time보다 작으면 +24
+    df.loc[df["arr_time"] < df["dep_time"], "arr_time"] += 24
 
     base_date = df["FL_DATE"].min()
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
@@ -151,6 +153,7 @@ def load_flights_rolling(
     # 시간 변환 + 윈도우 시작일 기준 day offset
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
     df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
+    df.loc[df["arr_time"] < df["dep_time"], "arr_time"] += 24
     base_date = min(window_dates)
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
     df["dep_time"] += df["day_offset"] * 24
