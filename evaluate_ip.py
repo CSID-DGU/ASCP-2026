@@ -14,23 +14,12 @@ from environment import get_mask, step
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
-
-
-# constraint 정규화 기준값 — FiLM MLP 입력 스케일 통일
-CONSTRAINT_NORMS = {
-    "max_duty":         14.0,
-    "min_conn":          1.0,
-    "max_conn":          8.0,
-    "max_legs":          6.0,
-    "min_rest":         12.0,
-    "max_duty_periods":  5.0,
-    "max_pairing_days":  7.0,
-}
+import config
 
 
 def constraint_to_tensor(constraint):
     return torch.tensor(
-        [constraint[k] / CONSTRAINT_NORMS[k] for k in FILM_CONSTRAINT_KEYS],
+        [constraint[k] / config.CONSTRAINT_NORMS[k] for k in FILM_CONSTRAINT_KEYS],
         dtype=torch.float32,
     )
 
@@ -61,7 +50,7 @@ def state_to_vec(state, encoder, constraint):
     else:
         duty_elapsed = max(0.0, state["current_time"] - state.get("duty_start_time", state["current_time"]))
 
-    min_rest = constraint.get("min_rest", 10.0)
+    min_rest = constraint.get("min_rest", config.DEFAULT_CONSTRAINTS["min_rest"])
     if state.get("is_resting", False) and state.get("rest_end_time") is not None:
         rest_remaining = max(0.0, state["rest_end_time"] - state["current_time"]) / min_rest
     else:
@@ -290,11 +279,11 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
         offset_days=offset_days, airport_map=airport_map,
     )
     n_flights = len(flights)
-    max_time  = window_days * 24
 
-    # checkpoint에서 n_airports 로드 — 평가 데이터 기준 재계산 시 shape mismatch 방지
+    # checkpoint에서 n_airports, max_time 로드
     ckpt       = torch.load(checkpoint_path, weights_only=True)
     n_airports = ckpt["n_airports"]
+    max_time   = ckpt.get("max_time", window_days * 24)
 
     constraint = get_delta_constraints(base_ids[0])
     c_tensor   = constraint_to_tensor(constraint)
