@@ -384,13 +384,16 @@ def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
     return list(pool.values())
 
 
-def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars):
+def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False):
     """
     Phase 2 전용 run_episode — flight 배정 시 LP dual variable π[f]를 reward에 추가.
 
     π[f] > 0: LP에서 이 flight 커버 가치 높음 → RL이 적극적으로 포함하도록 유도
     π[f] ≈ 0: 이미 여러 pairing이 커버 → 굳이 포함 안 해도 됨
     dual_vars: {flight_id: π[f]} — solve_lp_relaxation()["dual_vars"]
+
+    greedy=True: stochastic 샘플링 없이 argmax 선택 (baseline 계산용)
+                 stochastic/greedy 모두 동일한 dual_vars 적용 → advantage가 순수 policy 차이만 반영
     """
     assigned = {f["id"]: False for f in flights}
     state    = init_state(flights, constraint)
@@ -445,11 +448,14 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
         state_vec = state_to_vec(state, encoder, constraint)
         probs     = decoder(encoded, state_vec, mask)
-        dist      = Categorical(probs)
-        a         = dist.sample()
-        log_probs.append(dist.log_prob(a))
-        entropies.append(dist.entropy())
-        action = a.item()
+        if greedy:
+            action = probs.argmax().item()
+        else:
+            dist = Categorical(probs)
+            a    = dist.sample()
+            log_probs.append(dist.log_prob(a))
+            entropies.append(dist.entropy())
+            action = a.item()
 
         n_flights = len(flights)
 
@@ -538,8 +544,8 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
 
         with torch.no_grad():
             encoded_g = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
-            reward_g, _, _, metrics_g = run_episode(
-                flights, c, encoder, decoder, encoded_g, greedy=True
+            reward_g, _, _, metrics_g = run_episode_with_dual(
+                flights, c, encoder, decoder, encoded_g, dual_vars, greedy=True
             )
 
         greedy_pairings.append(metrics_g["n_pairings"])
