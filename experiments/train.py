@@ -670,9 +670,7 @@ def run_curriculum_stage(
 
 def train():
     DATA_PATH   = "RL/data/T_ONTIME_MARKETING.csv"
-    # TODO: 협의 필요 — 우선 max_pairing_days=4(Delta CBA) 기준으로 4일 설정
-    # window가 pairing 최대 기간과 맞아야 한 에피소드 안에서 완성된 pairing 학습 가능
-    WINDOW_DAYS = 4
+    WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
     # 항공사 base 설정 — config.py에서 AIRLINE 바꾸면 자동 반영
     airline_bases = config.AIRLINE_BASES[config.AIRLINE]
@@ -783,7 +781,7 @@ def train():
     with torch.no_grad():
         for duty in [12.0, 12.5, 13.0, 13.5, 14.0]:
             c = {**get_delta_constraints(val_base), "max_duty": duty,
-                 "max_duty_periods": 4, "max_pairing_days": 5}
+                 "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS}
             enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times, constraint_to_tensor(c))
             _, _, _, metrics = run_episode(val_flights, c, encoder, decoder, enc, greedy=True)
             print(f"  max_duty={duty:4.1f}h → pairings: {metrics['n_pairings']:3d}  "

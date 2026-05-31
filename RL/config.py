@@ -58,6 +58,11 @@ STAGE3_CONSTRAINT_RANGES = {
     "max_pairing_days": (3,    4),      # TODO: constraint 기준 확정 필요 / 상한은 WINDOW_DAYS(4)로 제한
 }
 
+# 슬라이딩 윈도우 크기 — max_pairing_days 상한과 맞춰야 window 밖 deadhead 방지
+# Stage 2/3, Phase 2 모두 max_pairing_days = WINDOW_DAYS로 제한
+# TODO: 혜린 확인 필요
+WINDOW_DAYS = 4
+
 # Phase 2 CG dual feedback 하이퍼파라미터
 # pool rollout 수: pool이 너무 작으면 LP가 의미없고, 너무 많으면 느림 → 30번이 균형점
 # LP interval: 매 에피소드 LP를 풀면 CBC solver가 병목 → 10 에피소드마다 재풀기
