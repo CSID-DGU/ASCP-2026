@@ -798,6 +798,7 @@ def train():
         "constraint_dim": len(FILM_CONSTRAINT_KEYS),
         "bases":          airline_bases,
         "window_days":    WINDOW_DAYS,
+        "max_time":       WINDOW_DAYS * 24,  # evaluate_ip.py가 ckpt["max_time"]으로 직접 읽음
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt")
 
