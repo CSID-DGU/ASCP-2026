@@ -112,23 +112,29 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         mask_list = get_mask(state, flights, assigned, constraint)
         mask = torch.tensor(mask_list, dtype=torch.float32)
 
-        # flight도 없고 END_DUTY도 불가 → 다음 미배정 flight로 강제 이동
-        no_flight = sum(mask_list[:-2]) == 0
-        no_end_duty = mask_list[-2] == 0
-        if no_flight and no_end_duty:
-            # pairing_start=False (진행 중 막힌 경우)만 deadhead 패널티
-            if not state.get("pairing_start", False):
-                n_pairings += 1
-                n_deadheads += 1
-                if state["current_airport"] != constraint["base_airport"]:
-                    total_reward -= BASE_PENALTY
-                total_reward -= PAIRING_COST
-
+        # flight도 없고 END_DUTY/END_PAIRING도 불가 → 강제로 새 pairing 시작 (deadhead)
+        no_flight     = sum(mask_list[:-2]) == 0
+        no_end_duty   = mask_list[-2] == 0
+        no_end_pairing = mask_list[-1] == 0
+        if no_flight and no_end_duty and no_end_pairing:
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if len(unassigned) == 0:
                 break
 
-            earliest = sorted(unassigned, key=lambda x: x["dep_time"])[0]
+            # base 출발 편 우선, 없으면 가장 이른 편으로 강제 이동 (deadhead)
+            base = constraint["base_airport"]
+            base_unassigned = [f for f in unassigned if f["origin"] == base]
+            earliest = sorted(base_unassigned or unassigned, key=lambda x: x["dep_time"])[0]
+
+            if not state.get("pairing_start", False):
+                n_pairings += 1
+                n_deadheads += 1
+                # BASE_PENALTY, PAIRING_COST는 environment step()과 중복되지 않도록
+                # deadhead 강제이동 시에만 직접 차감
+                total_reward -= config.DEFAULT_CONSTRAINTS["pairing_cost"]
+                if state["current_airport"] != base:
+                    total_reward -= config.DEFAULT_CONSTRAINTS["base_penalty"]
+
             state = {
                 "current_airport":    earliest["origin"],
                 "current_time":       earliest["dep_time"],
@@ -159,51 +165,29 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
         n_flights = len(flights)
 
-        # END_DUTY (index N): 현재 duty 종료 → rest period 진입
+        # END_DUTY (index N): step()이 rest 진입 처리
         if action == n_flights:
-            state = step_end_duty(state, constraint)
-            total_reward -= OVERNIGHT_PENALTY
+            state, r, done = step(state, action, flights, assigned, constraint)
+            total_reward += r
             continue
 
-        # END_PAIRING (index N+1): pairing 전체 종료
+        # END_PAIRING (index N+1): step()이 BASE_PENALTY + PAIRING_COST 처리
         if action == n_flights + 1:
             n_pairings += 1
-
-            if state["current_airport"] != constraint["base_airport"]:
-                total_reward -= BASE_PENALTY
-            total_reward -= PAIRING_COST
-
-            unassigned = [f for f in flights if not assigned[f["id"]]]
-            if len(unassigned) == 0:
+            state, r, done = step(state, action, flights, assigned, constraint)
+            total_reward += r
+            if done:
                 break
-
-            earliest = sorted(unassigned, key=lambda x: x["dep_time"])[0]
-            state = {
-                "current_airport":    earliest["origin"],
-                "current_time":       earliest["dep_time"],
-                "duty_time":          0.0,
-                "duty_start_time":    earliest["dep_time"],
-                "legs":               0,
-                "remaining":          sum(1 for v in assigned.values() if not v),
-                "pairing_start":      True,
-                "duty_period":        0,
-                "pairing_start_time": earliest["dep_time"],
-                "is_resting":         False,
-                "rest_end_time":      None,
-            }
             continue
 
         # flight action
-        prev_legs = state.get("legs", 0)
         state, r, done = step(state, action, flights, assigned, constraint)
         total_reward += r
-        if prev_legs >= 1:              # 2번째 leg부터 보너스 (연결 장려)
-            total_reward += LEG_BONUS
 
         if done:
             break
 
-    total_reward += final_reward(assigned, uncovered_penalty=UNCOVERED_PENALTY)
+    total_reward += final_reward(assigned)
 
     n_uncovered = sum(1 for v in assigned.values() if not v)
     coverage_pct = (len(flights) - n_uncovered) / len(flights) * 100
