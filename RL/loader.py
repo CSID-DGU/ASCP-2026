@@ -1,3 +1,4 @@
+import random
 import pandas as pd
 from collections import Counter
 
@@ -113,19 +114,26 @@ def load_flights_rolling(
     window_days=5,
     offset_days=0,
     airport_map=None,
+    base_airport=None,
+    n_max=None,
 ):
     """슬라이딩 윈도우 방식으로 실제 날짜 데이터 로드.
 
     에피소드마다 offset_days를 달리하면 서로 다른 flight 구성으로 훈련 가능.
     hub_only 없이 모든 노선(spoke-spoke 포함)을 그대로 사용한다.
-    flight 수는 window_days로만 제어한다 (개수 제한 없음).
+
+    Base-first sampling (base_airport + n_max 지정 시):
+        base_flights = origin=base 또는 dest=base → 전부 포함
+        mid_flights  = 나머지 spoke-spoke         → 남은 슬롯만큼 랜덤 샘플링
+    n_max 미지정 시 전체 flight 반환.
 
     Args:
-        path:         BTS CSV 경로
-        window_days:  윈도우 크기 (일), 기본 5
-        offset_days:  전체 날짜 목록 기준 시작 인덱스 (에피소드마다 랜덤 지정)
-        airport_map:  전체-데이터 기준 공항 ID 맵; None이면 전체 CSV에서 재계산(느림).
-                      train 루프에서는 build_airport_map()으로 사전 계산 후 전달 권장.
+        path:          BTS CSV 경로
+        window_days:   윈도우 크기 (일), 기본 5
+        offset_days:   전체 날짜 목록 기준 시작 인덱스 (에피소드마다 랜덤 지정)
+        airport_map:   전체-데이터 기준 공항 ID 맵; None이면 전체 CSV에서 재계산(느림).
+        base_airport:  에피소드 base 공항 ID; base-first sampling 기준
+        n_max:         에피소드 최대 flight 수; 초과 시 base-first sampling 적용
 
     Returns:
         flight dict 리스트 (dep_time 오름차순 정렬)
@@ -174,5 +182,20 @@ def load_flights_rolling(
             "dep_time": float(row["dep_time"]),
             "arr_time": float(row["arr_time"]),
         })
+
+    # base-first sampling: base 관련 편 우선, 나머지 랜덤 샘플링
+    if n_max is not None and len(flights) > n_max and base_airport is not None:
+        base_fs = [f for f in flights if f["origin"] == base_airport or f["dest"] == base_airport]
+        mid_fs  = [f for f in flights if f["origin"] != base_airport and f["dest"] != base_airport]
+        if len(base_fs) >= n_max:
+            # base 관련 편만으로도 n_max 초과 → base 편에서 랜덤 샘플링
+            random.shuffle(base_fs)
+            flights = sorted(base_fs[:n_max], key=lambda f: f["dep_time"])
+        else:
+            remaining = n_max - len(base_fs)
+            random.shuffle(mid_fs)
+            flights = sorted(base_fs + mid_fs[:remaining], key=lambda f: f["dep_time"])
+        for i, f in enumerate(flights):
+            f["id"] = i
 
     return flights

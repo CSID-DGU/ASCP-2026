@@ -14,33 +14,25 @@ from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from state import init_state
 import config
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 
 def constraint_to_tensor(constraint):
-    """constraint dict → FiLM 입력 tensor (정규화 적용)
-
-    정규화 기준값은 config.CONSTRAINT_NORMS에서 관리.
-    evaluate_ip.py도 동일한 값을 써야 checkpoint 호환됨.
-    """
     return torch.tensor(
         [constraint[k] / config.CONSTRAINT_NORMS[k] for k in FILM_CONSTRAINT_KEYS],
         dtype=torch.float32,
-    )
+    ).to(DEVICE)
 
 def flights_to_tensors(flights, window_days=5):
-    """혜린 flight dict → 찬주 encoder 입력 tensor 변환
-
-    dep/arr/fly_time을 window_days * 24 기준으로 정규화.
-    fly_time = arr - dep (비행 시간) — encoder input_dim이 airport_emb*2 + 3이므로 필수.
-    """
-    origins = torch.tensor([f["origin"] for f in flights])
-    dests = torch.tensor([f["dest"] for f in flights])
-    max_time = window_days * 24.0
-    dep_raw = torch.tensor([f["dep_time"] for f in flights], dtype=torch.float32)
-    arr_raw = torch.tensor([f["arr_time"] for f in flights], dtype=torch.float32)
-    dep_times = dep_raw / max_time
-    arr_times = arr_raw / max_time
-    fly_times = (arr_raw - dep_raw) / max_time
+    origins   = torch.tensor([f["origin"]   for f in flights]).to(DEVICE)
+    dests     = torch.tensor([f["dest"]     for f in flights]).to(DEVICE)
+    max_time  = window_days * 24.0
+    dep_raw   = torch.tensor([f["dep_time"] for f in flights], dtype=torch.float32)
+    arr_raw   = torch.tensor([f["arr_time"] for f in flights], dtype=torch.float32)
+    dep_times = (dep_raw / max_time).to(DEVICE)
+    arr_times = (arr_raw / max_time).to(DEVICE)
+    fly_times = ((arr_raw - dep_raw) / max_time).to(DEVICE)
     return origins, dests, dep_times, arr_times, fly_times
 
 
@@ -50,8 +42,8 @@ def state_to_vec(state, encoder, constraint):
     state_vec(71,) = current_emb(32) + base_emb(32) + scalars(7)
     7개 스칼라: time_of_day, day_norm, duty_elapsed/max, legs/max, duty_period/max, is_resting, rest_remaining
     """
-    current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
-    base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]))
+    current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]).to(DEVICE))
+    base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]).to(DEVICE))
 
     max_pairing_days = constraint.get("max_pairing_days", 5)
     time_of_day      = (state["current_time"] % 24.0) / 24.0
@@ -83,7 +75,7 @@ def state_to_vec(state, encoder, constraint):
             duty_period_norm,
             1.0 if state.get("is_resting", False) else 0.0,
             rest_remaining,
-        ], dtype=torch.float32)
+        ], dtype=torch.float32).to(DEVICE)
     ])
 
 
@@ -112,7 +104,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
             break
         # 혜린 mask
         mask_list = get_mask(state, flights, assigned, constraint)
-        mask = torch.tensor(mask_list, dtype=torch.float32)
+        mask = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
         # flight도 없고 END_DUTY/END_PAIRING도 불가 → 강제로 새 pairing 시작 (deadhead)
         no_flight     = sum(mask_list[:-2]) == 0
@@ -290,7 +282,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             break
 
         mask_list = get_mask(state, flights, assigned, constraint)
-        mask      = torch.tensor(mask_list, dtype=torch.float32)
+        mask      = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
         # mask 전부 0 → 강제 deadhead
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
@@ -414,7 +406,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             break
 
         mask_list  = get_mask(state, flights, assigned, constraint)
-        mask       = torch.tensor(mask_list, dtype=torch.float32)
+        mask       = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
         no_flight      = sum(mask_list[:-2]) == 0
         no_end_duty    = mask_list[-2] == 0
@@ -688,13 +680,14 @@ def train():
 
     print(f"airports: {n_airports}개, airline: {config.AIRLINE}, bases: {airline_bases}")
 
+    print(f"device: {DEVICE}")
     encoder = FlightEncoder(
         n_airports=n_airports,
         constraint_dim=len(FILM_CONSTRAINT_KEYS),
         airport_emb_dim=32,
         d_model=128,
-    )
-    decoder   = PointerDecoder(d_model=128, airport_emb_dim=32)
+    ).to(DEVICE)
+    decoder   = PointerDecoder(d_model=128, airport_emb_dim=32).to(DEVICE)
     params    = list(encoder.parameters()) + list(decoder.parameters())
     optimizer = optim.Adam(params, lr=1e-4)
 
@@ -709,13 +702,16 @@ def train():
     max_offset = max(0, total_days - WINDOW_DAYS)
 
     def flight_sampler():
-        """에피소드마다 (base, window) 쌍 랜덤 선택 → flight 로드"""
+        """에피소드마다 (base, window) 쌍 랜덤 선택 → base-first sampling으로 flight 로드"""
         base_airport = random.choice(base_ids)
         offset_days  = random.randint(0, max_offset)
-        flights = load_flights_rolling(DATA_PATH, WINDOW_DAYS, offset_days, airport_map)
+        flights = load_flights_rolling(
+            DATA_PATH, WINDOW_DAYS, offset_days, airport_map,
+            base_airport=base_airport,
+            n_max=config.EPISODE_MAX_FLIGHTS,
+        )
         if not flights:
             return None
-        # base 출발 편 없는 window는 스킵 (state.py fallback 방지)
         if not any(f["origin"] == base_airport for f in flights):
             return None
         origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS)
@@ -733,15 +729,15 @@ def train():
     # ── Stage 2: full multi-day ───────────────────────────────────────
     # overnight connection 포함 전체 multi-day pairing 학습
     # max_pairing_days를 WINDOW_DAYS로 제한 — window 밖 pairing은 데이터 없어 deadhead만 유발
-    stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS}
+    stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
     run_curriculum_stage(2, encoder, decoder, optimizer,
                          n_episodes=2000, constraint_override=stage2_c,
                          save_dir=save_dir, flight_sampler=flight_sampler)
 
     # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
     # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
-    # max_pairing_days 상한도 WINDOW_DAYS로 제한 (config.STAGE3_CONSTRAINT_RANGES 확인)
-    stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS}
+    # max_pairing_days 상한도 WINDOW_DAYS-1로 제한
+    stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
     def sample_constraint():
         # 범위는 config.STAGE3_CONSTRAINT_RANGES에서 관리
         # TODO: 범위 확정 후 config.py 범위 수정 
@@ -764,7 +760,7 @@ def train():
 
     # ── Phase 2: CG dual feedback ──────────────────────────────────────
     # Stage 3 이후 동일 모델 이어서 학습 (Phase 1 → Phase 2 연속)
-    phase2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS}
+    phase2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
     run_phase2(encoder, decoder, optimizer,
                n_episodes=config.PHASE2_N_EPISODES,
                constraint=phase2_c,

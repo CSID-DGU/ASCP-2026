@@ -58,10 +58,13 @@ STAGE3_CONSTRAINT_RANGES = {
     "max_pairing_days": (3,    4),      # TODO: constraint 기준 확정 필요 / 상한은 WINDOW_DAYS(4)로 제한
 }
 
-# 슬라이딩 윈도우 크기 — max_pairing_days 상한과 맞춰야 window 밖 deadhead 방지
-# Stage 2/3, Phase 2 모두 max_pairing_days = WINDOW_DAYS로 제한
-# TODO: 혜린 확인 필요
-WINDOW_DAYS = 4
+# 슬라이딩 윈도우 크기 — max_pairing_days + 1 (마지막 날 시작 pairing도 완성 가능하게)
+# Stage 2/3, Phase 2 모두 max_pairing_days = WINDOW_DAYS - 1로 설정
+WINDOW_DAYS = 5
+
+# 에피소드 최대 flight 수 — base-first sampling으로 이 수를 초과하지 않도록 제한
+# base↔X 편 전부 포함 + 나머지 spoke-spoke 랜덤 샘플링
+EPISODE_MAX_FLIGHTS = 300
 
 # Phase 2 CG dual feedback 하이퍼파라미터
 # pool rollout 수: pool이 너무 작으면 LP가 의미없고, 너무 많으면 느림 → 30번이 균형점
