@@ -30,6 +30,21 @@ AIRLINE_BASES = {
     "jetblue": ["JFK", "BOS", "FLL"],
 }
 
+# FiLM 입력 정규화 기준값 — constraint 값을 [0, 1]로 정규화하기 위한 분모
+# 각 항목별 실제 상한값 (항공사 중 최대 or 여유값)
+# TODO: constraint 확정 후 항공사별 실제 상한으로 교체
+# evaluate_ip.py도 동일한 값을 써야 checkpoint 호환 — 수정 시 혜린 확인 필요
+# 지금 값은 우선 evaluate_ip.py 참조
+CONSTRAINT_NORMS = {
+    "max_duty":         14.0,   # JetBlue constraint 상한
+    "min_conn":          1.0,   # Stage3 범위 상한
+    "max_conn":          8.0,   # DEFAULT_CONSTRAINTS 기준
+    "max_legs":          6.0,   # 실제 사용값(4)보다 여유
+    "min_rest":         12.0,   # Southwest(11.0)보다 여유
+    "max_duty_periods":  5.0,   # 실제 사용값(4)보다 여유
+    "max_pairing_days":  7.0,   # 실제 사용값(4~5)보다 여유
+}
+
 # Stage 3 FiLM augmentation constraint 범위 — 항공사별 constraint 확정 후 채울 것
 # (min, max) 튜플. train.py sample_constraint()에서 random.uniform/randint(*range)로 사용
 # TODO: constraint 확정 후 각 항공사 실제 범위로 교체

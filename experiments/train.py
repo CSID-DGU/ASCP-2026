@@ -17,8 +17,15 @@ import config
 
 
 def constraint_to_tensor(constraint):
-    """constraint dict → FiLM 입력 tensor"""
-    return torch.tensor([constraint[k] for k in FILM_CONSTRAINT_KEYS], dtype=torch.float32)
+    """constraint dict → FiLM 입력 tensor (정규화 적용)
+
+    정규화 기준값은 config.CONSTRAINT_NORMS에서 관리.
+    evaluate_ip.py도 동일한 값을 써야 checkpoint 호환됨.
+    """
+    return torch.tensor(
+        [constraint[k] / config.CONSTRAINT_NORMS[k] for k in FILM_CONSTRAINT_KEYS],
+        dtype=torch.float32,
+    )
 
 def flights_to_tensors(flights, window_days=5):
     """혜린 flight dict → 찬주 encoder 입력 tensor 변환
