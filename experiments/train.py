@@ -16,10 +16,11 @@ import torch.optim as optim
 from torch.distributions import Categorical
 
 from model import FlightEncoder, PointerDecoder
-from loader import load_flights, load_flights_multiday
-from environment import get_mask, step, step_end_duty, final_reward, END_DUTY
+from loader import build_airport_map, bases_to_ids, load_flights_rolling
+from environment import get_mask, step, final_reward
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from state import init_state
+import config
 
 PAIRING_COST      = 5.0   # pairing 완성/강제종료 시 -5 (deadhead 억제)
 BASE_PENALTY      = 5.0   # base 미복귀 시 -5 (feasibility 강제)
