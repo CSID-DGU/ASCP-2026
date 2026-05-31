@@ -16,10 +16,16 @@ class FiLM(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim * 2),
         )
-        # gamma 초기값 = 1 (identity), beta 초기값 = 0 → 학습 초기 출력 보존
         nn.init.zeros_(self.mlp[2].weight)
-        nn.init.ones_(self.mlp[2].bias[:hidden_dim])   # gamma = 1
-        nn.init.zeros_(self.mlp[2].bias[hidden_dim:])  # beta = 0
+        if use_skip:
+            # use_skip=True: out = gamma*x + beta + x
+            # identity를 위해 gamma=0, beta=0 → out = x
+            nn.init.zeros_(self.mlp[2].bias)
+        else:
+            # use_skip=False: out = gamma*x + beta
+            # identity를 위해 gamma=1, beta=0 → out = x
+            nn.init.ones_(self.mlp[2].bias[:hidden_dim])   # gamma = 1
+            nn.init.zeros_(self.mlp[2].bias[hidden_dim:])  # beta = 0
 
         self.use_skip = use_skip
 
