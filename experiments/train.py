@@ -43,23 +43,44 @@ def flights_to_tensors(flights, window_days=5):
 
 
 def state_to_vec(state, encoder, constraint):
-    """혜린 state dict → 찬주 decoder 입력 tensor 변환"""
-    airport_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
+    """혜린 state dict → 찬주 decoder 입력 tensor 변환
+
+    state_vec(71,) = current_emb(32) + base_emb(32) + scalars(7)
+    7개 스칼라: time_of_day, day_norm, duty_elapsed/max, legs/max, duty_period/max, is_resting, rest_remaining
+    """
+    current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
+    base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]))
 
     max_pairing_days = constraint.get("max_pairing_days", 5)
-    time_of_day  = (state["current_time"] % 24.0) / 24.0
-    day_norm     = (state["current_time"] // 24.0) / max(max_pairing_days, 1)
+    time_of_day      = (state["current_time"] % 24.0) / 24.0
+    day_norm         = (state["current_time"] // 24.0) / max(max_pairing_days, 1)
     duty_period_norm = state.get("duty_period", 0) / max(constraint.get("max_duty_periods", 4), 1)
 
+    # duty_elapsed: 비행 시간만이 아닌 FAA 기준 실제 경과 시간 (비행 + 대기)
+    # is_resting/pairing_start 중이면 새 duty 아직 시작 안 함 → 0
+    if state.get("is_resting", False) or state.get("pairing_start", False):
+        duty_elapsed = 0.0
+    else:
+        duty_elapsed = max(0.0, state["current_time"] - state.get("duty_start_time", state["current_time"]))
+
+    # rest_remaining: is_resting=True일 때 남은 rest 시간 비율 (0~1), 아니면 0.0
+    min_rest = constraint.get("min_rest", 10.0)
+    if state.get("is_resting", False) and state.get("rest_end_time") is not None:
+        rest_remaining = max(0.0, state["rest_end_time"] - state["current_time"]) / min_rest
+    else:
+        rest_remaining = 0.0
+
     return torch.cat([
-        airport_emb,
+        current_emb,
+        base_emb,
         torch.tensor([
             time_of_day,
             day_norm,
-            state["duty_time"] / constraint["max_duty"],
+            duty_elapsed / constraint["max_duty"],
             state["legs"] / constraint["max_legs"],
             duty_period_norm,
             1.0 if state.get("is_resting", False) else 0.0,
+            rest_remaining,
         ], dtype=torch.float32)
     ])
 
