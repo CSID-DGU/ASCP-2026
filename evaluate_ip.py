@@ -9,6 +9,8 @@ import torch
 from torch.distributions import Categorical
 
 sys.path.insert(0, "RL")
+
+DEVICE = torch.device("cpu")
 from loader import load_flights_rolling, build_airport_map, bases_to_ids
 from environment import get_mask, step
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
@@ -21,7 +23,7 @@ def constraint_to_tensor(constraint):
     return torch.tensor(
         [constraint[k] / config.CONSTRAINT_NORMS[k] for k in FILM_CONSTRAINT_KEYS],
         dtype=torch.float32,
-    )
+    ).to(DEVICE)
 
 
 def flights_to_tensors(flights, max_time=120.0):
@@ -37,8 +39,8 @@ def flights_to_tensors(flights, max_time=120.0):
 
 def state_to_vec(state, encoder, constraint):
     """state dict → decoder 입력 tensor (71,) = current_emb(32) + base_emb(32) + scalars(7)"""
-    current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]))
-    base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]))
+    current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]).to(DEVICE))
+    base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]).to(DEVICE))
 
     max_pairing_days = constraint.get("max_pairing_days", 5)
     time_of_day      = (state["current_time"] % 24.0) / 24.0
@@ -67,7 +69,7 @@ def state_to_vec(state, encoder, constraint):
             duty_period_norm,
             1.0 if state.get("is_resting", False) else 0.0,
             rest_remaining,
-        ], dtype=torch.float32)
+        ], dtype=torch.float32).to(DEVICE)
     ])
 
 
@@ -145,7 +147,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
 
     while True:
         mask_list = get_mask(state, flights, assigned, constraint)
-        mask      = torch.tensor(mask_list, dtype=torch.float32)
+        mask      = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
             unassigned = [f for f in flights if not assigned[f["id"]]]
@@ -265,12 +267,16 @@ def collect_pool_multibase(flights, constraint, encoder, decoder, encoded,
 def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
              n_rollouts=100, window_days=5, offset_days=0,
              bases=("ATL", "DTW", "MSP"),
-             lambda_dh=1.0):
+             lambda_dh=1.0,
+             device="cpu"):
     """
     Args:
         bases: crew base 공항 코드 리스트 (예: ["ATL", "DTW", "MSP"]).
                airport_map을 통해 내부적으로 정수 ID로 변환된다.
     """
+    global DEVICE
+    DEVICE = torch.device(device)
+
     airport_map = build_airport_map(data_path)
     base_ids    = bases_to_ids(bases, airport_map)
 
@@ -281,21 +287,25 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
     n_flights = len(flights)
 
     # checkpoint에서 n_airports, max_time 로드
-    ckpt       = torch.load(checkpoint_path, weights_only=True)
-    n_airports = ckpt["n_airports"]
+    ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
+    # stage 체크포인트는 n_airports 없음 → encoder embedding에서 유추
+    n_airports = ckpt.get("n_airports",
+                          ckpt["encoder"]["airport_emb.weight"].shape[0])
     max_time   = ckpt.get("max_time", window_days * 24)
 
     constraint = get_delta_constraints(base_ids[0])
     c_tensor   = constraint_to_tensor(constraint)
 
-    encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS))
-    decoder = PointerDecoder()
+    encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
+    decoder = PointerDecoder().to(DEVICE)
     encoder.load_state_dict(ckpt["encoder"])
     decoder.load_state_dict(ckpt["decoder"])
     encoder.eval()
     decoder.eval()
 
-    origins, dests, dep_norm, arr_norm, fly_norm = flights_to_tensors(flights, max_time)
+    origins, dests, dep_norm, arr_norm, fly_norm = [
+        t.to(DEVICE) for t in flights_to_tensors(flights, max_time)
+    ]
 
     with torch.no_grad():
         encoded = encoder(origins, dests, dep_norm, arr_norm, fly_norm, c_tensor)
@@ -335,6 +345,9 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
 
 
 if __name__ == "__main__":
-    import sys
-    ckpt = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/step2_best.pt"
-    evaluate(ckpt)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("checkpoint", nargs="?", default="checkpoints/step2_best.pt")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    args = parser.parse_args()
+    evaluate(args.checkpoint, device=args.device)
