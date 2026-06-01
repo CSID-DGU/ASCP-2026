@@ -14,7 +14,12 @@ from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from state import init_state
 import config
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
+
+
+def _set_device(device_str: str):
+    global DEVICE
+    DEVICE = torch.device(device_str)
 
 
 
@@ -666,7 +671,7 @@ def run_curriculum_stage(
     return best_avg_pairings
 
 
-def train():
+def train(phase2_only=False):
     DATA_PATH   = "RL/data/T_ONTIME_MARKETING.csv"
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
@@ -680,7 +685,6 @@ def train():
 
     print(f"airports: {n_airports}개, airline: {config.AIRLINE}, bases: {airline_bases}")
 
-    print(f"device: {DEVICE}")
     encoder = FlightEncoder(
         n_airports=n_airports,
         constraint_dim=len(FILM_CONSTRAINT_KEYS),
@@ -719,44 +723,52 @@ def train():
 
     base_constraint = get_delta_constraints(base_ids[0])  # base는 에피소드마다 교체됨
 
-    # ── Stage 1: 단일 duty (overnight 없음) ──────────────────────────
-    # max_duty_periods=1 → END_DUTY 불가 → 당일 connection만 학습
-    stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1}
-    run_curriculum_stage(1, encoder, decoder, optimizer,
-                         n_episodes=1000, constraint_override=stage1_c,
-                         save_dir=save_dir, flight_sampler=flight_sampler)
+    if phase2_only:
+        ckpt_path = os.path.join(save_dir, "stage3_best.pt")
+        ckpt = torch.load(ckpt_path, map_location=DEVICE)
+        encoder.load_state_dict(ckpt["encoder"])
+        decoder.load_state_dict(ckpt["decoder"])
+        print(f"stage3_best.pt 로드 완료 → Phase 2만 실행")
 
-    # ── Stage 2: full multi-day ───────────────────────────────────────
-    # overnight connection 포함 전체 multi-day pairing 학습
-    # max_pairing_days를 WINDOW_DAYS로 제한 — window 밖 pairing은 데이터 없어 deadhead만 유발
-    stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
-    run_curriculum_stage(2, encoder, decoder, optimizer,
-                         n_episodes=2000, constraint_override=stage2_c,
-                         save_dir=save_dir, flight_sampler=flight_sampler)
+    if not phase2_only:
+        # ── Stage 1: 단일 duty (overnight 없음) ──────────────────────────
+        # max_duty_periods=1 → END_DUTY 불가 → 당일 connection만 학습
+        stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1}
+        run_curriculum_stage(1, encoder, decoder, optimizer,
+                             n_episodes=1000, constraint_override=stage1_c,
+                             save_dir=save_dir, flight_sampler=flight_sampler)
 
-    # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
-    # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
-    # max_pairing_days 상한도 WINDOW_DAYS-1로 제한
-    stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
-    def sample_constraint():
-        # 범위는 config.STAGE3_CONSTRAINT_RANGES에서 관리
-        # TODO: 범위 확정 후 config.py 범위 수정 
-        r = config.STAGE3_CONSTRAINT_RANGES
-        return {
-            **stage3_base,
-            "max_duty":         random.uniform(*r["max_duty"]),
-            "min_rest":         random.uniform(*r["min_rest"]),
-            "min_conn":         random.uniform(*r["min_conn"]),
-            "max_conn":         random.uniform(*r["max_conn"]),
-            "max_legs":         random.randint(*r["max_legs"]),
-            "max_duty_periods": random.randint(*r["max_duty_periods"]),
-            "max_pairing_days": random.randint(*r["max_pairing_days"]),
-        }
+        # ── Stage 2: full multi-day ───────────────────────────────────────
+        # overnight connection 포함 전체 multi-day pairing 학습
+        # max_pairing_days를 WINDOW_DAYS로 제한 — window 밖 pairing은 데이터 없어 deadhead만 유발
+        stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
+        run_curriculum_stage(2, encoder, decoder, optimizer,
+                             n_episodes=2000, constraint_override=stage2_c,
+                             save_dir=save_dir, flight_sampler=flight_sampler)
 
-    run_curriculum_stage(3, encoder, decoder, optimizer,
-                         n_episodes=2000, constraint_override=stage3_base,
-                         save_dir=save_dir, flight_sampler=flight_sampler,
-                         constraint_sampler=sample_constraint)
+        # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
+        # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
+        # max_pairing_days 상한도 WINDOW_DAYS-1로 제한
+        stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
+        def sample_constraint():
+            # 범위는 config.STAGE3_CONSTRAINT_RANGES에서 관리
+            # TODO: 범위 확정 후 config.py 범위 수정
+            r = config.STAGE3_CONSTRAINT_RANGES
+            return {
+                **stage3_base,
+                "max_duty":         random.uniform(*r["max_duty"]),
+                "min_rest":         random.uniform(*r["min_rest"]),
+                "min_conn":         random.uniform(*r["min_conn"]),
+                "max_conn":         random.uniform(*r["max_conn"]),
+                "max_legs":         random.randint(*r["max_legs"]),
+                "max_duty_periods": random.randint(*r["max_duty_periods"]),
+                "max_pairing_days": random.randint(*r["max_pairing_days"]),
+            }
+
+        run_curriculum_stage(3, encoder, decoder, optimizer,
+                             n_episodes=2000, constraint_override=stage3_base,
+                             save_dir=save_dir, flight_sampler=flight_sampler,
+                             constraint_sampler=sample_constraint)
 
     # ── Phase 2: CG dual feedback ──────────────────────────────────────
     # Stage 3 이후 동일 모델 이어서 학습 (Phase 1 → Phase 2 연속)
@@ -804,4 +816,19 @@ def train():
 
 
 if __name__ == "__main__":
-    train()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
+                        help="학습 device (예: cpu, cuda, cuda:0, cuda:1)")
+    parser.add_argument("--log", default=os.path.join(os.path.dirname(__file__), "..", "log", "train_log.txt"),
+                        help="로그 파일 경로 (기본: log/train_log.txt)")
+    parser.add_argument("--phase2-only", action="store_true",
+                        help="stage3_best.pt 로드 후 Phase 2만 실행")
+    args = parser.parse_args()
+    _set_device(args.device)
+    print(f"device: {DEVICE}")
+    print(f"log: {args.log}")
+    if args.phase2_only:
+        train(phase2_only=True)
+    else:
+        train()
