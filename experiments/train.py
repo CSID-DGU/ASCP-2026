@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "RL"))
 import torch
 import torch.optim as optim
 from torch.distributions import Categorical
+import wandb
 
 from model import FlightEncoder, PointerDecoder
 from loader import build_airport_map, bases_to_ids, load_flights_rolling
@@ -487,7 +488,8 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     }
 
 
-def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler):
+def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
+               global_step_offset=0):
     """
     Phase 2 — Column Generation dual feedback 학습.
 
@@ -558,20 +560,33 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
         optimizer.step()
 
-        if len(greedy_pairings) >= 25:
-            recent_avg = sum(greedy_pairings[-25:]) / 25
-            if recent_avg < best_avg_pairings:
-                best_avg_pairings = recent_avg
-                torch.save({
-                    "encoder":           encoder.state_dict(),
-                    "decoder":           decoder.state_dict(),
-                    "stage":             "phase2",
-                    "episode":           ep,
-                    "best_avg_pairings": best_avg_pairings,
-                }, os.path.join(save_dir, "phase2_best.pt"))
+        avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
+
+        if len(greedy_pairings) >= 25 and avg25 < best_avg_pairings:
+            best_avg_pairings = avg25
+            ckpt_path = os.path.join(save_dir, "phase2_best.pt")
+            torch.save({
+                "encoder":           encoder.state_dict(),
+                "decoder":           decoder.state_dict(),
+                "stage":             "phase2",
+                "episode":           ep,
+                "best_avg_pairings": best_avg_pairings,
+            }, ckpt_path)
+            wandb.save(ckpt_path)
+
+        wandb.log({
+            "phase2/greedy_pairings":  metrics_g["n_pairings"],
+            "phase2/sample_pairings":  metrics_s["n_pairings"],
+            "phase2/greedy_deadheads": metrics_g["n_deadheads"],
+            "phase2/sample_reward":    reward_s,
+            "phase2/avg25":            avg25,
+            "phase2/advantage":        advantage,
+            "phase2/loss":             loss.item(),
+            "phase2/best_avg25":       best_avg_pairings if best_avg_pairings < float("inf") else avg25,
+            "phase2/n_dual_keys":      len(dual_vars),
+        }, step=global_step_offset + ep)
 
         if ep % 25 == 0:
-            avg25 = sum(greedy_pairings[-25:]) / len(greedy_pairings[-25:])
             print(
                 f"  Ep {ep:4d} | "
                 f"sample: p={metrics_s['n_pairings']:3d} dh={metrics_s['n_deadheads']:3d} | "
@@ -588,6 +603,7 @@ def run_curriculum_stage(
     stage, encoder, decoder, optimizer,
     n_episodes, constraint_override, save_dir,
     flight_sampler, constraint_sampler=None,
+    global_step_offset=0,
 ):
     """
     커리큘럼 1단계 실행.
@@ -644,21 +660,34 @@ def run_curriculum_stage(
         torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
         optimizer.step()
 
+        avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
+
         # best checkpoint: greedy pairings 25ep 이동평균 기준
         if len(greedy_pairings) >= 25:
-            recent_avg = sum(greedy_pairings[-25:]) / 25
-            if recent_avg < best_avg_pairings:
-                best_avg_pairings = recent_avg
+            if avg25 < best_avg_pairings:
+                best_avg_pairings = avg25
+                ckpt_path = os.path.join(save_dir, f"stage{stage}_best.pt")
                 torch.save({
-                    "encoder":   encoder.state_dict(),
-                    "decoder":   decoder.state_dict(),
-                    "stage":     stage,
-                    "episode":   ep,
+                    "encoder":           encoder.state_dict(),
+                    "decoder":           decoder.state_dict(),
+                    "stage":             stage,
+                    "episode":           ep,
                     "best_avg_pairings": best_avg_pairings,
-                }, os.path.join(save_dir, f"stage{stage}_best.pt"))
+                }, ckpt_path)
+                wandb.save(ckpt_path)
+
+        wandb.log({
+            f"stage{stage}/greedy_pairings":  metrics_g["n_pairings"],
+            f"stage{stage}/sample_pairings":  metrics_s["n_pairings"],
+            f"stage{stage}/greedy_deadheads": metrics_g["n_deadheads"],
+            f"stage{stage}/sample_reward":    reward_s,
+            f"stage{stage}/avg25":            avg25,
+            f"stage{stage}/advantage":        advantage,
+            f"stage{stage}/loss":             loss.item(),
+            f"stage{stage}/best_avg25":       best_avg_pairings if best_avg_pairings < float("inf") else avg25,
+        }, step=global_step_offset + ep)
 
         if ep % 25 == 0:
-            avg25 = sum(greedy_pairings[-25:]) / len(greedy_pairings[-25:])
             print(
                 f"  Ep {ep:4d} | "
                 f"sample: p={metrics_s['n_pairings']:3d} dh={metrics_s['n_deadheads']:3d} | "
@@ -698,6 +727,24 @@ def train(phase2_only=False):
     save_dir = os.path.join(os.path.dirname(__file__), "..", "checkpoints")
     os.makedirs(save_dir, exist_ok=True)
 
+    run_name = "phase2-only" if phase2_only else "stage1-3+phase2"
+    wandb.init(
+        project="ASCP-2026",
+        name=run_name,
+        config={
+            "airline":            config.AIRLINE,
+            "window_days":        WINDOW_DAYS,
+            "episode_max_flights": config.EPISODE_MAX_FLIGHTS,
+            "phase2_lp_interval": config.PHASE2_LP_INTERVAL,
+            "phase2_pool_rollouts": config.PHASE2_POOL_ROLLOUTS,
+            "phase2_dual_weight": config.PHASE2_DUAL_WEIGHT,
+            "phase2_n_episodes":  config.PHASE2_N_EPISODES,
+            "lr":                 1e-4,
+            "device":             str(DEVICE),
+        },
+        resume="allow",
+    )
+
     # 전체 날짜 수 파악 → offset_days 범위 결정
     import pandas as pd
     df_dates = pd.read_csv(DATA_PATH, usecols=["FL_DATE"])
@@ -736,7 +783,8 @@ def train(phase2_only=False):
         stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1}
         run_curriculum_stage(1, encoder, decoder, optimizer,
                              n_episodes=1000, constraint_override=stage1_c,
-                             save_dir=save_dir, flight_sampler=flight_sampler)
+                             save_dir=save_dir, flight_sampler=flight_sampler,
+                             global_step_offset=0)
 
         # ── Stage 2: full multi-day ───────────────────────────────────────
         # overnight connection 포함 전체 multi-day pairing 학습
@@ -744,7 +792,8 @@ def train(phase2_only=False):
         stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
         run_curriculum_stage(2, encoder, decoder, optimizer,
                              n_episodes=2000, constraint_override=stage2_c,
-                             save_dir=save_dir, flight_sampler=flight_sampler)
+                             save_dir=save_dir, flight_sampler=flight_sampler,
+                             global_step_offset=1000)
 
         # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
         # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
@@ -768,16 +817,19 @@ def train(phase2_only=False):
         run_curriculum_stage(3, encoder, decoder, optimizer,
                              n_episodes=2000, constraint_override=stage3_base,
                              save_dir=save_dir, flight_sampler=flight_sampler,
-                             constraint_sampler=sample_constraint)
+                             constraint_sampler=sample_constraint,
+                             global_step_offset=3000)
 
     # ── Phase 2: CG dual feedback ──────────────────────────────────────
     # Stage 3 이후 동일 모델 이어서 학습 (Phase 1 → Phase 2 연속)
     phase2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
+    phase2_offset = 0 if phase2_only else 1000 + 2000 + 2000
     run_phase2(encoder, decoder, optimizer,
                n_episodes=config.PHASE2_N_EPISODES,
                constraint=phase2_c,
                save_dir=save_dir,
-               flight_sampler=flight_sampler)
+               flight_sampler=flight_sampler,
+               global_step_offset=phase2_offset)
 
     # ── FiLM 검증: constraint별 greedy 결과 비교 ─────────────────────
     print()
@@ -813,6 +865,8 @@ def train(phase2_only=False):
         "max_time":       WINDOW_DAYS * 24,  # evaluate_ip.py가 ckpt["max_time"]으로 직접 읽음
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt")
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
