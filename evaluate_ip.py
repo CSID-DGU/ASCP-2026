@@ -5,6 +5,7 @@ RL rollout → pairing 후보 pool 생성 → Set Covering IP로 최적 조합 �
 """
 
 import sys
+import os
 import torch
 from torch.distributions import Categorical
 
@@ -17,6 +18,7 @@ from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
 import config
+import wandb
 
 
 def constraint_to_tensor(constraint):
@@ -432,6 +434,22 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
         t.to(DEVICE) for t in flights_to_tensors(flights, max_time)
     ]
 
+    ckpt_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
+    wandb.init(
+        project="ASCP-2026",
+        name=f"eval_{ckpt_name}",
+        config={
+            "checkpoint":   checkpoint_path,
+            "n_rollouts":   n_rollouts,
+            "window_days":  window_days,
+            "offset_days":  offset_days,
+            "bases":        list(bases),
+            "lambda_dh":    lambda_dh,
+            "n_flights":    n_flights,
+            "device":       device,
+        },
+    )
+
     with torch.no_grad():
         encoded = encoder(origins, dests, dep_norm, arr_norm, fly_norm, c_tensor)
 
@@ -445,6 +463,12 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
         print("IP 풀기 (Set Covering)...", flush=True)
         result = solve_set_covering(pool, n_flights=n_flights, lambda_dh=lambda_dh)
 
+    fly_total  = sum(p["fly"]                       for p in result["selected"]) if result["selected"] else 0.0
+    dead_total = sum(p.get("dead_time", p["cost"])  for p in result["selected"]) if result["selected"] else 0.0
+    legs_total = sum(p.get("n_legs", len(p["legs"])) for p in result["selected"]) if result["selected"] else 0
+    avg_legs   = legs_total / len(result["selected"]) if result["selected"] else 0.0
+    ftc        = dead_total / fly_total * 100 if fly_total > 0 else 0.0
+
     print()
     print("=" * 50)
     print("결과")
@@ -455,16 +479,25 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
     print(f"  uncoverable:  {result['uncoverable']}개 flight")
     print(f"  deadhead:     {result['deadhead_count']}개 flight")
     print(f"  status:       {result['status']}")
-
     if result["selected"]:
-        fly_total  = sum(p["fly"]       for p in result["selected"])
-        dead_total = sum(p.get("dead_time", p["cost"]) for p in result["selected"])
-        legs_total = sum(p.get("n_legs", len(p["legs"])) for p in result["selected"])
-        avg_legs   = legs_total / len(result["selected"]) if result["selected"] else 0.0
         print(f"  fly time:     {fly_total:.2f}h")
         print(f"  dead time:    {dead_total:.2f}h")
-        print(f"  FTC:          {dead_total / fly_total * 100:.2f}%")
+        print(f"  FTC:          {ftc:.2f}%")
         print(f"  avg legs/pairing: {avg_legs:.2f}")
+
+    wandb.log({
+        "n_pairings":    result["n_pairings"],
+        "total_cost":    result["total_cost"],
+        "coverage_pct":  result["coverage"] * 100,
+        "n_deadheads":   result["deadhead_count"],
+        "n_uncoverable": result["uncoverable"],
+        "fly_time":      fly_total,
+        "dead_time":     dead_total,
+        "FTC":           ftc,
+        "avg_legs":      avg_legs,
+        "pool_size":     len(pool),
+    })
+    wandb.finish()
 
     return result
 
