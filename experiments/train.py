@@ -472,7 +472,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
         # flight action — π[flight_id] 추가 (CG dual feedback)
         flight_id = flights[action]["id"]
         state, r, done = step(state, action, flights, assigned, constraint)
-        total_reward += r + dual_vars.get(flight_id, 0.0)
+        total_reward += r + dual_vars.get(flight_id, 0.0) * config.PHASE2_DUAL_WEIGHT
         if done:
             break
 
