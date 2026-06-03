@@ -5,15 +5,20 @@ import config
 
 
 def get_max_duty(legs_count, custom_max_duty=None):
-    """FAA Part 117과 항공사 정책 중 더 엄격한 duty 시간 한도 반환
+    """constraint["max_duty"]를 duty 한도로 사용. None이면 FAA_DUTY_TABLE 기본값 적용.
 
     legs_count: 해당 duty에 추가될 leg 수 (현재 legs + 1)
     custom_max_duty: constraint["max_duty"] 값. None이면 DEFAULT_CONSTRAINTS 사용
+
+    [수정] 기존: min(faa_limit, custom_max_duty) — FAA legs 기반 한도와 constraint를 동시에 적용.
+           문제: Stage 3에서 max_duty=14h 샘플링 시 legs=3이면 실제 마스킹이 min(12,14)=12h로
+                 적용되어 FiLM 입력(14h 기준)과 environment 마스킹 불일치 → 학습 신호 오염.
+           수정: custom_max_duty를 그대로 사용. constraint 값이 유일한 기준.
+                 FAA 규정 준수는 constraint 설정 단계(config.py)에서 보장.
     """
-    faa_limit = config.FAA_DUTY_TABLE.get(min(legs_count, 6), 10.0)
     if custom_max_duty is not None:
-        return min(faa_limit, custom_max_duty)
-    return min(faa_limit, config.DEFAULT_CONSTRAINTS["max_duty"])
+        return custom_max_duty
+    return config.FAA_DUTY_TABLE.get(min(legs_count, 6), 10.0)
 
 
 def get_mask(state, flights, assigned, constraint=None, stage=3):
