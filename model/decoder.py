@@ -56,16 +56,16 @@ class PointerDecoder(nn.Module):
         """
         Args:
             encoded_flights: (N, d_model)
-            state_vec: (airport_emb_dim*2+7,) — current_emb + base_emb + scalars(7)
-            mask: (N+2,) — [...flights, END_DUTY, END_PAIRING]
+            state_vec: (state_dim,) 또는 (B, state_dim) — 배치 rollout 지원
+            mask: (N+2,) 또는 (B, N+2)
             return_logits: True면 softmax 전 raw score 반환 — REINFORCE log_prob 계산 시 수치 안정성
         Returns:
-            probs or logits: (N+2,)
+            probs or logits: (N+2,) 또는 (B, N+2)
         """
         q = self.state_mlp(state_vec)
         if self.skip_state_mlp:
             q = q + self.skip_proj(state_vec)
-        q = self.W_q(q)
+        q = self.W_q(q)                              # (d_model,) or (B, d_model)
 
         keys = torch.cat([
             encoded_flights,
@@ -74,9 +74,14 @@ class PointerDecoder(nn.Module):
         ], dim=0)                                    # (N+2, d_model)
         k = self.W_k(keys)
 
-        scores = (k @ q) / math.sqrt(self.d_model)  # (N+2,)
-        scores[mask == 0] = float('-inf')
+        if q.dim() == 2:
+            # 배치: q (B, d_model), k (N+2, d_model) → scores (B, N+2)
+            scores = torch.einsum('bd,nd->bn', q, k) / math.sqrt(self.d_model)
+        else:
+            scores = (k @ q) / math.sqrt(self.d_model)  # (N+2,)
+
+        scores = scores.masked_fill(mask == 0, float('-inf'))
 
         if return_logits:
-            return scores                            # (N+2,) — F.log_softmax로 안정적 log_prob 계산
-        return F.softmax(scores, dim=-1)             # (N+2,)
+            return scores
+        return F.softmax(scores, dim=-1)
