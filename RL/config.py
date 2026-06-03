@@ -70,7 +70,7 @@ EPISODE_MAX_FLIGHTS = 300
 # pool rollout 수: pool이 너무 작으면 LP가 의미없고, 너무 많으면 느림 → 30번이 균형점
 # LP interval: 매 에피소드 LP를 풀면 CBC solver가 병목 → 10 에피소드마다 재풀기
 # (dual_vars는 interval 사이에 캐싱되어 재사용됨)
-PHASE2_POOL_ROLLOUTS = 30    # pool 수집 rollout 수 (stochastic × 30 + greedy × 1)
+PHASE2_POOL_ROLLOUTS = 50    # pool 수집 rollout 수 (stochastic × 50 + greedy × 1)
 PHASE2_LP_INTERVAL   = 25    # LP re-solve 주기 (에피소드) — 10→25: π[f] 급변으로 인한 policy 진동 방지
 PHASE2_N_EPISODES    = 1000  # Phase 2 학습 에피소드 수
 PHASE2_DUAL_WEIGHT   = 0.1   # π[f] 스케일 보정 — raw dual이 dead time 신호를 압도하지 않도록

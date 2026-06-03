@@ -725,7 +725,7 @@ def train(phase2_only=False):
 
     if phase2_only:
         ckpt_path = os.path.join(save_dir, "stage3_best.pt")
-        ckpt = torch.load(ckpt_path, map_location=DEVICE)
+        ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
         encoder.load_state_dict(ckpt["encoder"])
         decoder.load_state_dict(ckpt["decoder"])
         print(f"stage3_best.pt 로드 완료 → Phase 2만 실행")
