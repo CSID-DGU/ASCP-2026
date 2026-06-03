@@ -20,6 +20,8 @@ class FlightEncoder(nn.Module):
         num_layers: int = 2,
         skip_film: bool = False,
         skip_transformer: bool = False,
+        use_film_before: bool = True,
+        use_film_after: bool = True,
     ):
         super().__init__()
 
@@ -33,8 +35,11 @@ class FlightEncoder(nn.Module):
         )
 
         # FiLM: constraint로 flight 벡터 변조 (Transformer 전+후 양쪽)
+        # use_film_before/after=False이면 해당 FiLM을 건너뜀 (identity)
         self.film_before = FiLM(constraint_dim, d_model, use_skip=skip_film)
         self.film_after  = FiLM(constraint_dim, d_model, use_skip=skip_film)
+        self.use_film_before = use_film_before
+        self.use_film_after  = use_film_after
 
         # Transformer: flight 간 관계 파악
         encoder_layer = nn.TransformerEncoderLayer(
@@ -73,7 +78,8 @@ class FlightEncoder(nn.Module):
         x = torch.cat([o_emb, d_emb, times], dim=-1)
         x = self.flight_mlp(x)
 
-        x = self.film_before(x, constraint)
+        if self.use_film_before:
+            x = self.film_before(x, constraint)
 
         x_pre = x
         x = x.unsqueeze(0)
@@ -82,6 +88,7 @@ class FlightEncoder(nn.Module):
         if self.skip_transformer:
             x = x + x_pre
 
-        x = self.film_after(x, constraint)
+        if self.use_film_after:
+            x = self.film_after(x, constraint)
 
         return x
