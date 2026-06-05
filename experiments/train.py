@@ -707,7 +707,7 @@ def run_curriculum_stage(
 
 
 def train(phase2_only=False):
-    DATA_PATH   = "RL/data/T_ONTIME_MARKETING.csv"
+    DATA_PATH   = config.AIRLINE_DATA[config.AIRLINE]
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
     # 항공사 base 설정 — config.py에서 AIRLINE 바꾸면 자동 반영
@@ -807,7 +807,6 @@ def train(phase2_only=False):
         stage3_base = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
         def sample_constraint():
             # 범위는 config.STAGE3_CONSTRAINT_RANGES에서 관리
-            # TODO: 범위 확정 후 config.py 범위 수정
             r = config.STAGE3_CONSTRAINT_RANGES
             return {
                 **stage3_base,
