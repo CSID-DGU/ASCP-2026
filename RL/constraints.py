@@ -12,8 +12,9 @@
 
 # 항공사별 constraint 값은 airline_constraints/ 에서 관리
 # 새 항공사 추가 시 airline_constraints/<airline>.py 파일 추가 후 아래에 get 함수 작성
-from airline_constraints.delta import DELTA_CONSTRAINTS
-# from airline_constraints.ua import TURKISH_CONSTRAINTS  # 이런식으로 추후 추가
+from airline_constraints.delta   import DELTA_CONSTRAINTS
+from airline_constraints.alaska  import ALASKA_CONSTRAINTS
+from airline_constraints.jetblue import JETBLUE_CONSTRAINTS
 
 
 def get_delta_constraints(base_airport: int):
@@ -26,6 +27,22 @@ def get_delta_constraints(base_airport: int):
     base_airport는 FiLM 입력에서 제외 (카테고리형 → FILM_CONSTRAINT_KEYS에 없음)
     """
     return {**DELTA_CONSTRAINTS, "base_airport": base_airport}
+
+
+def get_alaska_constraints(base_airport: int):
+    """Alaska Airlines constraint dict 반환
+
+    base_airport: 에피소드별 base 공항 ID (SEA, PDX, ANC, LAX, SFO 중 하나)
+    """
+    return {**ALASKA_CONSTRAINTS, "base_airport": base_airport}
+
+
+def get_jetblue_constraints(base_airport: int):
+    """JetBlue Airways constraint dict 반환
+
+    base_airport: 에피소드별 base 공항 ID (JFK, BOS, FLL, LAX, MCO 중 하나)
+    """
+    return {**JETBLUE_CONSTRAINTS, "base_airport": base_airport}
 
 
 # FiLM 입력 constraint 키 순서 — constraint_to_tensor()가 이 순서대로 tensor 변환 → shape (7,)

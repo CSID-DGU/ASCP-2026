@@ -11,7 +11,13 @@ import wandb
 from model import FlightEncoder, PointerDecoder
 from loader import build_airport_map, bases_to_ids, load_flights_rolling
 from environment import get_mask, step, final_reward
-from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
+from constraints import get_delta_constraints, get_alaska_constraints, get_jetblue_constraints, FILM_CONSTRAINT_KEYS
+
+_CONSTRAINT_FN = {
+    "delta":   get_delta_constraints,
+    "alaska":  get_alaska_constraints,
+    "jetblue": get_jetblue_constraints,
+}
 from state import init_state
 import config
 
@@ -54,7 +60,7 @@ def state_to_vec(state, encoder, constraint):
     max_pairing_days = constraint.get("max_pairing_days", 5)
     time_of_day      = (state["current_time"] % 24.0) / 24.0
     day_norm         = (state["current_time"] // 24.0) / max(max_pairing_days, 1)
-    duty_period_norm = state.get("duty_period", 0) / max(constraint.get("max_duty_periods", 4), 1)
+    duty_period_norm = state.get("duty_period", 0) / max(constraint.get("max_duty_periods", 2), 1)
 
     # duty_elapsed: 비행 시간만이 아닌 FAA 기준 실제 경과 시간 (비행 + 대기)
     # is_resting/pairing_start 중이면 새 duty 아직 시작 안 함 → 0
@@ -768,7 +774,7 @@ def train(phase2_only=False):
         origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS)
         return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
 
-    base_constraint = get_delta_constraints(base_ids[0])  # base는 에피소드마다 교체됨
+    base_constraint = _CONSTRAINT_FN[config.AIRLINE](base_ids[0])  # base는 에피소드마다 교체됨
 
     if phase2_only:
         ckpt_path = os.path.join(save_dir, "stage3_best.pt")
@@ -789,7 +795,7 @@ def train(phase2_only=False):
         # ── Stage 2: full multi-day ───────────────────────────────────────
         # overnight connection 포함 전체 multi-day pairing 학습
         # max_pairing_days를 WINDOW_DAYS로 제한 — window 밖 pairing은 데이터 없어 deadhead만 유발
-        stage2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
+        stage2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
         run_curriculum_stage(2, encoder, decoder, optimizer,
                              n_episodes=2000, constraint_override=stage2_c,
                              save_dir=save_dir, flight_sampler=flight_sampler,
@@ -798,7 +804,7 @@ def train(phase2_only=False):
         # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
         # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
         # max_pairing_days 상한도 WINDOW_DAYS-1로 제한
-        stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
+        stage3_base = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
         def sample_constraint():
             # 범위는 config.STAGE3_CONSTRAINT_RANGES에서 관리
             # TODO: 범위 확정 후 config.py 범위 수정
@@ -822,7 +828,7 @@ def train(phase2_only=False):
 
     # ── Phase 2: CG dual feedback ──────────────────────────────────────
     # Stage 3 이후 동일 모델 이어서 학습 (Phase 1 → Phase 2 연속)
-    phase2_c = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
+    phase2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
     phase2_offset = 0 if phase2_only else 1000 + 2000 + 2000
     run_phase2(encoder, decoder, optimizer,
                n_episodes=config.PHASE2_N_EPISODES,
@@ -846,8 +852,8 @@ def train(phase2_only=False):
 
     with torch.no_grad():
         for duty in [12.0, 12.5, 13.0, 13.5, 14.0]:
-            c = {**get_delta_constraints(val_base), "max_duty": duty,
-                 "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS}
+            c = {**_CONSTRAINT_FN[config.AIRLINE](val_base), "max_duty": duty,
+                 "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS}
             enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times, constraint_to_tensor(c))
             _, _, _, metrics = run_episode(val_flights, c, encoder, decoder, enc, greedy=True)
             print(f"  max_duty={duty:4.1f}h → pairings: {metrics['n_pairings']:3d}  "
