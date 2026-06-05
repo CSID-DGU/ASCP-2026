@@ -25,7 +25,7 @@ DEFAULT_CONSTRAINTS = {
 # 항공사 설정 — 항공사 바꿀 때 AIRLINE만 수정하면 됨
 AIRLINE = "delta"
 AIRLINE_DATA = {
-    "delta":   "RL/data/delta_2019_01.csv",    # 성수기 8월 
+    "delta":   "RL/data/delta_2019_01.csv",    
     "alaska":  "RL/data/alaska_2019_01.csv",
     "jetblue": "RL/data/jetblue_2019_01.csv",
 }
