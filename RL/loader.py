@@ -116,6 +116,7 @@ def load_flights_rolling(
     airport_map=None,
     base_airport=None,
     n_max=None,
+    df=None,
 ):
     """슬라이딩 윈도우 방식으로 실제 날짜 데이터 로드.
 
@@ -134,15 +135,17 @@ def load_flights_rolling(
         airport_map:   전체-데이터 기준 공항 ID 맵; None이면 전체 CSV에서 재계산(느림).
         base_airport:  에피소드 base 공항 ID; base-first sampling 기준
         n_max:         에피소드 최대 flight 수; 초과 시 base-first sampling 적용
+        df:            사전 로드된 DataFrame; 제공 시 CSV 재로딩 생략 (에피소드 반복 호출 최적화)
 
     Returns:
         flight dict 리스트 (dep_time 오름차순 정렬)
     """
-    df = pd.read_csv(path)
-    df = df[[
-        "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
-    ]].dropna()
-    df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
+    if df is None:
+        df = pd.read_csv(path)
+        df = df[[
+            "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
+        ]].dropna()
+        df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
     # airport_map이 없으면 전체 데이터 기준으로 구축 (에피소드 간 ID 일관성 보장)
     if airport_map is None:

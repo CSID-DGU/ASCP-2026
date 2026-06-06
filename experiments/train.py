@@ -751,11 +751,11 @@ def train(phase2_only=False):
     save_dir = os.path.join(os.path.dirname(__file__), "..", "checkpoints", wandb.run.id)
     os.makedirs(save_dir, exist_ok=True)
 
-    # 전체 날짜 수 파악 → offset_days 범위 결정
+    # CSV 한 번만 로드 → flight_sampler 클로저에 캐싱 (에피소드마다 재로딩 방지)
     import pandas as pd
-    df_dates = pd.read_csv(DATA_PATH, usecols=["FL_DATE"])
-    df_dates["FL_DATE"] = pd.to_datetime(df_dates["FL_DATE"], format="mixed")
-    total_days = df_dates["FL_DATE"].nunique()
+    _df_cache = pd.read_csv(DATA_PATH, usecols=["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"]).dropna()
+    _df_cache["FL_DATE"] = pd.to_datetime(_df_cache["FL_DATE"], format="mixed")
+    total_days = _df_cache["FL_DATE"].nunique()
     max_offset = max(0, total_days - WINDOW_DAYS)
 
     def flight_sampler():
@@ -766,6 +766,7 @@ def train(phase2_only=False):
             DATA_PATH, WINDOW_DAYS, offset_days, airport_map,
             base_airport=base_airport,
             n_max=config.EPISODE_MAX_FLIGHTS,
+            df=_df_cache,
         )
         if not flights:
             return None
@@ -849,6 +850,7 @@ def train(phase2_only=False):
     val_flights = load_flights_rolling(
         DATA_PATH, WINDOW_DAYS, 0, airport_map,
         base_airport=val_base, n_max=config.EPISODE_MAX_FLIGHTS,
+        df=_df_cache,
     )
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
 
