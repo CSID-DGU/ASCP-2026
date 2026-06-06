@@ -730,9 +730,6 @@ def train(phase2_only=False):
     params    = list(encoder.parameters()) + list(decoder.parameters())
     optimizer = optim.Adam(params, lr=1e-4)
 
-    save_dir = os.path.join(os.path.dirname(__file__), "..", "checkpoints")
-    os.makedirs(save_dir, exist_ok=True)
-
     run_name = "phase2-only" if phase2_only else "stage1-3+phase2"
     wandb.init(
         project="ASCP-2026",
@@ -750,6 +747,9 @@ def train(phase2_only=False):
         },
         resume="allow",
     )
+
+    save_dir = os.path.join(os.path.dirname(__file__), "..", "checkpoints", wandb.run.id)
+    os.makedirs(save_dir, exist_ok=True)
 
     # 전체 날짜 수 파악 → offset_days 범위 결정
     import pandas as pd
