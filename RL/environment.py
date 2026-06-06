@@ -92,7 +92,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         and state.get("legs", 0) > 0
         and not is_resting
         and not pairing_start
-        and duty_period < c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"]) - 1
+        and duty_period < c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])  # overnight 횟수 기준
     )
     if can_end_duty:
         mask[config.END_DUTY] = 1

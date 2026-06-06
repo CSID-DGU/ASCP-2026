@@ -7,55 +7,57 @@ END_PAIRING = -1
 FAA_DUTY_TABLE = {1: 13.0, 2: 13.0, 3: 12.0, 4: 11.5, 5: 11.0, 6: 10.5}
 
 # Delta 기본 제약 — FiLM constraint vector(7,) 및 마스킹 기본값
-# TODO: base_airport = 0 하드코딩 → loader.py Global Airport Index 확정 후 ATL 실제 ID로 교체
+# base_airport = 0은 fallback값 — train.py에서 에피소드마다 실제 ID 주입하므로 수정 불필요
 DEFAULT_CONSTRAINTS = {
-    "max_duty":         13.0,   # duty 최대 경과 시간 (h)
-    "min_conn":          0.5,   # 최소 연결 시간 (h, 30분)
-    "max_conn":          8.0,   # 최대 연결 시간 (h)
-    "max_legs":            4,   # duty당 최대 flight 수
-    "base_airport":        0,   # base 공항 ID (Global Index 확정 전 임시값)
-    "min_rest":          9.5,   # duty 간 최소 휴식 (h)
-    "max_duty_periods":    4,   # pairing당 최대 duty 수
-    "max_pairing_days":    5,   # pairing 최대 기간 (일)
+    "max_duty":         13.0,   # duty 최대 경과 시간 (h) — Delta CBA §12.D.2 / FAR 117 Table B
+    "min_conn":         0.65,   # 최소 연결 시간 (h, ~39분) — BTS p5 추정 (Delta 기준)
+    "max_conn":          9.0,   # 최대 연결 시간 (h) — BTS p95 추정 (Delta 기준)
+    "max_legs":            8,   # duty당 최대 flight 수 — Delta CBA §12.F (8 landings)
+    "base_airport":        0,   # base 공항 ID (fallback — train.py에서 에피소드별 주입)
+    "min_rest":         10.0,   # duty 간 최소 휴식 (h) — FAR 117 §117.25
+    "max_duty_periods":    2,   # pairing당 최대 overnight rest 수 (overnight 횟수 기준)
+    "max_pairing_days":    5,   # pairing 최대 기간 (일) — BTS p95 추정
     "pairing_cost":      5.0,   # END_PAIRING reward 패널티
     "uncovered_penalty": 10.0,  # 미배정 flight 1개당 패널티
     "base_penalty":      5.0,   # END_PAIRING 시 base 미복귀 패널티
 }
 
-# 항공사 설정 — 항공사 바꿀 때 AIRLINE만 수정하면 됨 (현재 코드는 예시임 !!)
+# 항공사 설정 — 항공사 바꿀 때 AIRLINE만 수정하면 됨
 AIRLINE = "delta"
+AIRLINE_DATA = {
+    "delta":   "RL/data/delta_2019_01.csv",    
+    "alaska":  "RL/data/alaska_2019_01.csv",
+    "jetblue": "RL/data/jetblue_2019_01.csv",
+}
 AIRLINE_BASES = {
-    "delta":   ["ATL", "DTW", "MSP", "JFK", "LAX"],
-    "alaska":  ["SEA", "PDX", "ANC"],
-    "jetblue": ["JFK", "BOS", "FLL"],
+    "delta":   ["ATL", "DTW", "MSP", "JFK", "LAX", "SEA", "SLC"],  # BTS 2019 기준 주요 허브
+    "alaska":  ["SEA", "PDX", "ANC", "LAX", "SFO"],                 # BTS 2019 기준 주요 허브
+    "jetblue": ["JFK", "BOS", "FLL", "LAX", "MCO"],                 # BTS 2019 기준 주요 허브
 }
 
 # FiLM 입력 정규화 기준값 — constraint 값을 [0, 1]로 정규화하기 위한 분모
 # 각 항목별 실제 상한값 (항공사 중 최대 or 여유값)
-# TODO: constraint 확정 후 항공사별 실제 상한으로 교체
 # evaluate_ip.py도 동일한 값을 써야 checkpoint 호환 — 수정 시 혜린 확인 필요
-# 지금 값은 우선 evaluate_ip.py 참조
 CONSTRAINT_NORMS = {
-    "max_duty":         14.0,   # JetBlue constraint 상한
+    "max_duty":         14.0,   # 항공사 최대(13.0)보다 여유
     "min_conn":          1.0,   # Stage3 범위 상한
-    "max_conn":          8.0,   # DEFAULT_CONSTRAINTS 기준
-    "max_legs":          6.0,   # 실제 사용값(4)보다 여유
-    "min_rest":         12.0,   # Southwest(11.0)보다 여유
-    "max_duty_periods":  5.0,   # 실제 사용값(4)보다 여유
-    "max_pairing_days":  7.0,   # 실제 사용값(4~5)보다 여유
+    "max_conn":         10.0,   # Delta p95(9.0)보다 여유
+    "max_legs":         10.0,   # Delta CBA 최대(8)보다 여유
+    "min_rest":         12.0,   # FAR 117 기준(10.0)보다 여유
+    "max_duty_periods":  4.0,   # JetBlue 최대(2~3)보다 여유
+    "max_pairing_days":  8.0,   # JetBlue 최대(6~7)보다 여유
 }
 
-# Stage 3 FiLM augmentation constraint 범위 — 항공사별 constraint 확정 후 채울 것
+# Stage 3 FiLM augmentation constraint 범위 — Delta/Alaska/JetBlue 2019 기준 확정값
 # (min, max) 튜플. train.py sample_constraint()에서 random.uniform/randint(*range)로 사용
-# TODO: constraint 확정 후 각 항공사 실제 범위로 교체
 STAGE3_CONSTRAINT_RANGES = {
-    "max_duty":         (12.0, 14.0),   # TODO: constraint 기준 확정 필요
-    "min_rest":         (10.0, 11.0),   # TODO: constraint 기준 확정 필요
-    "min_conn":         (0.5,  1.0),    # TODO: constraint 기준 확정 필요
-    "max_conn":         (3.0,  4.0),    # TODO: constraint 기준 확정 필요
-    "max_legs":         (3,    4),      # TODO: constraint 기준 확정 필요
-    "max_duty_periods": (3,    4),      # TODO: constraint 기준 확정 필요
-    "max_pairing_days": (3,    4),      # TODO: constraint 기준 확정 필요 / 상한은 WINDOW_DAYS(4)로 제한
+    "max_duty":         (12.5, 13.0),   # Alaska 12.5h ~ Delta/JetBlue 13.0h
+    "min_rest":         (10.0, 10.0),   # 전 항공사 FAR 117 기준 10.0h 동일
+    "min_conn":         (0.58, 0.65),   # JetBlue 0.58h ~ Delta/Alaska 0.65h
+    "max_conn":         (8.0,  9.0),    # JetBlue 8.0h ~ Delta 9.0h
+    "max_legs":         (6,    8),      # Alaska 6 ~ Delta 8
+    "max_duty_periods": (2,    3),      # Delta/Alaska 2 ~ JetBlue 2~3
+    "max_pairing_days": (5,    7),      # Delta/Alaska 5 ~ JetBlue 6~7 / 상한은 WINDOW_DAYS(5)로 제한
 }
 
 # 슬라이딩 윈도우 크기 — max_pairing_days + 1 (마지막 날 시작 pairing도 완성 가능하게)
