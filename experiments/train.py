@@ -844,10 +844,13 @@ def train(phase2_only=False):
 
     encoder.eval()
     decoder.eval()
-    # 검증용 고정 데이터 (offset=0, base=ATL)
-    val_flights = load_flights_rolling(DATA_PATH, WINDOW_DAYS, 0, airport_map)
+    # 검증용 고정 데이터 (offset=0, base=ATL) — n_max 지정으로 수천 개 로드 방지
+    val_base    = base_ids[0]
+    val_flights = load_flights_rolling(
+        DATA_PATH, WINDOW_DAYS, 0, airport_map,
+        base_airport=val_base, n_max=config.EPISODE_MAX_FLIGHTS,
+    )
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
-    val_base = base_ids[0]
 
     with torch.no_grad():
         for duty in [12.0, 12.5, 13.0, 13.5, 14.0]:
@@ -871,7 +874,7 @@ def train(phase2_only=False):
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt")
 
-    wandb.finish()
+    wandb.finish(quiet=True)
 
 
 if __name__ == "__main__":
