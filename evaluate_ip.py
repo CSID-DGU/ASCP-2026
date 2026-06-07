@@ -384,7 +384,7 @@ def collect_pool_multibase(flights, constraint, encoder, decoder, encoded,
     return list(pool.values())
 
 
-def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
+def evaluate(checkpoint_path, data_path=None,
              n_rollouts=100, window_days=5, offset_days=0,
              bases=("ATL", "DTW", "MSP"),
              lambda_dh=1.0,
@@ -399,6 +399,9 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
     """
     global DEVICE
     DEVICE = torch.device(device)
+
+    if data_path is None:
+        data_path = config.AIRLINE_DATA[config.AIRLINE]
 
     if n_max is None:
         n_max = config.EPISODE_MAX_FLIGHTS
@@ -505,8 +508,59 @@ def evaluate(checkpoint_path, data_path="RL/data/T_ONTIME_MARKETING.csv",
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint", nargs="?", default="checkpoints/step2_best.pt")
+    parser.add_argument("checkpoint", nargs="?", default="checkpoints/step2_best.pt",
+                        help="체크포인트 파일 또는 디렉토리 경로. "
+                             "디렉토리를 넘기면 stage1~phase2_best.pt 4개를 순서대로 평가 후 요약 출력. "
+                             "예) checkpoints/di83hxpy")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--n-rollouts", type=int, default=100)
     args = parser.parse_args()
-    evaluate(args.checkpoint, device=args.device, n_rollouts=args.n_rollouts)
+
+    # checkpoints/ 생략 허용 — "di83hxpy" → "checkpoints/di83hxpy"
+    ckpt_arg = args.checkpoint
+    if not os.path.exists(ckpt_arg):
+        candidate = os.path.join("checkpoints", ckpt_arg)
+        if os.path.exists(candidate):
+            ckpt_arg = candidate
+
+    if os.path.isdir(ckpt_arg):
+        stages = ["stage1_best", "stage2_best", "stage3_best", "phase2_best"]
+        ckpt_dir = ckpt_arg
+        summary = []
+
+        for stage in stages:
+            ckpt = os.path.join(ckpt_dir, f"{stage}.pt")
+            if not os.path.exists(ckpt):
+                print(f"[SKIP] {ckpt} not found")
+                continue
+            print(f"\n{'='*60}")
+            print(f"Evaluating: {stage}  ({ckpt})")
+            print(f"{'='*60}")
+            result = evaluate(ckpt, device=args.device, n_rollouts=args.n_rollouts)
+            sel = result["selected"]
+            fly  = sum(p["fly"]                        for p in sel) if sel else 0.0
+            dead = sum(p.get("dead_time", p["cost"])   for p in sel) if sel else 0.0
+            legs = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
+            summary.append({
+                "stage":    stage,
+                "pairings": result["n_pairings"],
+                "dh":       result["deadhead_count"],
+                "coverage": result["coverage"] * 100,
+                "ftc":      dead / fly * 100 if fly > 0 else 0.0,
+                "dead":     dead,
+                "fly":      fly,
+                "avg_legs": legs / len(sel) if sel else 0.0,
+            })
+
+        print(f"\n{'='*60}")
+        print(f"Summary — {ckpt_dir}")
+        print(f"{'='*60}")
+        hdr = f"  {'Stage':<15} {'Pairs':>6} {'DH':>4} {'Cover':>7} {'FTC%':>6} {'Dead(h)':>8} {'Fly(h)':>8} {'AvgLegs':>8}"
+        print(hdr)
+        print("  " + "-" * (len(hdr) - 2))
+        for r in summary:
+            print(f"  {r['stage']:<15} {r['pairings']:>6} {r['dh']:>4} "
+                  f"{r['coverage']:>6.1f}% {r['ftc']:>5.2f}% "
+                  f"{r['dead']:>7.2f}h {r['fly']:>7.2f}h {r['avg_legs']:>8.2f}")
+    else:
+        evaluate(ckpt_arg, device=args.device, n_rollouts=args.n_rollouts)
