@@ -1,3 +1,4 @@
+import random
 import pandas as pd
 from collections import Counter
 
@@ -9,46 +10,64 @@ def convert_time(hhmm):
     return h + m / 60
 
 
-def load_flights(path, limit=50, seed=42, n_days_max=None, hub_only=False):
+def build_airport_map(path):
+    """전체 BTS CSV 기준으로 공항→int 맵을 생성한다.
+
+    빈도 내림차순 정렬: index 0 = 가장 빈도 높은 공항(허브/base 후보).
+    에피소드마다 다른 rolling window를 써도 ID가 일관된다.
     """
-    BTS 데이터에서 flight 로드.
+    df = pd.read_csv(path, usecols=["ORIGIN", "DEST"]).dropna()
+    counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
+    airports_sorted = sorted(counts.keys(), key=lambda a: -counts[a])
+    return {a: i for i, a in enumerate(airports_sorted)}
 
-    hub_only=True: 가장 빈도 높은 공항(허브)에 출발 또는 도착하는 flight만 포함.
-        → 모든 flight이 허브를 경유하므로 base-to-base pairing 항상 가능 → dummy 0개.
-        → 모든 flight이 허브를 경유하므로 base-to-base pairing 항상 가능.
 
-    공항 인덱스: 빈도 내림차순 정렬 → index 0 = 허브 = base_airport.
+def bases_to_ids(bases, airport_map):
+    """문자열 base 리스트를 정수 ID로 변환한다.
+
+    Args:
+        bases:       공항 코드 문자열 리스트 (예: ["ATL", "DTW", "MSP"])
+        airport_map: build_airport_map()으로 생성한 공항→int 맵
+
+    Returns:
+        정수 ID 리스트. airport_map에 없는 코드는 무시한다.
+    """
+    ids = [airport_map[b] for b in bases if b in airport_map]
+    if len(ids) < len(bases):
+        missing = [b for b in bases if b not in airport_map]
+        raise ValueError(f"airport_map에 없는 base: {missing}")
+    return ids
+
+
+def get_bases(flights, n_bases=3):
+    """flight dict 리스트에서 빈도 상위 n_bases개 공항 ID를 반환한다.
+
+    airport_map이 빈도 내림차순이므로 결과는 통상 [0, 1, ..., n_bases-1].
+    """
+    counts = Counter()
+    for f in flights:
+        counts[f["origin"]] += 1
+        counts[f["dest"]] += 1
+    return [a for a, _ in counts.most_common(n_bases)]
+
+
+def load_flights(path, limit=50, seed=42, n_days_max=None):
+    """BTS 데이터에서 flight 로드.
+
+    공항 인덱스: 전체 CSV 기준 빈도 내림차순 → index 0 = 허브.
+    limit과 무관하게 항상 동일한 airport_map이 사용된다.
     """
     df = pd.read_csv(path)
-
     df = df[[
-        "ORIGIN",
-        "DEST",
-        "CRS_DEP_TIME",
-        "CRS_ARR_TIME",
-        "FL_DATE"
+        "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
     ]].dropna()
-
     df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
-    # 허브 결정: 전체 데이터에서 가장 빈도 높은 공항 (필터링 전 기준)
-    all_airports = list(df["ORIGIN"]) + list(df["DEST"])
-    hub = Counter(all_airports).most_common(1)[0][0]
+    # 전체 데이터 기준으로 airport_map 구축 (subset 잘라내기 전에 계산)
+    airport_counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
+    airports_sorted = sorted(airport_counts.keys(), key=lambda a: -airport_counts[a])
+    airport_map = {a: i for i, a in enumerate(airports_sorted)}
 
-    # hub_only: round-trip 가능한 스포크 도시만 포함
-    #   전체 데이터 기준 ATL→X AND X→ATL 둘 다 존재하는 도시만 필터
-    #   샘플링 후 단방향만 들어간 도시 반복 제거 → 양방향 보장
-    if hub_only:
-        hub_to_spoke = set(df[df["ORIGIN"] == hub]["DEST"].unique()) - {hub}
-        spoke_to_hub = set(df[df["DEST"] == hub]["ORIGIN"].unique()) - {hub}
-        round_trip_cities = hub_to_spoke & spoke_to_hub
-        df = df[
-            ((df["ORIGIN"] == hub) & (df["DEST"].isin(round_trip_cities))) |
-            ((df["DEST"] == hub) & (df["ORIGIN"].isin(round_trip_cities)))
-        ].copy()
-
-    # 기본: head(limit)으로 앞에서부터 자름 (같은 날 데이터)
-    # n_days_max 지정 시: 날짜별 골고루 샘플링
     if n_days_max is not None:
         dates = sorted(df["FL_DATE"].unique())[:n_days_max]
         n_per_day = max(1, limit // len(dates))
@@ -61,126 +80,125 @@ def load_flights(path, limit=50, seed=42, n_days_max=None, hub_only=False):
     else:
         df = df.head(limit)
 
-    # hub_only 후처리:
-    # 1) 단방향 spoke city 제거 (샘플에서 한쪽 방향이 빠진 경우)
-    # 2) overnight timing 호환성 체크: 선행 duty가 overnight window 내 도착 불가한 flight 제거
-    #    (X→ATL flight인데 ATL→X 도착이 너무 늦어 min_rest 부족한 경우)
-    if hub_only:
-        df_pool = df.copy()  # 현재 head(limit) 결과
-        df_full_hub = df  # 이미 round_trip filter 적용된 전체
-
-        # 전체 round-trip pool (limit보다 훨씬 많음)
-        import pandas as _pd
-        df_all = _pd.read_csv(path)
-        df_all = df_all[["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"]].dropna()
-        df_all["FL_DATE"] = _pd.to_datetime(df_all["FL_DATE"], format="mixed")
-        hub_to_spoke_full = set(df_all[df_all["ORIGIN"] == hub]["DEST"].unique()) - {hub}
-        spoke_to_hub_full = set(df_all[df_all["DEST"] == hub]["ORIGIN"].unique()) - {hub}
-        rt_full = hub_to_spoke_full & spoke_to_hub_full
-        df_pool_full = df_all[
-            ((df_all["ORIGIN"] == hub) & (df_all["DEST"].isin(rt_full))) |
-            ((df_all["DEST"] == hub) & (df_all["ORIGIN"].isin(rt_full)))
-        ].copy()
-
-        # 현재 샘플에서 단방향 city 제거 → 부족분 보충 반복
-        for _ in range(10):
-            outbound = set(df[df["ORIGIN"] == hub]["DEST"]) - {hub}
-            inbound  = set(df[df["DEST"] == hub]["ORIGIN"]) - {hub}
-            connected = outbound & inbound
-            df = df[
-                ((df["ORIGIN"] == hub) & (df["DEST"].isin(connected))) |
-                ((df["DEST"] == hub) & (df["ORIGIN"].isin(connected)))
-            ]
-            if len(df) >= limit:
-                df = df.head(limit)
-                break
-            # 부족하면 pool에서 추가 rows 보충
-            used_idx = set(df.index)
-            extra = df_pool_full[~df_pool_full.index.isin(used_idx)].head(limit - len(df) + 20)
-            df = pd.concat([df, extra]).drop_duplicates()
-
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
     df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
+    # 자정을 넘는 항공편: FL_DATE는 출발일 기준 → arr_time이 dep_time보다 작으면 +24
+    df.loc[df["arr_time"] < df["dep_time"], "arr_time"] += 24
 
     base_date = df["FL_DATE"].min()
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-
     df["dep_time"] += df["day_offset"] * 24
     df["arr_time"] += df["day_offset"] * 24
 
     df = df.sort_values("dep_time").reset_index(drop=True)
 
-    # hub_only: overnight timing 호환성 체크 (dep_time 변환 후)
-    # X→ATL flight: ATL→X flights이 24h expansion 후 올바른 overnight window로 도착 가능해야 함
-    # 4-day expansion 기준: day k의 X→ATL(dep=T)에 대해
-    #   preceding ATL→X arr_time이 [T-24-max_rest, T-24-min_rest] ∪ [T-max_rest, T-min_rest] 내에 있어야 함
-    # 간단 체크: ATL→X 최소 arrival(= min arr_time in df for DEST==X) + min_rest < X→ATL dep + 24
-    if hub_only:
-        MIN_REST = 8.0
-        MAX_REST = 24.0
-        # ATL→X: 각 spoke 공항 X에 대한 최소 도착 시간 (당일 가장 이른 ATL 출발 편)
-        outbound_min_arr = df[df["ORIGIN"] == hub].groupby("DEST")["arr_time"].min()
-        # X→ATL: 각 spoke 공항 X에 대한 최소 출발 시간
-        inbound_min_dep = df[df["DEST"] == hub].groupby("ORIGIN")["dep_time"].min()
-
-        def is_pairable(row):
-            """overnight [min_rest, max_rest] 내 연결 가능한 flight인지 체크"""
-            if row["ORIGIN"] == hub:
-                # ATL→X: day0 arr + min_rest < day1 X→ATL earliest dep (= dep+24)
-                x = row["DEST"]
-                if x not in inbound_min_dep:
-                    return False
-                # day0 ATL→X arr + min_rest ≤ day1 X→ATL dep (= inbound_dep + 24)
-                return row["arr_time"] + MIN_REST <= inbound_min_dep[x] + 24
-            else:
-                # X→ATL: day0 ATL→X earliest arr + min_rest ≤ day1 this flight dep
-                x = row["ORIGIN"]
-                if x not in outbound_min_arr:
-                    return False
-                # day1 dep = row["dep_time"] + 24
-                return outbound_min_arr[x] + MIN_REST <= row["dep_time"] + 24
-
-        mask = df.apply(is_pairable, axis=1)
-        df = df[mask].reset_index(drop=True)
-
-    # 공항 인덱스: 빈도 내림차순 → index 0 = 허브 = base_airport
-    airport_counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
-    airports_sorted = sorted(airport_counts.keys(), key=lambda a: -airport_counts[a])
-    airport_map = {a: i for i, a in enumerate(airports_sorted)}
-
     df["origin"] = df["ORIGIN"].map(airport_map)
-    df["dest"] = df["DEST"].map(airport_map)
+    df["dest"]   = df["DEST"].map(airport_map)
 
     flights = []
     for _, row in df.iterrows():
         flights.append({
-            "id": len(flights),
-            "origin": int(row["origin"]),
-            "dest": int(row["dest"]),
+            "id":       len(flights),
+            "origin":   int(row["origin"]),
+            "dest":     int(row["dest"]),
             "dep_time": float(row["dep_time"]),
-            "arr_time": float(row["arr_time"])
+            "arr_time": float(row["arr_time"]),
         })
 
     return flights
 
 
-def load_flights_multiday(path, limit=200, n_days=4, seed=42, hub_only=False):
-    """같은 flight set을 n_days일치로 복제하여 multi-day 데이터 생성.
 
-    동일한 flights를 매일 반복 → overnight connection이 자연 생성됨.
-    결과: limit × n_days 개의 flight (ID는 day * limit + original_id)
+def load_flights_rolling(
+    path,
+    window_days=5,
+    offset_days=0,
+    airport_map=None,
+    base_airport=None,
+    n_max=None,
+    df=None,
+):
+    """슬라이딩 윈도우 방식으로 실제 날짜 데이터 로드.
+
+    에피소드마다 offset_days를 달리하면 서로 다른 flight 구성으로 훈련 가능.
+    hub_only 없이 모든 노선(spoke-spoke 포함)을 그대로 사용한다.
+
+    Base-first sampling (base_airport + n_max 지정 시):
+        base_flights = origin=base 또는 dest=base → 전부 포함
+        mid_flights  = 나머지 spoke-spoke         → 남은 슬롯만큼 랜덤 샘플링
+    n_max 미지정 시 전체 flight 반환.
+
+    Args:
+        path:          BTS CSV 경로
+        window_days:   윈도우 크기 (일), 기본 5
+        offset_days:   전체 날짜 목록 기준 시작 인덱스 (에피소드마다 랜덤 지정)
+        airport_map:   전체-데이터 기준 공항 ID 맵; None이면 전체 CSV에서 재계산(느림).
+        base_airport:  에피소드 base 공항 ID; base-first sampling 기준
+        n_max:         에피소드 최대 flight 수; 초과 시 base-first sampling 적용
+        df:            사전 로드된 DataFrame; 제공 시 CSV 재로딩 생략 (에피소드 반복 호출 최적화)
+
+    Returns:
+        flight dict 리스트 (dep_time 오름차순 정렬)
     """
-    base = load_flights(path, limit=limit, seed=seed, hub_only=hub_only)
+    if df is None:
+        df = pd.read_csv(path)
+        df = df[[
+            "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
+        ]].dropna()
+        df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
-    all_flights = []
-    for day in range(n_days):
-        for f in base:
-            all_flights.append({
-                "id":       day * limit + f["id"],
-                "origin":   f["origin"],
-                "dest":     f["dest"],
-                "dep_time": f["dep_time"] + day * 24.0,
-                "arr_time": f["arr_time"] + day * 24.0,
-            })
+    # airport_map이 없으면 전체 데이터 기준으로 구축 (에피소드 간 ID 일관성 보장)
+    if airport_map is None:
+        counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
+        airports_sorted = sorted(counts.keys(), key=lambda a: -counts[a])
+        airport_map = {a: i for i, a in enumerate(airports_sorted)}
 
-    return all_flights
+    # 윈도우 날짜 추출
+    dates = sorted(df["FL_DATE"].unique())
+    window_dates = dates[offset_days: offset_days + window_days]
+    if not window_dates:
+        return []
+
+    df = df[df["FL_DATE"].isin(window_dates)].copy()
+
+    # 시간 변환 + 윈도우 시작일 기준 day offset
+    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
+    df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
+    df.loc[df["arr_time"] < df["dep_time"], "arr_time"] += 24
+    base_date = min(window_dates)
+    df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
+    df["dep_time"] += df["day_offset"] * 24
+    df["arr_time"] += df["day_offset"] * 24
+
+    df = df.sort_values("dep_time").reset_index(drop=True)
+
+    df["origin"] = df["ORIGIN"].map(airport_map)
+    df["dest"]   = df["DEST"].map(airport_map)
+    df = df.dropna(subset=["origin", "dest"])
+
+    flights = []
+    for _, row in df.iterrows():
+        flights.append({
+            "id":       len(flights),
+            "origin":   int(row["origin"]),
+            "dest":     int(row["dest"]),
+            "dep_time": float(row["dep_time"]),
+            "arr_time": float(row["arr_time"]),
+        })
+
+    # base-first sampling: base 관련 편 우선, 나머지 랜덤 샘플링
+    if n_max is not None and len(flights) > n_max and base_airport is not None:
+        base_fs = [f for f in flights if f["origin"] == base_airport or f["dest"] == base_airport]
+        mid_fs  = [f for f in flights if f["origin"] != base_airport and f["dest"] != base_airport]
+        if len(base_fs) >= n_max:
+            # base 관련 편만으로도 n_max 초과 → base 편에서 랜덤 샘플링
+            random.shuffle(base_fs)
+            flights = sorted(base_fs[:n_max], key=lambda f: f["dep_time"])
+        else:
+            remaining = n_max - len(base_fs)
+            random.shuffle(mid_fs)
+            flights = sorted(base_fs + mid_fs[:remaining], key=lambda f: f["dep_time"])
+        for i, f in enumerate(flights):
+            f["id"] = i
+
+    return flights
