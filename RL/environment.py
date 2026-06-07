@@ -195,7 +195,7 @@ def step(state, action, flights, assigned, constraint=None):
     # dead time reward: duty 중간 flight 간 대기 시간만 패널티
     # pairing 첫 편이거나 rest 직후 첫 편은 대기 시간 없으므로 제외
     if not state.get("pairing_start", False) and not state.get("is_resting", False):
-        reward = -(f["dep_time"] - state["current_time"])
+        reward = -(f["dep_time"] - state["current_time"]) + config.LEG_CONN_BONUS
     else:
         reward = 0.0
 

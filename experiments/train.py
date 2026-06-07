@@ -556,8 +556,9 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         greedy_pairings.append(metrics_g["n_pairings"])
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
+        entropy_coef = max(0.05 * (1.0 - ep / n_episodes), 0.005)
         loss = torch.stack([
-            -lp * advantage - 0.01 * ent
+            -lp * advantage - entropy_coef * ent
             for lp, ent in zip(log_probs, entropies)
         ]).sum()
 
@@ -588,6 +589,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             "phase2/avg25":            avg25,
             "phase2/advantage":        advantage,
             "phase2/loss":             loss.item(),
+            "phase2/entropy_coef":     entropy_coef,
             "phase2/best_avg25":       best_avg_pairings if best_avg_pairings < float("inf") else avg25,
             "phase2/n_dual_keys":      len(dual_vars),
         }, step=global_step_offset + ep)
@@ -656,8 +658,9 @@ def run_curriculum_stage(
         greedy_pairings.append(metrics_g["n_pairings"])
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
+        entropy_coef = max(0.05 * (1.0 - ep / n_episodes), 0.005)
         loss = torch.stack([
-            -lp * advantage - 0.01 * ent
+            -lp * advantage - entropy_coef * ent
             for lp, ent in zip(log_probs, entropies)
         ]).sum()
 
@@ -690,6 +693,7 @@ def run_curriculum_stage(
             f"stage{stage}/avg25":            avg25,
             f"stage{stage}/advantage":        advantage,
             f"stage{stage}/loss":             loss.item(),
+            f"stage{stage}/entropy_coef":     entropy_coef,
             f"stage{stage}/best_avg25":       best_avg_pairings if best_avg_pairings < float("inf") else avg25,
         }, step=global_step_offset + ep)
 
