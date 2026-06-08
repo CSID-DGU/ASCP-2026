@@ -83,8 +83,8 @@ PHASE2_N_EPISODES    = 1000  # Phase 2 학습 에피소드 수
 PHASE2_DUAL_WEIGHT   = 0.15  # LP dual reward 가중치 — 0.3은 stale dual이 reward를 과도하게 왜곡
 
 # Reward shaping
-LEG_CONN_BONUS = 0.5   # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 페널티와 동일 스케일)
-                       # pairing 첫 편 및 rest 직후 편에는 적용 안 함 (연결이 아니므로)
+# LEG_CONN_BONUS 제거: PAIRING_COST(5.0)가 이미 긴 체인을 충분히 유도.
+# IP의 PAIRING_FIXED_COST(1.5)로 multi-leg 선호를 IP 측에서 처리하므로 RL reward 중복 불필요.
 
 # 커리큘럼 스테이지별 허용 규칙
 # Stage 1: 단일 duty (END_DUTY 불가) — 기본 연결 패턴 학습
