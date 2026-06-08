@@ -418,7 +418,19 @@ def evaluate(checkpoint_path, data_path=None,
     if n_max is None:
         n_max = config.EPISODE_MAX_FLIGHTS
 
-    airport_map = build_airport_map(data_path)
+    # checkpoint를 먼저 로드해 vocab 크기 확인 — multi-airline 모델(n_airports=168)은
+    # 통합 공항 맵이 필요. 단일 항공사 맵으로 빌드하면 ID 불일치로 임베딩 오류 발생.
+    ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
+    n_airports = ckpt.get("n_airports",
+                          ckpt["encoder"]["airport_emb.weight"].shape[0])
+    max_time   = ckpt.get("max_time", window_days * 24)
+
+    # multi-airline 모델(vocab>145)은 통합 맵; 단일 항공사 모델은 해당 CSV만
+    if n_airports > 145:
+        map_paths = list(config.AIRLINE_DATA.values())
+    else:
+        map_paths = data_path
+    airport_map = build_airport_map(map_paths)
     base_ids    = bases_to_ids(bases, airport_map)
 
     flights   = load_flights_rolling(
@@ -427,13 +439,6 @@ def evaluate(checkpoint_path, data_path=None,
         base_airport=base_ids[0], n_max=n_max,
     )
     n_flights = len(flights)
-
-    # checkpoint에서 n_airports, max_time 로드
-    ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
-    # stage 체크포인트는 n_airports 없음 → encoder embedding에서 유추
-    n_airports = ckpt.get("n_airports",
-                          ckpt["encoder"]["airport_emb.weight"].shape[0])
-    max_time   = ckpt.get("max_time", window_days * 24)
 
     constraint = _GET_CONSTRAINT[airline](base_ids[0])
     c_tensor   = constraint_to_tensor(constraint)
