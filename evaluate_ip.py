@@ -14,7 +14,16 @@ sys.path.insert(0, "RL")
 DEVICE = torch.device("cpu")
 from loader import load_flights_rolling, build_airport_map, bases_to_ids
 from environment import get_mask, step
-from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
+from constraints import (
+    get_delta_constraints, get_alaska_constraints, get_jetblue_constraints,
+    FILM_CONSTRAINT_KEYS,
+)
+
+_GET_CONSTRAINT = {
+    "delta":   get_delta_constraints,
+    "alaska":  get_alaska_constraints,
+    "jetblue": get_jetblue_constraints,
+}
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
 import config
@@ -389,7 +398,8 @@ def evaluate(checkpoint_path, data_path=None,
              bases=("ATL", "DTW", "MSP"),
              lambda_dh=1.0,
              device="cpu",
-             n_max=None):
+             n_max=None,
+             airline="delta"):
     """
     Args:
         bases: crew base 공항 코드 리스트 (예: ["ATL", "DTW", "MSP"]).
@@ -401,7 +411,7 @@ def evaluate(checkpoint_path, data_path=None,
     DEVICE = torch.device(device)
 
     if data_path is None:
-        data_path = config.AIRLINE_DATA[config.AIRLINE]
+        data_path = config.AIRLINE_DATA[airline]
 
     if n_max is None:
         n_max = config.EPISODE_MAX_FLIGHTS
@@ -423,7 +433,7 @@ def evaluate(checkpoint_path, data_path=None,
                           ckpt["encoder"]["airport_emb.weight"].shape[0])
     max_time   = ckpt.get("max_time", window_days * 24)
 
-    constraint = get_delta_constraints(base_ids[0])
+    constraint = _GET_CONSTRAINT[airline](base_ids[0])
     c_tensor   = constraint_to_tensor(constraint)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
@@ -514,6 +524,8 @@ if __name__ == "__main__":
                              "예) checkpoints/di83hxpy")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--n-rollouts", type=int, default=100)
+    parser.add_argument("--airline", default="delta", choices=["delta", "alaska", "jetblue"],
+                        help="평가 항공사 (데이터 + constraint 선택). 기본: delta")
     args = parser.parse_args()
 
     # checkpoints/ 생략 허용 — "di83hxpy" → "checkpoints/di83hxpy"
@@ -527,6 +539,7 @@ if __name__ == "__main__":
         stages = ["stage1_best", "stage2_best", "stage3_best", "phase2_best"]
         ckpt_dir = ckpt_arg
         summary = []
+        eval_bases = config.AIRLINE_BASES[args.airline]
 
         for stage in stages:
             ckpt = os.path.join(ckpt_dir, f"{stage}.pt")
@@ -534,9 +547,10 @@ if __name__ == "__main__":
                 print(f"[SKIP] {ckpt} not found")
                 continue
             print(f"\n{'='*60}")
-            print(f"Evaluating: {stage}  ({ckpt})")
+            print(f"Evaluating: {stage}  ({ckpt})  [airline={args.airline}]")
             print(f"{'='*60}")
-            result = evaluate(ckpt, device=args.device, n_rollouts=args.n_rollouts)
+            result = evaluate(ckpt, device=args.device, n_rollouts=args.n_rollouts,
+                              bases=eval_bases[:3], airline=args.airline)
             sel = result["selected"]
             fly  = sum(p["fly"]                        for p in sel) if sel else 0.0
             dead = sum(p.get("dead_time", p["cost"])   for p in sel) if sel else 0.0
@@ -563,4 +577,6 @@ if __name__ == "__main__":
                   f"{r['coverage']:>6.1f}% {r['ftc']:>5.2f}% "
                   f"{r['dead']:>7.2f}h {r['fly']:>7.2f}h {r['avg_legs']:>8.2f}")
     else:
-        evaluate(ckpt_arg, device=args.device, n_rollouts=args.n_rollouts)
+        eval_bases = config.AIRLINE_BASES[args.airline]
+        evaluate(ckpt_arg, device=args.device, n_rollouts=args.n_rollouts,
+                 bases=eval_bases[:3], airline=args.airline)
