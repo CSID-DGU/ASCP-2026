@@ -713,7 +713,7 @@ def run_curriculum_stage(
     return best_avg_pairings
 
 
-def train(phase2_only=False, multi_airline=False):
+def train(phase2_only=False, multi_airline=False, skip_film=False):
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
     if multi_airline:
@@ -739,12 +739,16 @@ def train(phase2_only=False, multi_airline=False):
         constraint_dim=len(FILM_CONSTRAINT_KEYS),
         airport_emb_dim=32,
         d_model=128,
+        use_film_before=not skip_film,
+        use_film_after=not skip_film,
     ).to(DEVICE)
     decoder   = PointerDecoder(d_model=128, airport_emb_dim=32).to(DEVICE)
     params    = list(encoder.parameters()) + list(decoder.parameters())
     optimizer = optim.Adam(params, lr=1e-4)
 
-    run_name = "phase2-only" if phase2_only else ("multi-airline" if multi_airline else "stage1-3+phase2")
+    tag = "multi-airline" if multi_airline else "delta"
+    tag += "-nofilm" if skip_film else ""
+    run_name = "phase2-only" if phase2_only else tag
     wandb.init(
         project="ASCP-2026",
         name=run_name,
@@ -951,8 +955,10 @@ if __name__ == "__main__":
                         help="stage3_best.pt 로드 후 Phase 2만 실행")
     parser.add_argument("--multi-airline", action="store_true",
                         help="Delta/Alaska/JetBlue 세 항공사 데이터로 동시 학습 (통합 airport_map 사용)")
+    parser.add_argument("--skip-film", action="store_true",
+                        help="FiLM 비활성화 (use_film_before=False, use_film_after=False) — ablation B/D용")
     args = parser.parse_args()
     _set_device(args.device)
     print(f"device: {DEVICE}")
     print(f"log: {args.log}")
-    train(phase2_only=args.phase2_only, multi_airline=args.multi_airline)
+    train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film)
