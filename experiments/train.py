@@ -224,6 +224,7 @@ phase2는 LP dual variable을 RL reward에 피드백하는 구조임.
 # DEADHEAD_PENALTY: 강제 deadhead 발생 시 가산
 _LEG_BONUS_IP        = 1.5
 _DEADHEAD_PENALTY_IP = 5.0
+_PAIRING_FIXED_COST  = 1.5
 
 
 def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
@@ -249,7 +250,8 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         dead_time = max(elapsed - pairing_fly - pairing_rest, 0.0)
         cost      = (dead_time
                      - _LEG_BONUS_IP * max(len(current_legs) - 1, 0)
-                     + (_DEADHEAD_PENALTY_IP if is_forced else 0.0))
+                     + (_DEADHEAD_PENALTY_IP if is_forced else 0.0)
+                     + _PAIRING_FIXED_COST)
         pairings.append({"legs": list(current_legs), "fly": pairing_fly,
                          "elapsed": elapsed, "cost": cost})
 
@@ -495,7 +497,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
 
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
-               global_step_offset=0):
+               global_step_offset=0, entropy_start=0.01, entropy_end=0.005):
     """
     Phase 2 — Column Generation dual feedback 학습.
 
@@ -556,7 +558,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         greedy_pairings.append(metrics_g["n_pairings"])
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
-        entropy_coef = max(0.05 * (1.0 - ep / n_episodes), 0.005)
+        entropy_coef = max(entropy_start * (1.0 - ep / n_episodes), entropy_end)
         loss = torch.stack([
             -lp * advantage - entropy_coef * ent
             for lp, ent in zip(log_probs, entropies)
@@ -612,6 +614,7 @@ def run_curriculum_stage(
     n_episodes, constraint_override, save_dir,
     flight_sampler, constraint_sampler=None,
     global_step_offset=0,
+    entropy_start=0.05, entropy_end=0.005,
 ):
     """
     커리큘럼 1단계 실행.
@@ -658,7 +661,7 @@ def run_curriculum_stage(
         greedy_pairings.append(metrics_g["n_pairings"])
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
-        entropy_coef = max(0.05 * (1.0 - ep / n_episodes), 0.005)
+        entropy_coef = max(entropy_start * (1.0 - ep / n_episodes), entropy_end)
         loss = torch.stack([
             -lp * advantage - entropy_coef * ent
             for lp, ent in zip(log_probs, entropies)
@@ -841,7 +844,8 @@ def train(phase2_only=False, multi_airline=False):
         run_curriculum_stage(1, encoder, decoder, optimizer,
                              n_episodes=1000, constraint_override=stage1_c,
                              save_dir=save_dir, flight_sampler=flight_sampler,
-                             global_step_offset=0)
+                             global_step_offset=0,
+                             entropy_start=0.05, entropy_end=0.005)
 
         # ── Stage 2: full multi-day ───────────────────────────────────────
         # overnight connection 포함 전체 multi-day pairing 학습
@@ -850,7 +854,8 @@ def train(phase2_only=False, multi_airline=False):
         run_curriculum_stage(2, encoder, decoder, optimizer,
                              n_episodes=2000, constraint_override=stage2_c,
                              save_dir=save_dir, flight_sampler=flight_sampler,
-                             global_step_offset=1000)
+                             global_step_offset=1000,
+                             entropy_start=0.02, entropy_end=0.005)
 
         # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
         # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
@@ -879,7 +884,8 @@ def train(phase2_only=False, multi_airline=False):
                              n_episodes=2000, constraint_override=stage3_base,
                              save_dir=save_dir, flight_sampler=flight_sampler,
                              constraint_sampler=sample_constraint,
-                             global_step_offset=3000)
+                             global_step_offset=3000,
+                             entropy_start=0.01, entropy_end=0.005)
 
     # ── Phase 2: CG dual feedback ──────────────────────────────────────
     # Stage 3 이후 동일 모델 이어서 학습 (Phase 1 → Phase 2 연속)
