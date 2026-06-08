@@ -48,16 +48,21 @@ CONSTRAINT_NORMS = {
     "max_pairing_days":  8.0,   # JetBlue 최대(6~7)보다 여유
 }
 
-# Stage 3 FiLM augmentation constraint 범위 — Delta/Alaska/JetBlue 2019 기준 확정값
+# Stage 3 FiLM augmentation constraint 범위
 # (min, max) 튜플. train.py sample_constraint()에서 random.uniform/randint(*range)로 사용
+#
+# 범위 설계 기준:
+#   - 실제 항공사 값(12.5~13.0h)만 쓰면 FiLM 입력 변동폭이 3~7%에 불과 → gradient 미미
+#   - CONSTRAINT_NORMS 분모 대비 최소 20% 이상 변동폭 확보해야 FiLM MLP가 의미있는 gamma/beta 학습 가능
+#   - 검증 범위(12.0~14.0h)가 훈련 범위를 벗어나면 extrapolation → 항상 identity 출력
 STAGE3_CONSTRAINT_RANGES = {
-    "max_duty":         (12.5, 13.0),   # Alaska 12.5h ~ Delta/JetBlue 13.0h
-    "min_rest":         (10.0, 10.0),   # 전 항공사 FAR 117 기준 10.0h 동일
-    "min_conn":         (0.58, 0.65),   # JetBlue 0.58h ~ Delta/Alaska 0.65h
-    "max_conn":         (8.0,  9.0),    # JetBlue 8.0h ~ Delta 9.0h
-    "max_legs":         (6,    8),      # Alaska 6 ~ Delta 8
-    "max_duty_periods": (2,    3),      # Delta/Alaska 2 ~ JetBlue 2~3
-    "max_pairing_days": (5,    7),      # Delta/Alaska 5 ~ JetBlue 6~7 / 상한은 WINDOW_DAYS(5)로 제한
+    "max_duty":         (10.5, 14.0),   # NORM=14.0 → 0.75~1.0 (25% 변동) — 검증 12.0~14.0 완전 포함
+    "min_rest":         (9.5,  12.0),   # NORM=12.0 → 0.79~1.0 (21% 변동) — 고정값 0%에서 확장
+    "min_conn":         (0.5,  1.0),    # NORM=1.0  → 0.5~1.0  (50% 변동)
+    "max_conn":         (6.0,  10.0),   # NORM=10.0 → 0.6~1.0  (40% 변동)
+    "max_legs":         (4,    10),     # NORM=10.0 → 0.4~1.0  (60% 변동)
+    "max_duty_periods": (1,    4),      # NORM=4.0  → 0.25~1.0 (75% 변동)
+    "max_pairing_days": (3,    7),      # NORM=8.0  → 0.375~0.875 (50% 변동)
 }
 
 # 슬라이딩 윈도우 크기 — max_pairing_days + 1 (마지막 날 시작 pairing도 완성 가능하게)
