@@ -13,11 +13,15 @@ def convert_time(hhmm):
 def build_airport_map(path):
     """전체 BTS CSV 기준으로 공항→int 맵을 생성한다.
 
+    path: str 또는 str 리스트. 여러 항공사 CSV를 합쳐 통합 공항 ID 공간 구성 가능.
     빈도 내림차순 정렬: index 0 = 가장 빈도 높은 공항(허브/base 후보).
     에피소드마다 다른 rolling window를 써도 ID가 일관된다.
     """
-    df = pd.read_csv(path, usecols=["ORIGIN", "DEST"]).dropna()
-    counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
+    paths = [path] if isinstance(path, str) else path
+    counts = Counter()
+    for p in paths:
+        df = pd.read_csv(p, usecols=["ORIGIN", "DEST"]).dropna()
+        counts.update(list(df["ORIGIN"]) + list(df["DEST"]))
     airports_sorted = sorted(counts.keys(), key=lambda a: -counts[a])
     return {a: i for i, a in enumerate(airports_sorted)}
 
