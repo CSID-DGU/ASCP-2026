@@ -86,6 +86,8 @@ def state_to_vec(state, encoder, constraint):
 
 LEG_BONUS_IP        = 1.5
 DEADHEAD_PENALTY_IP = 5.0
+PAIRING_FIXED_COST  = 1.5  # pairing당 고정 비용 — IP가 pairing 수를 줄이도록 유도 (ManDays 최소화)
+                           # 3.0은 avg_legs 2.0까지 올리지만 FTC 20%로 악화 → 1.5로 절충
 
 
 def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
@@ -112,7 +114,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
         dead_time = max(elapsed - fly - pairing_rest, 0.0)
         rl_bonus  = LEG_BONUS_IP * max(n_legs - 1, 0)
         dh_penalty = DEADHEAD_PENALTY_IP if is_forced else 0.0
-        cost = dead_time - rl_bonus + dh_penalty
+        cost = dead_time - rl_bonus + dh_penalty + PAIRING_FIXED_COST
         pairings.append({
             "legs":        list(current_legs),
             "fly":         fly,
@@ -259,7 +261,7 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50, greedy=F
         fly     = pair_fly[i]
         n_legs  = len(cur_legs[i])
         dead    = max(elapsed - fly - pair_rest[i], 0.0)
-        cost    = dead - LEG_BONUS_IP * max(n_legs - 1, 0) + (DEADHEAD_PENALTY_IP if forced else 0.0)
+        cost    = dead - LEG_BONUS_IP * max(n_legs - 1, 0) + (DEADHEAD_PENALTY_IP if forced else 0.0) + PAIRING_FIXED_COST
         pairings[i].append({"legs": list(cur_legs[i]), "fly": fly, "elapsed": elapsed,
                              "dead_time": dead, "cost": cost, "is_deadhead": forced, "n_legs": n_legs})
 
