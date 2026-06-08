@@ -14,7 +14,16 @@ sys.path.insert(0, "RL")
 DEVICE = torch.device("cpu")
 from loader import load_flights_rolling, build_airport_map, bases_to_ids
 from environment import get_mask, step
-from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
+from constraints import (
+    get_delta_constraints, get_alaska_constraints, get_jetblue_constraints,
+    FILM_CONSTRAINT_KEYS,
+)
+
+_GET_CONSTRAINT = {
+    "delta":   get_delta_constraints,
+    "alaska":  get_alaska_constraints,
+    "jetblue": get_jetblue_constraints,
+}
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
 import config
@@ -77,6 +86,8 @@ def state_to_vec(state, encoder, constraint):
 
 LEG_BONUS_IP        = 1.5
 DEADHEAD_PENALTY_IP = 5.0
+PAIRING_FIXED_COST  = 1.5  # pairing당 고정 비용 — IP가 pairing 수를 줄이도록 유도 (ManDays 최소화)
+                           # 3.0은 avg_legs 2.0까지 올리지만 FTC 20%로 악화 → 1.5로 절충
 
 
 def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
@@ -103,7 +114,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy
         dead_time = max(elapsed - fly - pairing_rest, 0.0)
         rl_bonus  = LEG_BONUS_IP * max(n_legs - 1, 0)
         dh_penalty = DEADHEAD_PENALTY_IP if is_forced else 0.0
-        cost = dead_time - rl_bonus + dh_penalty
+        cost = dead_time - rl_bonus + dh_penalty + PAIRING_FIXED_COST
         pairings.append({
             "legs":        list(current_legs),
             "fly":         fly,
@@ -250,7 +261,7 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50, greedy=F
         fly     = pair_fly[i]
         n_legs  = len(cur_legs[i])
         dead    = max(elapsed - fly - pair_rest[i], 0.0)
-        cost    = dead - LEG_BONUS_IP * max(n_legs - 1, 0) + (DEADHEAD_PENALTY_IP if forced else 0.0)
+        cost    = dead - LEG_BONUS_IP * max(n_legs - 1, 0) + (DEADHEAD_PENALTY_IP if forced else 0.0) + PAIRING_FIXED_COST
         pairings[i].append({"legs": list(cur_legs[i]), "fly": fly, "elapsed": elapsed,
                              "dead_time": dead, "cost": cost, "is_deadhead": forced, "n_legs": n_legs})
 
@@ -389,7 +400,8 @@ def evaluate(checkpoint_path, data_path=None,
              bases=("ATL", "DTW", "MSP"),
              lambda_dh=1.0,
              device="cpu",
-             n_max=None):
+             n_max=None,
+             airline="delta"):
     """
     Args:
         bases: crew base 공항 코드 리스트 (예: ["ATL", "DTW", "MSP"]).
@@ -401,12 +413,24 @@ def evaluate(checkpoint_path, data_path=None,
     DEVICE = torch.device(device)
 
     if data_path is None:
-        data_path = config.AIRLINE_DATA[config.AIRLINE]
+        data_path = config.AIRLINE_DATA[airline]
 
     if n_max is None:
         n_max = config.EPISODE_MAX_FLIGHTS
 
-    airport_map = build_airport_map(data_path)
+    # checkpoint를 먼저 로드해 vocab 크기 확인 — multi-airline 모델(n_airports=168)은
+    # 통합 공항 맵이 필요. 단일 항공사 맵으로 빌드하면 ID 불일치로 임베딩 오류 발생.
+    ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
+    n_airports = ckpt.get("n_airports",
+                          ckpt["encoder"]["airport_emb.weight"].shape[0])
+    max_time   = ckpt.get("max_time", window_days * 24)
+
+    # multi-airline 모델(vocab>145)은 통합 맵; 단일 항공사 모델은 해당 CSV만
+    if n_airports > 145:
+        map_paths = list(config.AIRLINE_DATA.values())
+    else:
+        map_paths = data_path
+    airport_map = build_airport_map(map_paths)
     base_ids    = bases_to_ids(bases, airport_map)
 
     flights   = load_flights_rolling(
@@ -416,14 +440,7 @@ def evaluate(checkpoint_path, data_path=None,
     )
     n_flights = len(flights)
 
-    # checkpoint에서 n_airports, max_time 로드
-    ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
-    # stage 체크포인트는 n_airports 없음 → encoder embedding에서 유추
-    n_airports = ckpt.get("n_airports",
-                          ckpt["encoder"]["airport_emb.weight"].shape[0])
-    max_time   = ckpt.get("max_time", window_days * 24)
-
-    constraint = get_delta_constraints(base_ids[0])
+    constraint = _GET_CONSTRAINT[airline](base_ids[0])
     c_tensor   = constraint_to_tensor(constraint)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
@@ -514,6 +531,8 @@ if __name__ == "__main__":
                              "예) checkpoints/di83hxpy")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--n-rollouts", type=int, default=100)
+    parser.add_argument("--airline", default="delta", choices=["delta", "alaska", "jetblue"],
+                        help="평가 항공사 (데이터 + constraint 선택). 기본: delta")
     args = parser.parse_args()
 
     # checkpoints/ 생략 허용 — "di83hxpy" → "checkpoints/di83hxpy"
@@ -527,6 +546,7 @@ if __name__ == "__main__":
         stages = ["stage1_best", "stage2_best", "stage3_best", "phase2_best"]
         ckpt_dir = ckpt_arg
         summary = []
+        eval_bases = config.AIRLINE_BASES[args.airline]
 
         for stage in stages:
             ckpt = os.path.join(ckpt_dir, f"{stage}.pt")
@@ -534,9 +554,10 @@ if __name__ == "__main__":
                 print(f"[SKIP] {ckpt} not found")
                 continue
             print(f"\n{'='*60}")
-            print(f"Evaluating: {stage}  ({ckpt})")
+            print(f"Evaluating: {stage}  ({ckpt})  [airline={args.airline}]")
             print(f"{'='*60}")
-            result = evaluate(ckpt, device=args.device, n_rollouts=args.n_rollouts)
+            result = evaluate(ckpt, device=args.device, n_rollouts=args.n_rollouts,
+                              bases=eval_bases[:3], airline=args.airline)
             sel = result["selected"]
             fly  = sum(p["fly"]                        for p in sel) if sel else 0.0
             dead = sum(p.get("dead_time", p["cost"])   for p in sel) if sel else 0.0
@@ -563,4 +584,6 @@ if __name__ == "__main__":
                   f"{r['coverage']:>6.1f}% {r['ftc']:>5.2f}% "
                   f"{r['dead']:>7.2f}h {r['fly']:>7.2f}h {r['avg_legs']:>8.2f}")
     else:
-        evaluate(ckpt_arg, device=args.device, n_rollouts=args.n_rollouts)
+        eval_bases = config.AIRLINE_BASES[args.airline]
+        evaluate(ckpt_arg, device=args.device, n_rollouts=args.n_rollouts,
+                 bases=eval_bases[:3], airline=args.airline)
