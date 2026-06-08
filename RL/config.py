@@ -80,7 +80,7 @@ EPISODE_MAX_FLIGHTS = 300
 PHASE2_POOL_ROLLOUTS = 50    # pool 수집 rollout 수 (stochastic × 50 + greedy × 1)
 PHASE2_LP_INTERVAL   = 10    # LP re-solve 주기 (에피소드) — 간격 줄여 dual_vars 신선도 향상
 PHASE2_N_EPISODES    = 1000  # Phase 2 학습 에피소드 수
-PHASE2_DUAL_WEIGHT   = 0.3   # π[f] 스케일 보정 — 0.1→0.3: LP signal 강화
+PHASE2_DUAL_WEIGHT   = 0.15  # LP dual reward 가중치 — 0.3은 stale dual이 reward를 과도하게 왜곡
 
 # Reward shaping
 LEG_CONN_BONUS = 0.5   # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 페널티와 동일 스케일)
