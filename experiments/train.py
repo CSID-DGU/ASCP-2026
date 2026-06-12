@@ -57,10 +57,9 @@ def state_to_vec(state, encoder, constraint):
     current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]).to(DEVICE))
     base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]).to(DEVICE))
 
-    max_pairing_days = constraint.get("max_pairing_days", 5)
     time_of_day      = (state["current_time"] % 24.0) / 24.0
-    day_norm         = (state["current_time"] // 24.0) / max(max_pairing_days, 1)
-    duty_period_norm = state.get("duty_period", 0) / max(constraint.get("max_duty_periods", 2), 1)
+    day_norm         = (state["current_time"] // 24.0) / config.CONSTRAINT_NORMS["max_pairing_days"]
+    duty_period_norm = state.get("duty_period", 0) / config.CONSTRAINT_NORMS["max_duty_periods"]
 
     # duty_elapsed: 비행 시간만이 아닌 FAA 기준 실제 경과 시간 (비행 + 대기)
     # is_resting/pairing_start 중이면 새 duty 아직 시작 안 함 → 0
@@ -70,20 +69,22 @@ def state_to_vec(state, encoder, constraint):
         duty_elapsed = max(0.0, state["current_time"] - state.get("duty_start_time", state["current_time"]))
 
     # rest_remaining: is_resting=True일 때 남은 rest 시간 비율 (0~1), 아니면 0.0
-    min_rest = constraint.get("min_rest", 10.0)
     if state.get("is_resting", False) and state.get("rest_end_time") is not None:
-        rest_remaining = max(0.0, state["rest_end_time"] - state["current_time"]) / min_rest
+        rest_remaining = max(0.0, state["rest_end_time"] - state["current_time"]) / config.CONSTRAINT_NORMS["min_rest"]
     else:
         rest_remaining = 0.0
 
+    # 고정 분모(CONSTRAINT_NORMS) 사용 이유:
+    # constraint 값으로 직접 나누면 constraint 정보가 state_vec에 인코딩되어 FiLM gradient가 약해짐.
+    # CONSTRAINT_NORMS는 훈련 범위 최대값으로 고정 → FiLM이 constraint 정보의 유일한 경로가 됨.
     return torch.cat([
         current_emb,
         base_emb,
         torch.tensor([
             time_of_day,
             day_norm,
-            duty_elapsed / constraint["max_duty"],
-            state["legs"] / constraint["max_legs"],
+            duty_elapsed / config.CONSTRAINT_NORMS["max_duty"],
+            state["legs"] / config.CONSTRAINT_NORMS["max_legs"],
             duty_period_norm,
             1.0 if state.get("is_resting", False) else 0.0,
             rest_remaining,
