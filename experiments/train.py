@@ -923,7 +923,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False):
     # ── FiLM 검증: constraint별 greedy 결과 비교 ─────────────────────
     print()
     print("=" * 60)
-    print("FiLM 검증: 같은 flights, 다른 max_duty")
+    print("FiLM 검증: 같은 flights, 다른 max_legs")
     print("=" * 60)
 
     encoder.eval()
@@ -937,13 +937,15 @@ def train(phase2_only=False, multi_airline=False, skip_film=False):
     )
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
 
+    # max_legs=[2,4,6,8]: 4배 변동폭 → FiLM이 constraint에 따라 다르게 행동하는지 명확하게 확인
+    # max_duty 12~14h(14% 변동)보다 훨씬 큰 신호 차이를 가짐
     with torch.no_grad():
-        for duty in [12.0, 12.5, 13.0, 13.5, 14.0]:
-            c = {**_CONSTRAINT_FN[config.AIRLINE](val_base), "max_duty": duty,
+        for legs in [2, 4, 6, 8]:
+            c = {**_CONSTRAINT_FN[config.AIRLINE](val_base), "max_legs": legs,
                  "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS}
             enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times, constraint_to_tensor(c))
             _, _, _, metrics = run_episode(val_flights, c, encoder, decoder, enc, greedy=True)
-            print(f"  max_duty={duty:4.1f}h → pairings: {metrics['n_pairings']:3d}  "
+            print(f"  max_legs={legs} → pairings: {metrics['n_pairings']:3d}  "
                   f"deadheads: {metrics['n_deadheads']:3d}  "
                   f"coverage: {metrics['coverage_pct']:5.1f}%")
 
