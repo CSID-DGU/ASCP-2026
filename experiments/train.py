@@ -744,8 +744,17 @@ def train(phase2_only=False, multi_airline=False, skip_film=False):
         use_film_after=not skip_film,
     ).to(DEVICE)
     decoder   = PointerDecoder(d_model=128, airport_emb_dim=32).to(DEVICE)
-    params    = list(encoder.parameters()) + list(decoder.parameters())
-    optimizer = optim.Adam(params, lr=1e-4)
+    # FiLM lr 분리: FiLM은 constraint 변화에 빠르게 반응해야 하므로 lr=1e-3
+    # skip_film=True(ablation)일 때는 FiLM이 identity → 분리 불필요, 단일 lr 유지
+    if skip_film:
+        params    = list(encoder.parameters()) + list(decoder.parameters())
+        optimizer = optim.Adam(params, lr=1e-4)
+    else:
+        optimizer = optim.Adam([
+            {"params": encoder.film_params(),     "lr": 1e-3},
+            {"params": encoder.non_film_params(), "lr": 1e-4},
+            {"params": decoder.parameters(),      "lr": 1e-4},
+        ])
 
     tag = "multi-airline" if multi_airline else "delta"
     tag += "-nofilm" if skip_film else ""
