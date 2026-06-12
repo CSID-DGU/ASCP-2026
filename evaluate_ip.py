@@ -86,8 +86,8 @@ def state_to_vec(state, encoder, constraint):
 
 LEG_BONUS_IP        = 1.5
 DEADHEAD_PENALTY_IP = 5.0
-PAIRING_FIXED_COST  = 1.5  # pairing당 고정 비용 — IP가 pairing 수를 줄이도록 유도 (ManDays 최소화)
-                           # 3.0은 avg_legs 2.0까지 올리지만 FTC 20%로 악화 → 1.5로 절충
+PAIRING_FIXED_COST  = 1.5  # pairing당 고정 비용 — single-leg pairing을 IP에서 무상으로 두지 않기 위함
+                           # 없으면 single-leg cost=0 → IP가 묶을 이유 없음. 있으면 multi-leg 선호 유도
 
 
 def rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):

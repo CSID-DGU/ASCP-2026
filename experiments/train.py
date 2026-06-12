@@ -224,7 +224,7 @@ phase2는 LP dual variable을 RL reward에 피드백하는 구조임.
 # DEADHEAD_PENALTY: 강제 deadhead 발생 시 가산
 _LEG_BONUS_IP        = 1.5
 _DEADHEAD_PENALTY_IP = 5.0
-_PAIRING_FIXED_COST  = 1.5
+_PAIRING_FIXED_COST  = 1.5  # IP/LP cost와 동일 — Phase 2 dual signal 일관성 유지
 
 
 def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
