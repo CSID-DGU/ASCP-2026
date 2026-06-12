@@ -498,7 +498,8 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
 
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
-               global_step_offset=0, entropy_start=0.01, entropy_end=0.005):
+               global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
+               constraint_sampler=None):
     """
     Phase 2 — Column Generation dual feedback 학습.
 
@@ -528,7 +529,10 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             continue
         flights, origins, dests, dep_times, arr_times, fly_times, base_airport = sample
 
-        c        = {**constraint, "base_airport": base_airport}
+        # constraint_sampler가 있으면 에피소드마다 샘플링 — FiLM이 Phase 2에서도 constraint 변화 학습
+        # 없으면 고정 constraint 사용 (기존 동작 유지)
+        base_c   = constraint_sampler() if constraint_sampler else constraint
+        c        = {**base_c, "base_airport": base_airport}
         c_tensor = constraint_to_tensor(c)
 
         with torch.no_grad():
@@ -844,6 +848,27 @@ def train(phase2_only=False, multi_airline=False, skip_film=False):
 
         base_constraint = _CONSTRAINT_FN[config.AIRLINE](base_ids[0])  # base는 에피소드마다 교체됨
 
+    # sample_constraint: Stage 3 + Phase 2 공용 constraint 샘플러
+    # phase2_only=True일 때도 Phase 2에서 사용하므로 두 블록 밖에서 정의
+    _stage3_base = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+    def sample_constraint():
+        r = config.STAGE3_CONSTRAINT_RANGES
+        if multi_airline:
+            airline_base = _CONSTRAINT_FN[_selected_airline[0]](0)
+            base = {**airline_base, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+        else:
+            base = _stage3_base
+        return {
+            **base,
+            "max_duty":         random.uniform(*r["max_duty"]),
+            "min_rest":         random.uniform(*r["min_rest"]),
+            "min_conn":         random.uniform(*r["min_conn"]),
+            "max_conn":         random.uniform(*r["max_conn"]),
+            "max_legs":         random.randint(*r["max_legs"]),
+            "max_duty_periods": random.randint(*r["max_duty_periods"]),
+            "max_pairing_days": random.randint(*r["max_pairing_days"]),
+        }
+
     if phase2_only:
         ckpt_path = os.path.join(save_dir, "stage3_best.pt")
         ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
@@ -874,28 +899,9 @@ def train(phase2_only=False, multi_airline=False, skip_film=False):
         # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
         # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
         # max_pairing_days 상한도 WINDOW_DAYS-1로 제한
-        stage3_base = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
-        def sample_constraint():
-            r = config.STAGE3_CONSTRAINT_RANGES
-            if multi_airline:
-                # 에피소드에서 선택된 항공사의 constraint를 base로 삼아 augmentation
-                airline_base = _CONSTRAINT_FN[_selected_airline[0]](0)
-                base = {**airline_base, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
-            else:
-                base = stage3_base
-            return {
-                **base,
-                "max_duty":         random.uniform(*r["max_duty"]),
-                "min_rest":         random.uniform(*r["min_rest"]),
-                "min_conn":         random.uniform(*r["min_conn"]),
-                "max_conn":         random.uniform(*r["max_conn"]),
-                "max_legs":         random.randint(*r["max_legs"]),
-                "max_duty_periods": random.randint(*r["max_duty_periods"]),
-                "max_pairing_days": random.randint(*r["max_pairing_days"]),
-            }
-
+        # sample_constraint, _stage3_base는 Phase 2와 공용 — if not phase2_only 블록 밖에서 정의됨
         run_curriculum_stage(3, encoder, decoder, optimizer,
-                             n_episodes=2000, constraint_override=stage3_base,
+                             n_episodes=2000, constraint_override=_stage3_base,
                              save_dir=save_dir, flight_sampler=flight_sampler,
                              constraint_sampler=sample_constraint,
                              global_step_offset=3000,
@@ -905,12 +911,14 @@ def train(phase2_only=False, multi_airline=False, skip_film=False):
     # Stage 3 이후 동일 모델 이어서 학습 (Phase 1 → Phase 2 연속)
     phase2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
     phase2_offset = 0 if phase2_only else 1000 + 2000 + 2000
+
     run_phase2(encoder, decoder, optimizer,
                n_episodes=config.PHASE2_N_EPISODES,
                constraint=phase2_c,
                save_dir=save_dir,
                flight_sampler=flight_sampler,
-               global_step_offset=phase2_offset)
+               global_step_offset=phase2_offset,
+               constraint_sampler=sample_constraint)
 
     # ── FiLM 검증: constraint별 greedy 결과 비교 ─────────────────────
     print()
