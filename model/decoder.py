@@ -12,21 +12,21 @@ class PointerDecoder(nn.Module):
     현재 state를 query로, encoded flights를 key로 → dot-product attention → 확률
     """
 
-    def __init__(self, d_model: int = 128, airport_emb_dim: int = 32, skip_state_mlp: bool = False):
+    def __init__(self, d_model: int = 128, airport_emb_dim: int = 32, constraint_dim: int = 7,
+                 skip_state_mlp: bool = False):
         """
         d_model: attention 공간 차원 (encoder d_model과 일치해야 함)
         airport_emb_dim: state_vec 내 공항 embedding 차원 (encoder airport_emb_dim과 일치해야 함)
+        constraint_dim: constraint_vec 차원 — state_vec에 직접 concatenate하여 decoder가 constraint를 직접 볼 수 있게 함
         skip_state_mlp: ablation용 — True면 MLP(Linear→ReLU→Linear) 대신 linear projection만 사용
         """
         super().__init__()
 
-        # state_vec(71,) = current_airport_emb(airport_emb_dim) + base_airport_emb(airport_emb_dim) + 7개 스칼라
-        # 7개: time_of_day, day_norm, duty_elapsed/max, legs/max, duty_period/max, is_resting, rest_remaining
-        # base_airport_emb 추가 이유: multi-base 설계에서 에피소드마다 base가 달라지므로
-        # 모델이 "이번 에피소드 목표 base가 어디인지" 명시적으로 알아야 복귀 경로 계획 가능
-        # rest_remaining: is_resting=True일 때 (rest_end_time - current_time) / min_rest, 아니면 0.0
-        # TODO(train.py): state_to_vec()에 rest_remaining 스칼라 추가 필요 (6개 → 7개로 맞춰야 함)
-        state_input_dim = airport_emb_dim * 2 + 7
+        # state_vec(78,) = current_airport_emb(32) + base_airport_emb(32) + scalars(7) + constraint_vec(7)
+        # scalars 7개: time_of_day, day_norm, duty_elapsed/NORM, legs/NORM, duty_period/NORM, is_resting, rest_remaining
+        # constraint_vec 추가 이유: FiLM이 flight embedding을 변조해도 decoder가 constraint를 직접 못 보면
+        #   policy가 constraint를 반영한 action을 선택하기 어려움. concatenate로 직접 전달.
+        state_input_dim = airport_emb_dim * 2 + 7 + constraint_dim
         self.state_mlp = nn.Sequential(
             nn.Linear(state_input_dim, d_model),
             nn.ReLU(),
