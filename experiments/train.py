@@ -51,8 +51,9 @@ def flights_to_tensors(flights, window_days=5):
 def state_to_vec(state, encoder, constraint):
     """혜린 state dict → 찬주 decoder 입력 tensor 변환
 
-    state_vec(71,) = current_emb(32) + base_emb(32) + scalars(7)
+    state_vec(78,) = current_emb(32) + base_emb(32) + scalars(7) + constraint_vec(7)
     7개 스칼라: time_of_day, day_norm, duty_elapsed/max, legs/max, duty_period/max, is_resting, rest_remaining
+    constraint_vec(7): FILM_CONSTRAINT_KEYS 정규화값 — decoder가 constraint를 직접 볼 수 있게 함
     """
     current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]).to(DEVICE))
     base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]).to(DEVICE))
@@ -88,7 +89,8 @@ def state_to_vec(state, encoder, constraint):
             duty_period_norm,
             1.0 if state.get("is_resting", False) else 0.0,
             rest_remaining,
-        ], dtype=torch.float32).to(DEVICE)
+        ], dtype=torch.float32).to(DEVICE),
+        constraint_to_tensor(constraint),
     ])
 
 
@@ -718,7 +720,7 @@ def run_curriculum_stage(
     return best_avg_pairings
 
 
-def train(phase2_only=False, multi_airline=False, skip_film=False):
+def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None):
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
     if multi_airline:
@@ -747,7 +749,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False):
         use_film_before=not skip_film,
         use_film_after=not skip_film,
     ).to(DEVICE)
-    decoder   = PointerDecoder(d_model=128, airport_emb_dim=32).to(DEVICE)
+    decoder   = PointerDecoder(d_model=128, airport_emb_dim=32,
+                               constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
     # FiLM lr 분리: FiLM은 constraint 변화에 빠르게 반응해야 하므로 lr=1e-3
     # skip_film=True(ablation)일 때는 FiLM이 identity → 분리 불필요, 단일 lr 유지
     if skip_film:
@@ -870,11 +873,12 @@ def train(phase2_only=False, multi_airline=False, skip_film=False):
         }
 
     if phase2_only:
-        ckpt_path = os.path.join(save_dir, "stage3_best.pt")
+        load_dir  = ckpt_dir if ckpt_dir else save_dir
+        ckpt_path = os.path.join(load_dir, "stage3_best.pt")
         ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
         encoder.load_state_dict(ckpt["encoder"])
         decoder.load_state_dict(ckpt["decoder"])
-        print(f"stage3_best.pt 로드 완료 → Phase 2만 실행")
+        print(f"stage3_best.pt 로드 완료: {ckpt_path} → Phase 2만 실행")
 
     if not phase2_only:
         # ── Stage 1: 단일 duty (overnight 없음) ──────────────────────────
@@ -973,6 +977,8 @@ if __name__ == "__main__":
                         help="로그 파일 경로 (기본: log/train_log.txt)")
     parser.add_argument("--phase2-only", action="store_true",
                         help="stage3_best.pt 로드 후 Phase 2만 실행")
+    parser.add_argument("--ckpt-dir", default=None,
+                        help="--phase2-only 시 stage3_best.pt가 있는 폴더 (예: checkpoints/eojzayeo)")
     parser.add_argument("--multi-airline", action="store_true",
                         help="Delta/Alaska/JetBlue 세 항공사 데이터로 동시 학습 (통합 airport_map 사용)")
     parser.add_argument("--skip-film", action="store_true",
@@ -981,4 +987,5 @@ if __name__ == "__main__":
     _set_device(args.device)
     print(f"device: {DEVICE}")
     print(f"log: {args.log}")
-    train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film)
+    train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,
+          ckpt_dir=args.ckpt_dir)
