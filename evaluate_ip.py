@@ -49,23 +49,23 @@ def flights_to_tensors(flights, max_time=120.0):
 
 
 def state_to_vec(state, encoder, constraint):
-    """state dict → decoder 입력 tensor (71,) = current_emb(32) + base_emb(32) + scalars(7)"""
+    """state dict → decoder 입력 tensor (78,) = current_emb(32) + base_emb(32) + scalars(7) + constraint_vec(7)
+    train.py와 동일한 구현 유지 필수 — 불일치 시 로드된 모델이 다른 입력 분포를 받게 됨
+    """
     current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]).to(DEVICE))
     base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]).to(DEVICE))
 
-    max_pairing_days = constraint.get("max_pairing_days", 5)
     time_of_day      = (state["current_time"] % 24.0) / 24.0
-    day_norm         = (state["current_time"] // 24.0) / max(max_pairing_days, 1)
-    duty_period_norm = state.get("duty_period", 0) / max(constraint.get("max_duty_periods", 4), 1)
+    day_norm         = (state["current_time"] // 24.0) / config.CONSTRAINT_NORMS["max_pairing_days"]
+    duty_period_norm = state.get("duty_period", 0) / config.CONSTRAINT_NORMS["max_duty_periods"]
 
     if state.get("is_resting", False) or state.get("pairing_start", False):
         duty_elapsed = 0.0
     else:
         duty_elapsed = max(0.0, state["current_time"] - state.get("duty_start_time", state["current_time"]))
 
-    min_rest = constraint.get("min_rest", config.DEFAULT_CONSTRAINTS["min_rest"])
     if state.get("is_resting", False) and state.get("rest_end_time") is not None:
-        rest_remaining = max(0.0, state["rest_end_time"] - state["current_time"]) / min_rest
+        rest_remaining = max(0.0, state["rest_end_time"] - state["current_time"]) / config.CONSTRAINT_NORMS["min_rest"]
     else:
         rest_remaining = 0.0
 
@@ -75,16 +75,17 @@ def state_to_vec(state, encoder, constraint):
         torch.tensor([
             time_of_day,
             day_norm,
-            duty_elapsed                     / constraint["max_duty"],
-            state.get("legs", 0)             / constraint["max_legs"],
+            duty_elapsed / config.CONSTRAINT_NORMS["max_duty"],
+            state.get("legs", 0) / config.CONSTRAINT_NORMS["max_legs"],
             duty_period_norm,
             1.0 if state.get("is_resting", False) else 0.0,
             rest_remaining,
-        ], dtype=torch.float32).to(DEVICE)
+        ], dtype=torch.float32).to(DEVICE),
+        constraint_to_tensor(constraint),
     ])
 
 
-LEG_BONUS_IP        = 1.5
+LEG_BONUS_IP        = 1.5 
 DEADHEAD_PENALTY_IP = 5.0
 PAIRING_FIXED_COST  = 1.5  # pairing당 고정 비용 — single-leg pairing을 IP에서 무상으로 두지 않기 위함
                            # 없으면 single-leg cost=0 → IP가 묶을 이유 없음. 있으면 multi-leg 선호 유도
@@ -444,7 +445,7 @@ def evaluate(checkpoint_path, data_path=None,
     c_tensor   = constraint_to_tensor(constraint)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
-    decoder = PointerDecoder().to(DEVICE)
+    decoder = PointerDecoder(constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
     encoder.load_state_dict(ckpt["encoder"])
     decoder.load_state_dict(ckpt["decoder"])
     encoder.eval()
@@ -557,7 +558,7 @@ if __name__ == "__main__":
             print(f"Evaluating: {stage}  ({ckpt})  [airline={args.airline}]")
             print(f"{'='*60}")
             result = evaluate(ckpt, device=args.device, n_rollouts=args.n_rollouts,
-                              bases=eval_bases[:3], airline=args.airline)
+                              bases=eval_bases, airline=args.airline)
             sel = result["selected"]
             fly  = sum(p["fly"]                        for p in sel) if sel else 0.0
             dead = sum(p.get("dead_time", p["cost"])   for p in sel) if sel else 0.0
@@ -586,4 +587,4 @@ if __name__ == "__main__":
     else:
         eval_bases = config.AIRLINE_BASES[args.airline]
         evaluate(ckpt_arg, device=args.device, n_rollouts=args.n_rollouts,
-                 bases=eval_bases[:3], airline=args.airline)
+                 bases=eval_bases, airline=args.airline)
