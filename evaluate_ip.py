@@ -531,7 +531,9 @@ if __name__ == "__main__":
                              "디렉토리를 넘기면 stage1~phase2_best.pt 4개를 순서대로 평가 후 요약 출력. "
                              "예) checkpoints/di83hxpy")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--n-rollouts", type=int, default=100)
+    parser.add_argument("--n-rollouts", type=int, default=500)
+    parser.add_argument("--n-runs", type=int, default=1,
+                        help="evaluate 반복 횟수 (기본: 1). 1보다 크면 평균/std 출력")
     parser.add_argument("--airline", default="delta", choices=["delta", "alaska", "jetblue"],
                         help="평가 항공사 (데이터 + constraint 선택). 기본: delta")
     args = parser.parse_args()
@@ -543,48 +545,95 @@ if __name__ == "__main__":
         if os.path.exists(candidate):
             ckpt_arg = candidate
 
+    import numpy as np
+
+    def _collect_metrics(result):
+        sel  = result["selected"]
+        fly  = sum(p["fly"]                        for p in sel) if sel else 0.0
+        dead = sum(p.get("dead_time", p["cost"])   for p in sel) if sel else 0.0
+        legs = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
+        return {
+            "ftc":        dead / fly * 100 if fly > 0 else 0.0,
+            "dead":       dead,
+            "fly":        fly,
+            "avg_legs":   legs / len(sel) if sel else 0.0,
+            "n_pairings": result["n_pairings"],
+            "dh":         result["deadhead_count"],
+            "coverage":   result["coverage"] * 100,
+        }
+
+    def _print_stats(label, runs):
+        keys = ["ftc", "dead", "fly", "avg_legs", "n_pairings"]
+        vals = {k: [r[k] for r in runs] for k in keys}
+        n = len(runs)
+        print(f"\n{'='*60}")
+        print(f"{label}  ({n}회 평균)")
+        print(f"{'='*60}")
+        print(f"  FTC:        {np.mean(vals['ftc']):.2f}% ± {np.std(vals['ftc']):.2f}%")
+        print(f"  dead_time:  {np.mean(vals['dead']):.2f}h ± {np.std(vals['dead']):.2f}h")
+        print(f"  n_pairings: {np.mean(vals['n_pairings']):.1f} ± {np.std(vals['n_pairings']):.1f}")
+        print(f"  avg_legs:   {np.mean(vals['avg_legs']):.2f} ± {np.std(vals['avg_legs']):.2f}")
+        print(f"  개별 FTC:   {[f'{v:.2f}%' for v in vals['ftc']]}")
+
     if os.path.isdir(ckpt_arg):
-        stages = ["stage1_best", "stage2_best", "stage3_best", "phase2_best"]
-        ckpt_dir = ckpt_arg
-        summary = []
+        stages     = ["stage1_best", "stage2_best", "stage3_best", "phase2_best"]
+        ckpt_dir   = ckpt_arg
         eval_bases = config.AIRLINE_BASES[args.airline]
+        summary    = []
 
         for stage in stages:
             ckpt = os.path.join(ckpt_dir, f"{stage}.pt")
             if not os.path.exists(ckpt):
                 print(f"[SKIP] {ckpt} not found")
                 continue
-            print(f"\n{'='*60}")
-            print(f"Evaluating: {stage}  ({ckpt})  [airline={args.airline}]")
-            print(f"{'='*60}")
-            result = evaluate(ckpt, device=args.device, n_rollouts=args.n_rollouts,
-                              bases=eval_bases, airline=args.airline)
-            sel = result["selected"]
-            fly  = sum(p["fly"]                        for p in sel) if sel else 0.0
-            dead = sum(p.get("dead_time", p["cost"])   for p in sel) if sel else 0.0
-            legs = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
-            summary.append({
-                "stage":    stage,
-                "pairings": result["n_pairings"],
-                "dh":       result["deadhead_count"],
-                "coverage": result["coverage"] * 100,
-                "ftc":      dead / fly * 100 if fly > 0 else 0.0,
-                "dead":     dead,
-                "fly":      fly,
-                "avg_legs": legs / len(sel) if sel else 0.0,
-            })
+            stage_runs = []
+            for run_i in range(args.n_runs):
+                print(f"\n{'='*60}")
+                print(f"Evaluating: {stage}  [run {run_i+1}/{args.n_runs}]  [airline={args.airline}]")
+                print(f"{'='*60}")
+                result = evaluate(ckpt, device=args.device, n_rollouts=args.n_rollouts,
+                                  bases=eval_bases, airline=args.airline)
+                stage_runs.append(_collect_metrics(result))
+
+            m = {k: np.mean([r[k] for r in stage_runs]) for k in stage_runs[0]}
+            s = {k: np.std ([r[k] for r in stage_runs]) for k in stage_runs[0]}
+            summary.append({"stage": stage, "mean": m, "std": s, "runs": stage_runs})
 
         print(f"\n{'='*60}")
-        print(f"Summary — {ckpt_dir}")
+        if args.n_runs > 1:
+            print(f"Summary — {ckpt_dir}  ({args.n_runs}회 평균)")
+        else:
+            print(f"Summary — {ckpt_dir}")
         print(f"{'='*60}")
-        hdr = f"  {'Stage':<15} {'Pairs':>6} {'DH':>4} {'Cover':>7} {'FTC%':>6} {'Dead(h)':>8} {'Fly(h)':>8} {'AvgLegs':>8}"
-        print(hdr)
-        print("  " + "-" * (len(hdr) - 2))
-        for r in summary:
-            print(f"  {r['stage']:<15} {r['pairings']:>6} {r['dh']:>4} "
-                  f"{r['coverage']:>6.1f}% {r['ftc']:>5.2f}% "
-                  f"{r['dead']:>7.2f}h {r['fly']:>7.2f}h {r['avg_legs']:>8.2f}")
+        if args.n_runs > 1:
+            hdr = f"  {'Stage':<15} {'Pairs':>12} {'DH':>4} {'Cover':>7} {'FTC%':>14} {'Dead(h)':>14} {'AvgLegs':>12}"
+            print(hdr)
+            print("  " + "-" * (len(hdr) - 2))
+            for r in summary:
+                m, s = r["mean"], r["std"]
+                pairs_str = f"{m['n_pairings']:.1f}±{s['n_pairings']:.1f}"
+                ftc_str   = f"{m['ftc']:.2f}±{s['ftc']:.2f}%"
+                dead_str  = f"{m['dead']:.2f}±{s['dead']:.2f}h"
+                legs_str  = f"{m['avg_legs']:.2f}±{s['avg_legs']:.2f}"
+                print(f"  {r['stage']:<15} {pairs_str:>12} {m['dh']:>4.0f} "
+                      f"{m['coverage']:>6.1f}% {ftc_str:>14} {dead_str:>14} {legs_str:>12}")
+        else:
+            hdr = f"  {'Stage':<15} {'Pairs':>6} {'DH':>4} {'Cover':>7} {'FTC%':>6} {'Dead(h)':>8} {'Fly(h)':>8} {'AvgLegs':>8}"
+            print(hdr)
+            print("  " + "-" * (len(hdr) - 2))
+            for r in summary:
+                m = r["mean"]
+                print(f"  {r['stage']:<15} {m['n_pairings']:>6.0f} {m['dh']:>4.0f} "
+                      f"{m['coverage']:>6.1f}% {m['ftc']:>5.2f}% "
+                      f"{m['dead']:>7.2f}h {m['fly']:>7.2f}h {m['avg_legs']:>8.2f}")
     else:
         eval_bases = config.AIRLINE_BASES[args.airline]
-        evaluate(ckpt_arg, device=args.device, n_rollouts=args.n_rollouts,
-                 bases=eval_bases, airline=args.airline)
+        run_results = []
+        for run_i in range(args.n_runs):
+            if args.n_runs > 1:
+                print(f"\n[Run {run_i+1}/{args.n_runs}]", flush=True)
+            result = evaluate(ckpt_arg, device=args.device, n_rollouts=args.n_rollouts,
+                              bases=eval_bases, airline=args.airline)
+            run_results.append(_collect_metrics(result))
+        if args.n_runs > 1:
+            _print_stats(ckpt_arg, run_results)

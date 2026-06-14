@@ -150,6 +150,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
                 "duty_time":          0.0,
                 "duty_start_time":    earliest["dep_time"],
                 "legs":               0,
+                "total_legs":         0,
                 "remaining":          sum(1 for v in assigned.values() if not v),
                 "pairing_start":      True,
                 "duty_period":        0,
@@ -446,6 +447,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
                 "duty_time":          0.0,
                 "duty_start_time":    earliest["dep_time"],
                 "legs":               0,
+                "total_legs":         0,
                 "remaining":          sum(1 for v in assigned.values() if not v),
                 "pairing_start":      True,
                 "duty_period":        0,
@@ -888,7 +890,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                              n_episodes=1000, constraint_override=stage1_c,
                              save_dir=save_dir, flight_sampler=flight_sampler,
                              global_step_offset=0,
-                             entropy_start=0.05, entropy_end=0.005)
+                             entropy_start=0.15, entropy_end=0.005)
 
         # ── Stage 2: full multi-day ───────────────────────────────────────
         # overnight connection 포함 전체 multi-day pairing 학습
@@ -941,15 +943,15 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     )
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
 
-    # max_legs=[2,4,6,8]: 4배 변동폭 → FiLM이 constraint에 따라 다르게 행동하는지 명확하게 확인
-    # max_duty 12~14h(14% 변동)보다 훨씬 큰 신호 차이를 가짐
+    # max_duty_periods=[1,2,3,4]: 훈련 범위(1~4) 완전 커버, overnight 허용 횟수 변화 → 행동 변화 명확
+    # 1=당일치기만, 2=1박, 3=2박, 4=3박 → pairing 전략이 뚜렷하게 달라져야 FiLM이 학습된 것
     with torch.no_grad():
-        for legs in [2, 4, 6, 8]:
-            c = {**_CONSTRAINT_FN[config.AIRLINE](val_base), "max_legs": legs,
-                 "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS}
+        for dp in [1, 2, 3, 4]:
+            c = {**_CONSTRAINT_FN[config.AIRLINE](val_base), "max_duty_periods": dp,
+                 "max_pairing_days": WINDOW_DAYS}
             enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times, constraint_to_tensor(c))
             _, _, _, metrics = run_episode(val_flights, c, encoder, decoder, enc, greedy=True)
-            print(f"  max_legs={legs} → pairings: {metrics['n_pairings']:3d}  "
+            print(f"  max_duty_periods={dp} → pairings: {metrics['n_pairings']:3d}  "
                   f"deadheads: {metrics['n_deadheads']:3d}  "
                   f"coverage: {metrics['coverage_pct']:5.1f}%")
 

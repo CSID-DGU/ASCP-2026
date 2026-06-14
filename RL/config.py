@@ -78,12 +78,13 @@ EPISODE_MAX_FLIGHTS = 300
 # LP interval: 매 에피소드 LP를 풀면 CBC solver가 병목 → 10 에피소드마다 재풀기
 # (dual_vars는 interval 사이에 캐싱되어 재사용됨)
 PHASE2_POOL_ROLLOUTS = 50    # pool 수집 rollout 수 (stochastic × 50 + greedy × 1)
-PHASE2_LP_INTERVAL   = 10    # LP re-solve 주기 (에피소드) — 간격 줄여 dual_vars 신선도 향상
+PHASE2_LP_INTERVAL   = 5     # LP re-solve 주기 (에피소드) — 간격 줄여 dual_vars 신선도 향상
 PHASE2_N_EPISODES    = 1000  # Phase 2 학습 에피소드 수
-PHASE2_DUAL_WEIGHT   = 0.15  # LP dual reward 가중치 — 0.3은 stale dual이 reward를 과도하게 왜곡
+PHASE2_DUAL_WEIGHT   = 0.1   # LP dual reward 가중치 — 0.3은 stale dual이 reward를 과도하게 왜곡
 
 # Reward shaping
-LEG_CONN_BONUS = 1.5   # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
+LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
+LEG_PER_PAIRING_BONUS = 0.5  # END_PAIRING 시 pairing 전체 legs 수 × bonus — multi-leg pairing 명시적 장려
                        # IP의 LEG_BONUS_IP=1.5와 일치 — RL reward와 IP cost 구조 정합
                        # 0.5일 때: min_conn=0.65h에서도 항상 음수 → 모델이 연결 기피, avg_legs≈1.8
                        # 1.5로 변경: min_conn 0.65h → +0.85, avg_dead≈1.5h → 0.0 (neutral) → multi-leg 학습 가능

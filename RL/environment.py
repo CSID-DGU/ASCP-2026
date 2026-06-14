@@ -143,7 +143,8 @@ def step(state, action, flights, assigned, constraint=None):
         base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
         # constraint["base_airport"] 에피소드별 주입
         base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-        reward = -p_cost
+        # total_legs bonus: multi-leg pairing 명시적 장려 — 1편 pairing과 n편 pairing의 END_PAIRING 비용 차별화
+        reward = -p_cost + state.get("total_legs", 0) * config.LEG_PER_PAIRING_BONUS
         if state["current_airport"] != base:
             reward -= base_penalty
         unassigned = [f for f in flights if not assigned[f["id"]]]
@@ -160,6 +161,7 @@ def step(state, action, flights, assigned, constraint=None):
             "duty_time":          0.0,
             "duty_start_time":    next_time,
             "legs":               0,
+            "total_legs":         0,    # 새 pairing 시작 시 리셋
             "duty_period":        0,
             "is_resting":         False,
             "rest_end_time":      None,
@@ -184,6 +186,7 @@ def step(state, action, flights, assigned, constraint=None):
         "duty_time":          (0.0 if state.get("is_resting", False) else state["duty_time"]) + flight_time,
         "duty_start_time":    d_start_time,
         "legs":               state.get("legs", 0) + 1,
+        "total_legs":         state.get("total_legs", 0) + 1,  # pairing 전체 누적 (END_DUTY에서 리셋 안 함)
         "remaining":          state["remaining"] - 1,
         "pairing_start":      False,
         "duty_period":        state.get("duty_period", 0),
