@@ -143,8 +143,10 @@ def step(state, action, flights, assigned, constraint=None):
         base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
         # constraint["base_airport"] 에피소드별 주입
         base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-        # total_legs bonus: multi-leg pairing 명시적 장려 — 1편 pairing과 n편 pairing의 END_PAIRING 비용 차별화
-        reward = -p_cost + state.get("total_legs", 0) * config.LEG_PER_PAIRING_BONUS
+        total_legs = state.get("total_legs", 0)
+        reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
+        if total_legs < config.MIN_LEGS_FOR_PAIRING:
+            reward += config.MIN_LEGS_PENALTY
         if state["current_airport"] != base:
             reward -= base_penalty
         unassigned = [f for f in flights if not assigned[f["id"]]]

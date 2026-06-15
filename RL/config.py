@@ -84,11 +84,12 @@ PHASE2_DUAL_WEIGHT   = 0.1   # LP dual reward 가중치 — 0.3은 stale dual이
 
 # Reward shaping
 LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
-LEG_PER_PAIRING_BONUS = 0.5  # END_PAIRING 시 pairing 전체 legs 수 × bonus — multi-leg pairing 명시적 장려
-                       # IP의 LEG_BONUS_IP=1.5와 일치 — RL reward와 IP cost 구조 정합
-                       # 0.5일 때: min_conn=0.65h에서도 항상 음수 → 모델이 연결 기피, avg_legs≈1.8
-                       # 1.5로 변경: min_conn 0.65h → +0.85, avg_dead≈1.5h → 0.0 (neutral) → multi-leg 학습 가능
-                       # pairing 첫 편 및 rest 직후 편에는 적용 안 함 (연결이 아니므로)
+LEG_PER_PAIRING_BONUS = 1.0  # END_PAIRING 시 pairing 전체 legs 수 × bonus — multi-leg pairing 명시적 장려
+                              # 1.0: avg_legs 3-5 달성을 위해 0.5→1.0 상향
+
+MIN_LEGS_FOR_PAIRING = 3      # pairing당 목표 최소 leg 수
+MIN_LEGS_PENALTY = -3.0       # total_legs < MIN_LEGS_FOR_PAIRING 시 END_PAIRING 추가 패널티
+                              # 2→3 leg 전환에 +4.0 점프를 만들어 avg_legs 3-5 달성 유도
 
 # 커리큘럼 스테이지별 허용 규칙
 # Stage 1: 단일 duty (END_DUTY 불가) — 기본 연결 패턴 학습
