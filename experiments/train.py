@@ -937,12 +937,27 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
 
     encoder.eval()
     decoder.eval()
-    # 검증용 고정 데이터 (offset=0, base=ATL) — n_max 지정으로 수천 개 로드 방지
-    val_base    = base_ids[0]
+    # 검증용 변수 결정 — multi-airline은 delta를 기준으로 검증
+    if multi_airline:
+        _val_airline     = "delta"
+        _val_data_path   = config.AIRLINE_DATA["delta"]
+        _val_df          = _df_caches["delta"]
+        _val_base        = all_base_ids["delta"][0]
+        _val_bases_save  = config.AIRLINE_BASES["delta"]
+        _val_constraint_fn = _CONSTRAINT_FN["delta"]
+    else:
+        _val_airline     = config.AIRLINE
+        _val_data_path   = DATA_PATH
+        _val_df          = _df_cache
+        _val_base        = base_ids[0]
+        _val_bases_save  = airline_bases
+        _val_constraint_fn = _CONSTRAINT_FN[config.AIRLINE]
+
+    # 검증용 고정 데이터 (offset=0) — n_max 지정으로 수천 개 로드 방지
     val_flights = load_flights_rolling(
-        DATA_PATH, WINDOW_DAYS, 0, airport_map,
-        base_airport=val_base, n_max=config.EPISODE_MAX_FLIGHTS,
-        df=_df_cache,
+        _val_data_path, WINDOW_DAYS, 0, airport_map,
+        base_airport=_val_base, n_max=config.EPISODE_MAX_FLIGHTS,
+        df=_val_df,
     )
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
 
@@ -950,7 +965,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     # 1=당일치기만, 2=1박, 3=2박, 4=3박 → pairing 전략이 뚜렷하게 달라져야 FiLM이 학습된 것
     with torch.no_grad():
         for dp in [1, 2, 3, 4]:
-            c = {**_CONSTRAINT_FN[config.AIRLINE](val_base), "max_duty_periods": dp,
+            c = {**_val_constraint_fn(_val_base), "max_duty_periods": dp,
                  "max_pairing_days": WINDOW_DAYS}
             enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times, constraint_to_tensor(c))
             _, _, _, metrics = run_episode(val_flights, c, encoder, decoder, enc, greedy=True)
@@ -964,7 +979,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         "decoder":        decoder.state_dict(),
         "n_airports":     n_airports,
         "constraint_dim": len(FILM_CONSTRAINT_KEYS),
-        "bases":          airline_bases,
+        "bases":          _val_bases_save,
         "window_days":    WINDOW_DAYS,
         "max_time":       WINDOW_DAYS * 24,  # evaluate_ip.py가 ckpt["max_time"]으로 직접 읽음
     }, os.path.join(save_dir, "model_latest.pt"))
