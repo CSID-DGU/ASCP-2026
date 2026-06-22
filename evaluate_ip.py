@@ -31,12 +31,14 @@ from constraints import (
     get_delta_constraints,
     get_alaska_constraints,
     get_jetblue_constraints,
+    get_turkish_constraints,
     FILM_CONSTRAINT_KEYS,
 )
 _GET_CONSTRAINT = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
+    "turkish": get_turkish_constraints,
 }
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
@@ -329,7 +331,7 @@ def evaluate_full(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="전체 1개월 flight 커버 평가")
     parser.add_argument("checkpoint", help="체크포인트 파일 경로 (예: checkpoints/jbkwcdk3/phase2_best.pt)")
-    parser.add_argument("--airline",   default="delta", choices=["delta", "alaska", "jetblue"])
+    parser.add_argument("--airline",   default="delta", choices=["delta", "alaska", "jetblue", "turkish"])
     parser.add_argument("--data-path", default=None,
                         help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
                              "소규모 sample 평가 시 지정 (예: RL/data/sample_DL_*.csv)")
