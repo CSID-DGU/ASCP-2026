@@ -983,6 +983,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         _val_bases_save    = config.AIRLINE_BASES["delta"]
         _val_constraint_fn = _CONSTRAINT_FN["delta"]
     else:
+        _val_data_path     = DATA_PATH
         _val_df            = _df_cache
         _val_base          = base_ids[0]
         _val_bases_save    = airline_bases
@@ -998,6 +999,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         val_flights = load_flights_rolling(
             _val_data_path, WINDOW_DAYS, 0, airport_map,
             base_airport=_val_base,
+            n_max=config.EPISODE_MAX_FLIGHTS,
             df=_val_df,
         )
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
