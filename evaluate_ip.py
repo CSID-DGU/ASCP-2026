@@ -401,23 +401,17 @@ def evaluate(checkpoint_path, data_path=None,
              bases=("ATL", "DTW", "MSP"),
              lambda_dh=1.0,
              device="cpu",
-             n_max=None,
              airline="delta"):
     """
     Args:
         bases: crew base 공항 코드 리스트 (예: ["ATL", "DTW", "MSP"]).
                airport_map을 통해 내부적으로 정수 ID로 변환된다.
-        n_max: 에피소드 최대 flight 수 (None이면 config.EPISODE_MAX_FLIGHTS 사용).
-               미지정 시 window 전체(~10만 편)가 로드되어 사실상 무한 실행됨.
     """
     global DEVICE
     DEVICE = torch.device(device)
 
     if data_path is None:
         data_path = config.AIRLINE_DATA[airline]
-
-    if n_max is None:
-        n_max = config.EPISODE_MAX_FLIGHTS
 
     # checkpoint를 먼저 로드해 vocab 크기 확인 — multi-airline 모델(n_airports=168)은
     # 통합 공항 맵이 필요. 단일 항공사 맵으로 빌드하면 ID 불일치로 임베딩 오류 발생.
@@ -437,7 +431,7 @@ def evaluate(checkpoint_path, data_path=None,
     flights   = load_flights_rolling(
         data_path, window_days=window_days,
         offset_days=offset_days, airport_map=airport_map,
-        base_airport=base_ids[0], n_max=n_max,
+        base_airport=base_ids[0],
     )
     n_flights = len(flights)
 
