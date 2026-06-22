@@ -745,11 +745,11 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
     if multi_airline:
-        # 세 항공사 CSV 전체에서 통합 공항 ID 공간 구성
-        # Delta/Alaska/JetBlue의 LAX 등 공유 공항이 동일 ID를 갖도록 보장
-        all_paths = list(config.AIRLINE_DATA.values())
+        # BTS CSV 항공사만 — Turkish는 별도 .legs 포맷이라 multi-airline에서 제외
+        import os as _os
+        airlines = [a for a in config.AIRLINE_DATA if not _os.path.isdir(config.AIRLINE_DATA[a])]
+        all_paths = [config.AIRLINE_DATA[a] for a in airlines]
         airport_map = build_airport_map(all_paths)
-        airlines = list(config.AIRLINE_DATA.keys())
         all_base_ids = {a: bases_to_ids(config.AIRLINE_BASES[a], airport_map) for a in airlines}
         # n_airports는 통합 맵 기준 — encoder embedding을 충분히 크게
         n_airports = len(airport_map)
@@ -790,7 +790,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             {"params": decoder.parameters(),      "lr": 1e-4},
         ])
 
-    tag = "multi-airline" if multi_airline else "delta"
+    tag = "multi-airline" if multi_airline else config.AIRLINE
     tag += "-nofilm" if skip_film else ""
     run_name = "phase2-only" if phase2_only else tag
     wandb.init(
@@ -839,6 +839,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             flights = load_flights_rolling(
                 config.AIRLINE_DATA[airline], WINDOW_DAYS, offset_days, airport_map,
                 base_airport=base_airport,
+                n_max=config.EPISODE_MAX_FLIGHTS,
                 df=_df_caches[airline],
             )
             if not flights:
@@ -884,6 +885,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                 flights = load_flights_rolling(
                     DATA_PATH, WINDOW_DAYS, offset_days, airport_map,
                     base_airport=base_airport,
+                    n_max=config.EPISODE_MAX_FLIGHTS,
                     df=_df_cache,
                 )
                 if not flights:
@@ -1086,7 +1088,11 @@ if __name__ == "__main__":
                         help="Delta/Alaska/JetBlue 세 항공사 데이터로 동시 학습 (통합 airport_map 사용)")
     parser.add_argument("--skip-film", action="store_true",
                         help="FiLM 비활성화 (use_film_before=False, use_film_after=False) — ablation B/D용")
+    parser.add_argument("--airline", default=None,
+                        help="단일 항공사 지정 (delta/alaska/jetblue/turkish). 미지정 시 config.AIRLINE 사용")
     args = parser.parse_args()
+    if args.airline:
+        config.AIRLINE = args.airline
     _set_device(args.device)
     print(f"device: {DEVICE}")
     print(f"log: {args.log}")
