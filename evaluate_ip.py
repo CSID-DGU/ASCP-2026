@@ -1,5 +1,5 @@
 """
-evaluate_ip_full.py — 전체 1개월 데이터 커버 평가
+evaluate_ip.py — 전체 1개월 데이터 커버 평가
 
 evaluate_ip.py는 에피소드당 최대 600편 subset만 커버 (n_max=600).
 이 스크립트는 전체 1개월을 window_days 단위 비겹침 윈도우로 나눠 모든 편을 커버한다.
@@ -12,7 +12,6 @@ evaluate_ip.py는 에피소드당 최대 600편 subset만 커버 (n_max=600).
 주의사항:
   - 윈도우 경계를 걸치는 pairing은 생성 불가 (window boundary 한계)
   - IP 규모: ~73,836편 × pool pairings → CBC 수 시간 소요 가능 (ip_time_limit 조정)
-  - evaluate_ip.py는 그대로 유지 (롤백 가능)
 """
 
 import sys
@@ -32,12 +31,14 @@ from constraints import (
     get_delta_constraints,
     get_alaska_constraints,
     get_jetblue_constraints,
+    get_turkish_constraints,
     FILM_CONSTRAINT_KEYS,
 )
 _GET_CONSTRAINT = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
+    "turkish": get_turkish_constraints,
 }
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
@@ -270,24 +271,12 @@ def evaluate_full(
     ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
     n_airports = ckpt.get("n_airports",
                           ckpt["encoder"]["airport_emb.weight"].shape[0])
-    max_time   = ckpt.get("max_time", window_days * 24)
-
     if n_airports > 145:
         map_paths = list(config.AIRLINE_DATA.values())
     else:
         map_paths = data_path
     airport_map = build_airport_map(map_paths)
     base_ids    = bases_to_ids(bases, airport_map)
-
-    flights   = load_flights_rolling(
-        data_path, window_days=window_days,
-        offset_days=offset_days, airport_map=airport_map,
-        base_airport=base_ids[0],
-    )
-    n_flights = len(flights)
-
-    constraint = _GET_CONSTRAINT[airline](base_ids[0])
-    c_tensor   = constraint_to_tensor(constraint)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
     decoder = PointerDecoder(constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
@@ -342,7 +331,7 @@ def evaluate_full(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="전체 1개월 flight 커버 평가")
     parser.add_argument("checkpoint", help="체크포인트 파일 경로 (예: checkpoints/jbkwcdk3/phase2_best.pt)")
-    parser.add_argument("--airline",   default="delta", choices=["delta", "alaska", "jetblue"])
+    parser.add_argument("--airline",   default="delta", choices=["delta", "alaska", "jetblue", "turkish"])
     parser.add_argument("--data-path", default=None,
                         help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
                              "소규모 sample 평가 시 지정 (예: RL/data/sample_DL_*.csv)")
