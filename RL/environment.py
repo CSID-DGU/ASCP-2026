@@ -145,10 +145,15 @@ def step(state, action, flights, assigned, constraint=None):
         base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
         # constraint["base_airport"] 에피소드별 주입
         base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-        # v7: LEG_PER_PAIRING_BONUS는 flight 선택 시 즉시 지급으로 변경 → END_PAIRING에서 제거
-        reward = -p_cost
+        
+        total_legs = state.get("total_legs", 0)
+        reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
+        
+        if total_legs < config.MIN_LEGS_FOR_PAIRING:
+            reward += config.MIN_LEGS_PENALTY
         if state["current_airport"] != base:
             reward -= base_penalty
+            
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:
             # 모든 flight 커버 완료 → 에피소드 종료

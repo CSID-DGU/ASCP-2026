@@ -262,17 +262,32 @@ def evaluate_full(
     global DEVICE
     DEVICE = torch.device(device)
 
-    data_path = data_path or config.AIRLINE_DATA[airline]
+    if data_path is None:
+        data_path = config.AIRLINE_DATA[airline]
 
-    ckpt = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
-    n_airports = ckpt.get("n_airports", ckpt["encoder"]["airport_emb.weight"].shape[0])
+    # checkpoint를 먼저 로드해 vocab 크기 확인 — multi-airline 모델(n_airports=168)은
+    # 통합 공항 맵이 필요. 단일 항공사 맵으로 빌드하면 ID 불일치로 임베딩 오류 발생.
+    ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
+    n_airports = ckpt.get("n_airports",
+                          ckpt["encoder"]["airport_emb.weight"].shape[0])
+    max_time   = ckpt.get("max_time", window_days * 24)
 
     if n_airports > 145:
         map_paths = list(config.AIRLINE_DATA.values())
     else:
         map_paths = data_path
     airport_map = build_airport_map(map_paths)
-    base_ids    = bases_to_ids(list(bases), airport_map)
+    base_ids    = bases_to_ids(bases, airport_map)
+
+    flights   = load_flights_rolling(
+        data_path, window_days=window_days,
+        offset_days=offset_days, airport_map=airport_map,
+        base_airport=base_ids[0],
+    )
+    n_flights = len(flights)
+
+    constraint = _GET_CONSTRAINT[airline](base_ids[0])
+    c_tensor   = constraint_to_tensor(constraint)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
     decoder = PointerDecoder(constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
