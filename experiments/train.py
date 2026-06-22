@@ -34,71 +34,6 @@ def _set_device(device_str: str):
     DEVICE = torch.device(device_str)
 
 
-
-def constraint_to_tensor(constraint):
-    return torch.tensor(
-        [constraint[k] / config.CONSTRAINT_NORMS[k] for k in FILM_CONSTRAINT_KEYS],
-        dtype=torch.float32,
-    ).to(DEVICE)
-
-def flights_to_tensors(flights, window_days=5):
-    origins   = torch.tensor([f["origin"]   for f in flights]).to(DEVICE)
-    dests     = torch.tensor([f["dest"]     for f in flights]).to(DEVICE)
-    max_time  = window_days * 24.0
-    dep_raw   = torch.tensor([f["dep_time"] for f in flights], dtype=torch.float32)
-    arr_raw   = torch.tensor([f["arr_time"] for f in flights], dtype=torch.float32)
-    dep_times = (dep_raw / max_time).to(DEVICE)
-    arr_times = (arr_raw / max_time).to(DEVICE)
-    fly_times = ((arr_raw - dep_raw) / max_time).to(DEVICE)
-    return origins, dests, dep_times, arr_times, fly_times
-
-
-def state_to_vec(state, encoder, constraint):
-    """혜린 state dict → 찬주 decoder 입력 tensor 변환
-
-    state_vec(78,) = current_emb(32) + base_emb(32) + scalars(7) + constraint_vec(7)
-    7개 스칼라: time_of_day, day_norm, duty_elapsed/max, legs/max, duty_period/max, is_resting, rest_remaining
-    constraint_vec(7): FILM_CONSTRAINT_KEYS 정규화값 — decoder가 constraint를 직접 볼 수 있게 함
-    """
-    current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]).to(DEVICE))
-    base_emb    = encoder.airport_emb(torch.tensor(constraint["base_airport"]).to(DEVICE))
-
-    time_of_day      = (state["current_time"] % 24.0) / 24.0
-    day_norm         = (state["current_time"] // 24.0) / config.CONSTRAINT_NORMS["max_pairing_days"]
-    duty_period_norm = state.get("duty_period", 0) / config.CONSTRAINT_NORMS["max_duty_periods"]
-
-    # duty_elapsed: 비행 시간만이 아닌 FAA 기준 실제 경과 시간 (비행 + 대기)
-    # is_resting/pairing_start 중이면 새 duty 아직 시작 안 함 → 0
-    if state.get("is_resting", False) or state.get("pairing_start", False):
-        duty_elapsed = 0.0
-    else:
-        duty_elapsed = max(0.0, state["current_time"] - state.get("duty_start_time", state["current_time"]))
-
-    # rest_remaining: is_resting=True일 때 남은 rest 시간 비율 (0~1), 아니면 0.0
-    if state.get("is_resting", False) and state.get("rest_end_time") is not None:
-        rest_remaining = max(0.0, state["rest_end_time"] - state["current_time"]) / config.CONSTRAINT_NORMS["min_rest"]
-    else:
-        rest_remaining = 0.0
-
-    # 고정 분모(CONSTRAINT_NORMS) 사용 이유:
-    # constraint 값으로 직접 나누면 constraint 정보가 state_vec에 인코딩되어 FiLM gradient가 약해짐.
-    # CONSTRAINT_NORMS는 훈련 범위 최대값으로 고정 → FiLM이 constraint 정보의 유일한 경로가 됨.
-    return torch.cat([
-        current_emb,
-        base_emb,
-        torch.tensor([
-            time_of_day,
-            day_norm,
-            duty_elapsed / config.CONSTRAINT_NORMS["max_duty"],
-            state["legs"] / config.CONSTRAINT_NORMS["max_legs"],
-            duty_period_norm,
-            1.0 if state.get("is_resting", False) else 0.0,
-            rest_remaining,
-        ], dtype=torch.float32).to(DEVICE),
-        constraint_to_tensor(constraint),
-    ])
-
-
 def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     """
     혜린 environment + 찬주 model로 에피소드 진행
@@ -167,7 +102,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
             continue
 
         # 찬주 decoder
-        state_vec = state_to_vec(state, encoder, constraint)
+        state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         probs = decoder(encoded, state_vec, mask)
 
         if greedy:
@@ -386,19 +321,14 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
 
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
-    """
-    stochastic rollout × n_rollouts + greedy rollout × 1 → 중복 제거 pairing pool.
-    중복 기준: legs 집합이 동일하면 cost가 낮은 쪽 유지.
-    pool은 solve_lp_relaxation()의 입력으로 사용된다.
-    """
+    """stochastic rollout × n_rollouts + greedy × 1 → 중복 제거 pairing pool."""
     pool = {}
     for _ in range(n_rollouts):
-        for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded):
+        for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, device=DEVICE):
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
-    # greedy 1번 추가 — 실현 가능한 고품질 pairing 항상 보장
-    for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True):
+    for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True, device=DEVICE):
         key = tuple(sorted(p["legs"]))
         if key not in pool or p["cost"] < pool[key]["cost"]:
             pool[key] = p
@@ -469,7 +399,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             }
             continue
 
-        state_vec = state_to_vec(state, encoder, constraint)
+        state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         probs     = decoder(encoded, state_vec, mask)
         if greedy:
             action = probs.argmax().item()
@@ -552,7 +482,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         # 없으면 고정 constraint 사용 (기존 동작 유지)
         base_c   = constraint_sampler() if constraint_sampler else constraint
         c        = {**base_c, "base_airport": base_airport}
-        c_tensor = constraint_to_tensor(c)
+        c_tensor = constraint_to_tensor(c, device=DEVICE)
 
         with torch.no_grad():
             encoded = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
@@ -670,7 +600,7 @@ def run_curriculum_stage(
 
         c = constraint_sampler() if constraint_sampler else constraint_override
         c = {**c, "base_airport": base_airport}  # 에피소드별 base 주입
-        c_tensor = constraint_to_tensor(c)
+        c_tensor = constraint_to_tensor(c, device=DEVICE)
         encoded  = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
 
         reward_s, log_probs, entropies, metrics_s = run_episode(
@@ -794,7 +724,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     tag += "-nofilm" if skip_film else ""
     run_name = "phase2-only" if phase2_only else tag
     wandb.init(
-        project="ASCP-2026",
+        project="ASCP-2026-chanju",
         name=run_name,
         config={
             "airline":            "multi" if multi_airline else config.AIRLINE,
@@ -846,7 +776,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                 return None
             if not any(f["origin"] == base_airport for f in flights):
                 return None
-            origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS)
+            origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
             return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
 
         _first_base = all_base_ids["delta"][0]

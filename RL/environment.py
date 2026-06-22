@@ -135,7 +135,9 @@ def step(state, action, flights, assigned, constraint=None):
             "duty_period":     state.get("duty_period", 0) + 1,
             "pairing_start":   False,
         }
-        return next_state, 0.0, False
+        # v8: overnight rest 직접 장려 — multi-day pairing 유도
+        # overnight 10h는 dead_time에서 제외되므로 legs↑ dead_time 증가 없이 avg_legs 개선 가능
+        return next_state, config.END_DUTY_BONUS, False
 
     # END_PAIRING → pairing 비용 부과 후 새 pairing 시작 (또는 에피소드 종료)
     if action == N + 1:
@@ -143,12 +145,15 @@ def step(state, action, flights, assigned, constraint=None):
         base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
         # constraint["base_airport"] 에피소드별 주입
         base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+        
         total_legs = state.get("total_legs", 0)
         reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
+        
         if total_legs < config.MIN_LEGS_FOR_PAIRING:
             reward += config.MIN_LEGS_PENALTY
         if state["current_airport"] != base:
             reward -= base_penalty
+            
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:
             # 모든 flight 커버 완료 → 에피소드 종료
@@ -198,11 +203,13 @@ def step(state, action, flights, assigned, constraint=None):
     }
 
     # dead time reward: duty 중간 flight 간 대기 시간 패널티 + 연결 보너스
-    # pairing 첫 편이거나 rest 직후 첫 편은 연결이 아니므로 보너스/패널티 모두 제외
+    # pairing 첫 편이거나 rest 직후 첫 편은 gap 패널티 없음
+    # LEG_PER_PAIRING_BONUS: 모든 flight 선택 시 즉시 지급 (END_PAIRING 지연 지급 제거)
+    # → credit assignment 문제 해결: agent가 multi-leg 가치를 즉각 인식
     if not state.get("pairing_start", False) and not state.get("is_resting", False):
-        reward = -(f["dep_time"] - state["current_time"]) + config.LEG_CONN_BONUS
+        reward = -(f["dep_time"] - state["current_time"]) + config.LEG_CONN_BONUS + config.LEG_PER_PAIRING_BONUS
     else:
-        reward = 0.0
+        reward = config.LEG_PER_PAIRING_BONUS  # 첫 편 / rest 직후: gap 패널티 없이 bonus만
 
     return next_state, reward, False
 

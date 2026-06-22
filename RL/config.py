@@ -73,8 +73,7 @@ WINDOW_DAYS = 5
 
 # 에피소드 최대 flight 수 — base-first sampling으로 이 수를 초과하지 않도록 제한
 # base↔X 편 전부 포함 + 나머지 spoke-spoke 랜덤 샘플링
-# 5일 윈도우 Delta = 10K+ 편 → Transformer O(N²) OOM 방지
-EPISODE_MAX_FLIGHTS = 300
+EPISODE_MAX_FLIGHTS = 600
 
 # Phase 2 CG dual feedback 하이퍼파라미터
 # pool rollout 수: pool이 너무 작으면 LP가 의미없고, 너무 많으면 느림 → 30번이 균형점
@@ -83,17 +82,31 @@ EPISODE_MAX_FLIGHTS = 300
 PHASE2_POOL_ROLLOUTS = 50    # pool 수집 rollout 수 (stochastic × 50 + greedy × 1)
 PHASE2_LP_INTERVAL   = 5     # LP re-solve 주기 (에피소드) — 간격 줄여 dual_vars 신선도 향상
 PHASE2_N_EPISODES    = 1000  # Phase 2 학습 에피소드 수
-PHASE2_DUAL_WEIGHT   = 0.1   # LP dual reward 가중치 — 0.3은 stale dual이 reward를 과도하게 왜곡
 PHASE2_DUAL_WARMUP   = 100   # dual_weight warm-up 기간 (에피소드) — 처음 100ep은 0→full로 점진 증가
 
 # Reward shaping
-LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
-LEG_PER_PAIRING_BONUS = 1.0  # END_PAIRING 시 pairing 전체 legs 수 × bonus — multi-leg pairing 명시적 장려
-                              # 1.0: avg_legs 3-5 달성을 위해 0.5→1.0 상향
 
 MIN_LEGS_FOR_PAIRING = 3      # pairing당 목표 최소 leg 수
 MIN_LEGS_PENALTY = -3.0       # total_legs < MIN_LEGS_FOR_PAIRING 시 END_PAIRING 추가 패널티
                               # 2→3 leg 전환에 +4.0 점프를 만들어 avg_legs 3-5 달성 유도
+PHASE2_DUAL_WEIGHT   = 0.6   # LP dual reward 가중치 — v9: bonus=3.0 스케일에 맞게 0.1→0.6 (비율 0.2 유지)
+
+# Reward shaping
+LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
+LEG_PER_PAIRING_BONUS = 3.0  # flight 선택 시 즉시 지급 (step reward에 반영) — credit assignment 해결
+END_DUTY_BONUS = 2.0          # v8: END_DUTY(overnight rest) 시 즉각 보너스 — multi-day pairing 직접 장려
+                               # overnight 10h는 dead_time에서 제외 → legs↑ dead_time↑ 없이 avg_legs 개선 가능
+                       # v7: END_PAIRING 지연 지급 → per-step 즉시 지급으로 구조 변경
+                       # 임계값 = LEG_CONN_BONUS(1.5) + LEG_PER_PAIRING_BONUS(3.0) = 4.5h
+                       # avg gap 4.27h < 4.5h → 대부분 연결이 reward-positive → avg_legs 3+ 목표
+                       # dead_time 상승 감수 (avg gap 연결 허용하므로)
+                       # pairing 첫 편 및 rest 직후 편에는 적용 안 함 (연결이 아니므로)
+
+# IP/LP cost 함수 상수 — evaluate_ip.py, train.py Phase 2 공용
+# cost = dead_time - LEG_BONUS_IP*(n_legs-1) + DEADHEAD_PENALTY_IP*(강제종료) + PAIRING_FIXED_COST
+IP_LEG_BONUS        = 1.5   # leg 추가될수록 cost 감소 → 효율적 연결 장려
+IP_DEADHEAD_PENALTY = 5.0   # 강제 deadhead 발생 시 가산
+IP_PAIRING_FIXED_COST = 4.0 # pairing당 고정 비용 — single-leg cost=4.0 → IP가 multi-leg 강하게 선호
 
 # 커리큘럼 스테이지별 허용 규칙
 # Stage 1: 단일 duty (END_DUTY 불가) — 기본 연결 패턴 학습
