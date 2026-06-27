@@ -671,7 +671,7 @@ def run_curriculum_stage(
     return best_avg_pairings
 
 
-def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None, from_stage2=False):
+def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None, from_stage2=False, turkish_files=None):
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
     if multi_airline:
@@ -689,7 +689,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         if config.AIRLINE == "turkish":
             from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish
             DATA_PATH    = None  # Turkish는 단일 CSV 없음
-            _turkish_df  = parse_legs_dir(config.AIRLINE_DATA["turkish"])  # 전체 파싱 (한 번만)
+            _turkish_df  = parse_legs_dir(config.AIRLINE_DATA["turkish"], files=turkish_files)
             airport_map  = build_airport_map_turkish(df=_turkish_df)
         else:
             DATA_PATH   = config.AIRLINE_DATA[config.AIRLINE]
@@ -794,6 +794,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                 flights = load_flights_rolling_turkish(
                     WINDOW_DAYS, offset_days, airport_map,
                     base_airport=base_airport, df=_df_cache,
+                    n_max=config.EPISODE_MAX_FLIGHTS,
                 )
                 if not flights:
                     return None
@@ -924,6 +925,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         val_flights = load_flights_rolling_turkish(
             WINDOW_DAYS, 0, airport_map,
             base_airport=_val_base, df=_val_df,
+            n_max=config.EPISODE_MAX_FLIGHTS,
         )
     else:
         val_flights = load_flights_rolling(
@@ -1022,11 +1024,14 @@ if __name__ == "__main__":
                         help="FiLM 비활성화 (use_film_before=False, use_film_after=False) — ablation B/D용")
     parser.add_argument("--airline", default=None,
                         help="단일 항공사 지정 (delta/alaska/jetblue/turkish). 미지정 시 config.AIRLINE 사용")
+    parser.add_argument("--turkish-files", default=None,
+                        help="Turkish 학습 시 사용할 .legs 파일 이름 콤마 구분 (예: tt201401.legs). 미지정 시 전체 파일 사용")
     args = parser.parse_args()
     if args.airline:
         config.AIRLINE = args.airline
     _set_device(args.device)
     print(f"device: {DEVICE}")
     print(f"log: {args.log}")
+    _turkish_files = [f.strip() for f in args.turkish_files.split(",")] if args.turkish_files else None
     train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,
-          ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2)
+          ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2, turkish_files=_turkish_files)

@@ -39,9 +39,9 @@ def _parse_legs_file(path):
     return pd.DataFrame(rows)
 
 
-def parse_legs_dir(dir_path, fleet_prefix="3"):
+def parse_legs_dir(dir_path, fleet_prefix="3", files=None):
     """
-    디렉토리 내 모든 .legs 파일을 파싱 → UTC 기준 시간 포함 DataFrame 반환.
+    디렉토리 내 .legs 파일을 파싱 → UTC 기준 시간 포함 DataFrame 반환.
 
     반환 컬럼:
         ORIGIN, DEST          공항 코드
@@ -51,8 +51,15 @@ def parse_legs_dir(dir_path, fleet_prefix="3"):
     Args:
         dir_path:     .legs 파일이 있는 디렉토리
         fleet_prefix: 포함할 fleet 코드 prefix. None이면 전체. 기본 "3" = Airbus narrow body.
+        files:        사용할 파일 이름 목록 (예: ["tt201401.legs"]). None이면 디렉토리 내 전체.
     """
-    legs_files = sorted(glob.glob(os.path.join(dir_path, "*.legs")))
+    if files is not None:
+        legs_files = [os.path.join(dir_path, f) for f in files]
+        missing = [p for p in legs_files if not os.path.exists(p)]
+        if missing:
+            raise FileNotFoundError(f".legs 파일 없음: {missing}")
+    else:
+        legs_files = sorted(glob.glob(os.path.join(dir_path, "*.legs")))
     if not legs_files:
         raise FileNotFoundError(f".legs 파일 없음: {dir_path}")
 
@@ -67,8 +74,10 @@ def parse_legs_dir(dir_path, fleet_prefix="3"):
     df["arr_local"] = pd.to_datetime(df["ARR_DT"])
     df["dep_utc"]   = df["dep_local"] - pd.to_timedelta(df["DEP_TZ"], unit="min")
     df["arr_utc"]   = df["arr_local"] - pd.to_timedelta(df["ARR_TZ"], unit="min")
-    # dep_date_utc: UTC 기준 날짜 (rolling window 날짜 선택에 사용)
     df["dep_date_utc"] = df["dep_utc"].dt.normalize()
+
+    # 같은 origin-dest 및 arr <= dep (동향 단거리 시간대 역전) 필터
+    df = df[(df["ORIGIN"] != df["DEST"]) & (df["arr_utc"] > df["dep_utc"])].copy()
 
     return df[["ORIGIN", "DEST", "dep_utc", "arr_utc", "dep_date_utc"]].reset_index(drop=True)
 
@@ -99,6 +108,7 @@ def load_flights_rolling_turkish(
     airport_map=None,
     base_airport=None,
     df=None,
+    n_max=None,
 ):
     """
     슬라이딩 윈도우 방식으로 Turkish .legs 데이터에서 flight 로드.
@@ -110,8 +120,9 @@ def load_flights_rolling_turkish(
         window_days:  윈도우 크기 (일), 기본 5
         offset_days:  전체 날짜 목록 기준 시작 인덱스 (에피소드마다 랜덤 지정)
         airport_map:  build_airport_map_turkish()로 생성한 공항→int 맵
-        base_airport: 에피소드 base 공항 ID (인터페이스 통일용, base-first sampling 미적용)
+        base_airport: 에피소드 base 공항 ID; base-first sampling 기준
         df:           parse_legs_dir()로 사전 로드된 DataFrame (필수)
+        n_max:        에피소드 최대 flight 수; 초과 시 base-first sampling 적용
 
     Returns:
         flight dict 리스트 (dep_time 오름차순)
@@ -148,5 +159,19 @@ def load_flights_rolling_turkish(
             "dep_time": float(row["dep_time"]),
             "arr_time": float(row["arr_time"]),
         })
+
+    # base-first sampling: base 관련 편 우선, 나머지 랜덤 샘플링
+    if n_max is not None and len(flights) > n_max and base_airport is not None:
+        base_fs = [f for f in flights if f["origin"] == base_airport or f["dest"] == base_airport]
+        mid_fs  = [f for f in flights if f["origin"] != base_airport and f["dest"] != base_airport]
+        if len(base_fs) >= n_max:
+            random.shuffle(base_fs)
+            flights = sorted(base_fs[:n_max], key=lambda f: f["dep_time"])
+        else:
+            remaining = n_max - len(base_fs)
+            random.shuffle(mid_fs)
+            flights = sorted(base_fs + mid_fs[:remaining], key=lambda f: f["dep_time"])
+        for i, f in enumerate(flights):
+            f["id"] = i
 
     return flights
