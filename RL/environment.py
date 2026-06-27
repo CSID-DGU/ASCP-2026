@@ -104,10 +104,11 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         mask[config.END_DUTY] = 1
 
     # END_PAIRING (mask[-1] = mask[N+1])
-    # total_legs >= 2: 1-leg 단편 pairing Nash equilibrium 방지
+    # min_pairing_legs: 항공사별 설정 (Delta/Alaska/JetBlue=3, Turkish=2)
     pairing_elapsed_days = (state["current_time"] - pairing_start_time) / 24.0
+    min_pairing_legs = c.get("min_pairing_legs", 2)
     can_end_pairing = (
-        state.get("total_legs", 0) >= 2
+        state.get("total_legs", 0) >= min_pairing_legs
         and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
     # base 미복귀 시 BASE_PENALTY는 step()에서 reward로 처리 (hard mask 제거 → soft penalty)
