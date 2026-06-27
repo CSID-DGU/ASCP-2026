@@ -878,7 +878,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                                  n_episodes=1000, constraint_override=stage1_c,
                                  save_dir=save_dir, flight_sampler=flight_sampler,
                                  global_step_offset=0,
-                                 entropy_start=0.15, entropy_end=0.005)
+                                 entropy_start=0.30, entropy_end=0.005)
 
             # ── Stage 2: full multi-day ───────────────────────────────────────
             stage2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
