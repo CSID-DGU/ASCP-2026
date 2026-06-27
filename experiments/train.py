@@ -24,6 +24,7 @@ _CONSTRAINT_FN = {
     "turkish": get_turkish_constraints,
 }
 from state import init_state
+from utils import flights_to_tensors, constraint_to_tensor, state_to_vec
 import config
 
 DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
@@ -800,7 +801,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                     return None
                 if not any(f["origin"] == base_airport for f in flights):
                     return None
-                origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS)
+                origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS, device=DEVICE)
                 return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
         else:
             DATA_PATH = config.AIRLINE_DATA[config.AIRLINE]
@@ -823,7 +824,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                     return None
                 if not any(f["origin"] == base_airport for f in flights):
                     return None
-                origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS)
+                origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS, device=DEVICE)
                 return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
 
         base_constraint = _CONSTRAINT_FN[config.AIRLINE](base_ids[0])  # base는 에피소드마다 교체됨
@@ -934,7 +935,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             n_max=config.EPISODE_MAX_FLIGHTS,
             df=_val_df,
         )
-    val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
+    val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS, device=DEVICE)
 
     N_FILM_ROLLOUTS = 10
 
