@@ -27,6 +27,7 @@ sys.path.insert(0, "RL")
 DEVICE = torch.device("cpu")
 
 from loader import load_flights_rolling, build_airport_map, bases_to_ids
+from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish
 from constraints import (
     get_delta_constraints,
     get_alaska_constraints,
@@ -45,6 +46,35 @@ from set_partition import solve_set_covering
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings
 import config
+
+
+# ── 0. Turkish 윈도우 로더 ────────────────────────────────────────────────────
+
+def load_windows_turkish(turkish_df, airport_map, window_days=5):
+    """Turkish .legs 데이터를 window_days 단위 비겹침 윈도우로 분할, 전역 ID 부여."""
+    dates = sorted(turkish_df["dep_date_utc"].unique())
+    n_days = len(dates)
+    windows = []
+    global_offset = 0
+
+    for offset in range(0, n_days, window_days):
+        wf = load_flights_rolling_turkish(
+            window_days=window_days,
+            offset_days=offset,
+            airport_map=airport_map,
+            df=turkish_df,
+        )
+        for f in wf:
+            f["global_id"] = global_offset + f["id"]
+        global_offset += len(wf)
+        windows.append(wf)
+        print(
+            f"  window offset={offset:2d}: {len(wf):5d}편 "
+            f"(global {global_offset - len(wf)} ~ {global_offset - 1})",
+            flush=True,
+        )
+
+    return windows, global_offset
 
 
 # ── 1. 전체 데이터를 윈도우별로 로드, 전역 ID 부여 ─────────────────────────────
@@ -254,6 +284,7 @@ def evaluate_full(
     bases=("ATL", "DTW", "MSP", "JFK", "LAX", "SEA", "SLC"),
     ip_time_limit=3600,
     device="cpu",
+    turkish_files=None,
 ):
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
@@ -271,12 +302,19 @@ def evaluate_full(
     ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
     n_airports = ckpt.get("n_airports",
                           ckpt["encoder"]["airport_emb.weight"].shape[0])
-    if n_airports > 145:
-        map_paths = list(config.AIRLINE_DATA.values())
+
+    _turkish_df = None
+    if airline == "turkish":
+        _turkish_df = parse_legs_dir(data_path, files=turkish_files)
+        airport_map = build_airport_map_turkish(df=_turkish_df)
     else:
-        map_paths = data_path
-    airport_map = build_airport_map(map_paths)
-    base_ids    = bases_to_ids(bases, airport_map)
+        if n_airports > 145:
+            # Turkish(.legs 디렉토리)는 BTS CSV 로더로 처리 불가 → 제외
+            map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
+        else:
+            map_paths = data_path
+        airport_map = build_airport_map(map_paths)
+    base_ids = bases_to_ids(list(bases), airport_map)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
     decoder = PointerDecoder(constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
@@ -288,7 +326,10 @@ def evaluate_full(
     constraint = _GET_CONSTRAINT[airline](base_ids[0])
 
     print(f"\n전체 데이터 로드 중 ({airline}, window_days={window_days})...", flush=True)
-    windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
+    if airline == "turkish":
+        windows, n_total = load_windows_turkish(_turkish_df, airport_map, window_days)
+    else:
+        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
     print(f"총 {n_total}편, {len(windows)}개 윈도우", flush=True)
 
     print(f"\nPool 수집 중 (rollouts/window={n_rollouts_per_window}, subset={subset_size})...", flush=True)
@@ -344,6 +385,8 @@ if __name__ == "__main__":
     parser.add_argument("--ip-time-limit", type=int, default=3600,
                         help="CBC solver 제한 시간 초 (기본: 3600)")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--turkish-files", nargs="+", default=None,
+                        help="Turkish 전용. 사용할 .legs 파일 이름 목록. 예: tt201401.legs")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -361,4 +404,5 @@ if __name__ == "__main__":
         subset_size=args.subset_size,
         ip_time_limit=args.ip_time_limit,
         device=args.device,
+        turkish_files=args.turkish_files,
     )
