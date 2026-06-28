@@ -274,7 +274,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             }
             continue
 
-        state_vec = state_to_vec(state, encoder, constraint)
+        state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         probs     = decoder(encoded, state_vec, mask)
         action    = probs.argmax().item() if greedy else Categorical(probs).sample().item()
 
@@ -325,11 +325,11 @@ def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
     """stochastic rollout × n_rollouts + greedy × 1 → 중복 제거 pairing pool."""
     pool = {}
     for _ in range(n_rollouts):
-        for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, device=DEVICE):
+        for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded):
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
-    for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True, device=DEVICE):
+    for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True):
         key = tuple(sorted(p["legs"]))
         if key not in pool or p["cost"] < pool[key]["cost"]:
             pool[key] = p
@@ -857,9 +857,20 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         _s3_ckpt_dir = ckpt_dir if ckpt_dir else save_dir
         ckpt_path = os.path.join(_s3_ckpt_dir, "stage3_best.pt")
         ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
+        ckpt_n_airports = ckpt["encoder"]["airport_emb.weight"].shape[0]
+        if ckpt_n_airports != n_airports:
+            encoder = FlightEncoder(
+                n_airports=ckpt_n_airports,
+                constraint_dim=len(FILM_CONSTRAINT_KEYS),
+                airport_emb_dim=32,
+                d_model=128,
+                use_film_before=not skip_film,
+                use_film_after=not skip_film,
+            ).to(DEVICE)
+            n_airports = ckpt_n_airports
         encoder.load_state_dict(ckpt["encoder"])
         decoder.load_state_dict(ckpt["decoder"])
-        print(f"stage3_best.pt 로드 완료: {ckpt_path} → Phase 2만 실행")
+        print(f"stage3_best.pt 로드 완료: {ckpt_path} → Phase 2만 실행 (n_airports={n_airports})")
 
     if not phase2_only:
         if from_stage2:
@@ -952,7 +963,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                 val_c = {**_val_constraint_fn(_val_base), "max_duty_periods": dp,
                          "max_pairing_days": WINDOW_DAYS}
                 val_enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times,
-                                  val_fly_times, constraint_to_tensor(val_c))
+                                  val_fly_times, constraint_to_tensor(val_c, device=DEVICE))
                 p_list, dh_list, cov_list = [], [], []
                 for _ in range(N_FILM_ROLLOUTS):
                     _, _, _, m = run_episode(val_flights, val_c, encoder, decoder, val_enc, greedy=False)
@@ -965,9 +976,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                       f"coverage={sum(cov_list)/len(cov_list):.1f}%")
         encoder.train(); decoder.train()
 
-    # Stage 3 FiLM 검증 — Phase 2 전 기준점 (not phase2_only 시에만)
-    if not phase2_only:
-        _film_validation("Stage 3 best")
+    # Stage 3 FiLM 검증 — Phase 2 전 기준점
+    _film_validation("Stage 3 best")
 
     # ── Phase 2: CG dual feedback ──────────────────────────────────────
     # Stage 3 이후 동일 모델 이어서 학습 (Phase 1 → Phase 2 연속)
