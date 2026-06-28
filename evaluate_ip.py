@@ -16,6 +16,7 @@ evaluate_ip.py는 에피소드당 최대 600편 subset만 커버 (n_max=600).
 
 import sys
 import os
+import math
 import random
 import argparse
 
@@ -373,12 +374,14 @@ def evaluate_full(
     legs_total = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
     avg_legs   = legs_total / len(sel) if sel else 0.0
     ftc        = dead_total / fly_total * 100 if fly_total > 0 else 0.0
+    man_days   = sum(math.ceil(p["elapsed"] / 24.0) for p in sel) if sel else 0
 
     print()
     print("=" * 60)
     print(f"결과 (전체 {n_total}편 커버)")
     print("=" * 60)
     print(f"  pairing 수:       {result['n_pairings']}")
+    print(f"  ManDays:          {man_days}")
     print(f"  coverage:         {result['coverage'] * 100:.1f}%")
     print(f"  uncoverable:      {result['uncoverable']}개 flight")
     print(f"  deadhead:         {result['deadhead_count']}개 flight")
