@@ -216,9 +216,15 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
 # ── 4. 전체 윈도우 pool 수집 ──────────────────────────────────────────────────
 
 def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
-                      n_rollouts_per_window=200,
+                      n_rollouts_per_chunk=5,
                       subset_size=config.EPISODE_MAX_FLIGHTS):
-    """모든 윈도우에서 rollout → 전역 ID 기반 pairing pool 생성."""
+    """모든 윈도우에서 rollout → 전역 ID 기반 pairing pool 생성.
+
+    window를 dep_time 순 subset_size 단위 순차 chunk로 분할한 뒤,
+    각 chunk에 n_rollouts_per_chunk번 stochastic + 1번 greedy rollout을 수행한다.
+    훈련 시 load_flights_rolling(dep_time 순 슬라이싱)과 동일한 분포로
+    모든 flight이 최소 1번 rollout에 포함되어 coverage 100% 보장.
+    """
     pool = {}
     covered_global = set()
     max_time = 5 * 24.0
@@ -230,37 +236,53 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         window_all_ids = set(f["global_id"] for f in window_flights)
         window_covered = set()
 
-        print(f"\n[Window {w_idx + 1}/{len(windows)}] {len(window_flights)}편", flush=True)
+        sorted_window = sorted(window_flights, key=lambda f: f["dep_time"])
+        chunks = [sorted_window[i:i + subset_size]
+                  for i in range(0, len(sorted_window), subset_size)]
 
-        for rollout_i in range(n_rollouts_per_window):
+        print(f"\n[Window {w_idx + 1}/{len(windows)}] {len(window_flights)}편 → {len(chunks)}개 chunk", flush=True)
+
+        rollout_count = 0
+        for c_idx, chunk in enumerate(chunks):
+            for local_id, f in enumerate(chunk):
+                f["local_id"] = local_id
+
             base_id = random.choice(base_ids)
-            c_b     = {**constraint, "base_airport": base_id}
-            subset  = sample_connected_subset(window_flights, subset_size, base_id, c_b)
+            c_b = {**constraint, "base_airport": base_id}
+
+            for _ in range(n_rollouts_per_chunk):
+                try:
+                    pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=False)
+                except Exception as e:
+                    print(f"  [warn] stochastic rollout 실패 (chunk={c_idx}): {e}", flush=True)
+                    continue
+                for p in pairings:
+                    key = tuple(sorted(p["legs"]))
+                    if key not in pool or p["cost"] < pool[key]["cost"]:
+                        pool[key] = p
+                    window_covered.update(p["legs"])
+                    covered_global.update(p["legs"])
+                rollout_count += 1
 
             try:
-                pairings = rollout_subset_global(subset, c_b, encoder, decoder, max_time)
+                pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=True)
             except Exception as e:
-                print(f"  [warn] rollout 실패 (base={base_id}): {e}", flush=True)
+                print(f"  [warn] greedy rollout 실패 (chunk={c_idx}): {e}", flush=True)
                 continue
-
             for p in pairings:
                 key = tuple(sorted(p["legs"]))
                 if key not in pool or p["cost"] < pool[key]["cost"]:
                     pool[key] = p
                 window_covered.update(p["legs"])
                 covered_global.update(p["legs"])
+            rollout_count += 1
 
-            if (rollout_i + 1) % 50 == 0:
-                print(
-                    f"  rollout {rollout_i + 1}/{n_rollouts_per_window}: "
-                    f"window {len(window_covered)}/{len(window_all_ids)}편 커버, "
-                    f"pool={len(pool)}",
-                    flush=True,
-                )
-
-            if window_covered >= window_all_ids:
-                print(f"  → 윈도우 전체 커버 달성 (rollout {rollout_i + 1}번)", flush=True)
-                break
+        print(
+            f"  총 {rollout_count}회 rollout: "
+            f"window {len(window_covered)}/{len(window_all_ids)}편 커버, "
+            f"pool={len(pool)}",
+            flush=True,
+        )
 
         uncov = len(window_all_ids - window_covered)
         if uncov > 0:
@@ -278,10 +300,10 @@ def evaluate_full(
     checkpoint_path,
     airline="delta",
     data_path=None,
-    n_rollouts_per_window=200,
+    n_rollouts_per_chunk=5,
     window_days=5,
     subset_size=config.EPISODE_MAX_FLIGHTS,
-    bases=("ATL", "DTW", "MSP", "JFK", "LAX", "SEA", "SLC"),
+    bases=None,
     ip_time_limit=3600,
     device="cpu",
     turkish_files=None,
@@ -289,13 +311,15 @@ def evaluate_full(
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
     소규모 데이터(예: 1주일 sample) 평가 시:
-        data_path=<sample.csv>, window_days=1, n_rollouts_per_window=100
+        data_path=<sample.csv>, window_days=1, n_rollouts_per_chunk=3
     """
     global DEVICE
     DEVICE = torch.device(device)
 
     if data_path is None:
         data_path = config.AIRLINE_DATA[airline]
+    if bases is None:
+        bases = config.AIRLINE_BASES[airline]
 
     # checkpoint를 먼저 로드해 vocab 크기 확인 — multi-airline 모델(n_airports=168)은
     # 통합 공항 맵이 필요. 단일 항공사 맵으로 빌드하면 ID 불일치로 임베딩 오류 발생.
@@ -332,11 +356,11 @@ def evaluate_full(
         windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
     print(f"총 {n_total}편, {len(windows)}개 윈도우", flush=True)
 
-    print(f"\nPool 수집 중 (rollouts/window={n_rollouts_per_window}, subset={subset_size})...", flush=True)
+    print(f"\nPool 수집 중 (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
     with torch.no_grad():
         pool, covered = collect_pool_full(
             windows, base_ids, constraint, encoder, decoder,
-            n_rollouts_per_window=n_rollouts_per_window,
+            n_rollouts_per_chunk=n_rollouts_per_chunk,
             subset_size=subset_size,
         )
 
@@ -376,8 +400,8 @@ if __name__ == "__main__":
     parser.add_argument("--data-path", default=None,
                         help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
                              "소규모 sample 평가 시 지정 (예: RL/data/sample_DL_*.csv)")
-    parser.add_argument("--n-rollouts-per-window", type=int, default=200,
-                        help="윈도우당 rollout 수. 많을수록 커버리지↑ (기본: 200)")
+    parser.add_argument("--n-rollouts-per-chunk", type=int, default=5,
+                        help="chunk당 stochastic rollout 수. window를 subset_size 단위 순차 chunk로 분할 (기본: 5)")
     parser.add_argument("--window-days", type=int, default=5,
                         help="윈도우 크기(일). 소규모(1주) 데이터는 1 권장 (기본: 5)")
     parser.add_argument("--subset-size", type=int, default=config.EPISODE_MAX_FLIGHTS,
@@ -399,7 +423,7 @@ if __name__ == "__main__":
         checkpoint_path=ckpt,
         airline=args.airline,
         data_path=args.data_path,
-        n_rollouts_per_window=args.n_rollouts_per_window,
+        n_rollouts_per_chunk=args.n_rollouts_per_chunk,
         window_days=args.window_days,
         subset_size=args.subset_size,
         ip_time_limit=args.ip_time_limit,
