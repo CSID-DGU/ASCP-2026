@@ -229,6 +229,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
     pool = {}
     covered_global = set()
     max_time = 5 * 24.0
+    base_id_set = set(base_ids)
 
     for w_idx, window_flights in enumerate(windows):
         if not window_flights:
@@ -240,6 +241,19 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         sorted_window = sorted(window_flights, key=lambda f: f["dep_time"])
         chunks = [sorted_window[i:i + subset_size]
                   for i in range(0, len(sorted_window), subset_size)]
+
+        # chunk 내 base 출발편 보장: 없으면 window에서 가장 가까운 base 편을 복사해 주입
+        for c_idx, chunk in enumerate(chunks):
+            if not any(f["origin"] in base_id_set for f in chunk):
+                chunk_gids = {f["global_id"] for f in chunk}
+                candidates = [f for f in sorted_window
+                              if f["origin"] in base_id_set and f["global_id"] not in chunk_gids]
+                if candidates:
+                    inject = min(candidates,
+                                 key=lambda f: abs(f["dep_time"] - chunk[0]["dep_time"]))
+                    new_chunk = sorted([{**inject}] + list(chunk[:-1]),
+                                       key=lambda f: f["dep_time"])
+                    chunks[c_idx] = new_chunk
 
         print(f"\n[Window {w_idx + 1}/{len(windows)}] {len(window_flights)}편 → {len(chunks)}개 chunk", flush=True)
 
