@@ -34,12 +34,14 @@ def bases_to_ids(bases, airport_map):
         airport_map: build_airport_map()으로 생성한 공항→int 맵
 
     Returns:
-        정수 ID 리스트. airport_map에 없는 코드는 무시한다.
+        정수 ID 리스트. airport_map에 없는 코드는 경고 후 무시한다.
     """
     ids = [airport_map[b] for b in bases if b in airport_map]
-    if len(ids) < len(bases):
-        missing = [b for b in bases if b not in airport_map]
-        raise ValueError(f"airport_map에 없는 base: {missing}")
+    missing = [b for b in bases if b not in airport_map]
+    if missing:
+        print(f"[bases_to_ids] 경고: airport_map에 없는 base 제외됨: {missing}")
+    if not ids:
+        raise ValueError(f"유효한 base가 없음. bases={bases}")
     return ids
 
 

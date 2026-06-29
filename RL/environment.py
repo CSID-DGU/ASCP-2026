@@ -47,9 +47,15 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         valid = True
 
         # 1. 공항 연결 검사
-        # pairing 첫 leg base 출발 강제 (hub_only 제거로 전체 편이 후보에 포함되니까 명시적 체크)
+        # pairing 첫 leg: base-origin 미배정 편이 남아있으면 base 출발 강제
+        # base-origin 소진 시 origin 제한 해제 → deadhead loop 방지
         if pairing_start:
-            if f["origin"] != c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"]):
+            base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+            base_remaining = any(
+                not assigned[fl["id"]] and fl["origin"] == base_ap
+                for fl in flights
+            )
+            if base_remaining and f["origin"] != base_ap:
                 valid = False
         elif f["origin"] != state["current_airport"]:
             valid = False
@@ -98,9 +104,11 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         mask[config.END_DUTY] = 1
 
     # END_PAIRING (mask[-1] = mask[N+1])
+    # min_pairing_legs: 항공사별 설정 (Delta/Alaska/JetBlue=3, Turkish=2)
     pairing_elapsed_days = (state["current_time"] - pairing_start_time) / 24.0
+    min_pairing_legs = c.get("min_pairing_legs", 2)
     can_end_pairing = (
-        state.get("legs", 0) > 0
+        state.get("total_legs", 0) >= min_pairing_legs
         and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
     # base 미복귀 시 BASE_PENALTY는 step()에서 reward로 처리 (hard mask 제거 → soft penalty)
