@@ -24,6 +24,7 @@ _CONSTRAINT_FN = {
     "turkish": get_turkish_constraints,
 }
 from state import init_state
+from utils import state_to_vec, constraint_to_tensor, flights_to_tensors
 import config
 
 DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
@@ -155,32 +156,12 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
 
 # ── Phase 2 helpers ──────────────────────────────────────────────────────────
-"""
-phase2는 LP dual variable을 RL reward에 피드백하는 구조임. 
-이를 위해 4개 함수가 필요함
-1. pairing 구조체를 수집하는 rollout 함수 
-2. 중복 제거 pool 수집 함수 
-3. dual feedback이 포함된 에피소드 함수
-4. Phase 2 학습 루프
-"""
-# evaluate_ip.py의 rollout_with_pairings()를 참고해 train.py 내부 함수로 구현.
-
-# pairing cost = dead_time - LEG_BONUS*(n_legs-1) + DEADHEAD_PENALTY*(강제종료여부)
-# dead_time: 실제 비행 외 대기 시간 (elapsed - fly - rest)
-# LEG_BONUS: leg 추가될수록 cost 감소 → 효율적 연결 장려
-# DEADHEAD_PENALTY: 강제 deadhead 발생 시 가산
-_LEG_BONUS_IP        = 1.5
-_DEADHEAD_PENALTY_IP = 5.0
-_PAIRING_FIXED_COST  = 1.5  # IP/LP cost와 동일 — Phase 2 dual signal 일관성 유지
+_LEG_BONUS_IP        = config.IP_LEG_BONUS           
+_DEADHEAD_PENALTY_IP = config.IP_DEADHEAD_PENALTY     
+_PAIRING_FIXED_COST  = config.IP_PAIRING_FIXED_COST  
 
 
 def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
-    """
-    run_episode()와 동일한 rollout이지만 pairing 구조체(legs, cost 등)를 반환.
-    LP relaxation에 넣을 pool 수집 전용. gradient 추적 불필요 → no_grad 하에서 호출.
-
-    feat/ip-multibase evaluate_ip.py의 rollout_with_pairings() 참고.
-    """
     assigned = {f["id"]: False for f in flights}
     pairings = []
 
@@ -246,7 +227,6 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         mask_list = get_mask(state, flights, assigned, constraint)
         mask      = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
-        # mask 전부 0 → 강제 deadhead
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
@@ -273,12 +253,12 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             }
             continue
 
-        state_vec = state_to_vec(state, encoder, constraint)
+        state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         probs     = decoder(encoded, state_vec, mask)
         action    = probs.argmax().item() if greedy else Categorical(probs).sample().item()
 
         if action == len(flights):          # END_DUTY
-            pairing_rest += constraint.get("min_rest", 9.5)
+            pairing_rest += constraint.get("min_rest", 10.0)
             state, _, _ = step(state, action, flights, assigned, constraint)
             continue
 
@@ -307,7 +287,6 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             }
             continue
 
-        # flight action — pairing에 leg 추가
         f = flights[action]
         current_legs.append(f["id"])
         pairing_fly      += f["arr_time"] - f["dep_time"]
@@ -321,14 +300,13 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
 
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
-    """stochastic rollout × n_rollouts + greedy × 1 → 중복 제거 pairing pool."""
     pool = {}
     for _ in range(n_rollouts):
-        for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, device=DEVICE):
+        for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded):
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
-    for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True, device=DEVICE):
+    for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True):
         key = tuple(sorted(p["legs"]))
         if key not in pool or p["cost"] < pool[key]["cost"]:
             pool[key] = p
@@ -336,16 +314,6 @@ def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
 
 
 def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False, dual_weight=None):
-    """
-    Phase 2 전용 run_episode — flight 배정 시 LP dual variable π[f]를 reward에 추가.
-
-    π[f] > 0: LP에서 이 flight 커버 가치 높음 → RL이 적극적으로 포함하도록 유도
-    π[f] ≈ 0: 이미 여러 pairing이 커버 → 굳이 포함 안 해도 됨
-    dual_vars: {flight_id: π[f]} — solve_lp_relaxation()["dual_vars"]
-
-    greedy=True: stochastic 샘플링 없이 argmax 선택 (baseline 계산용)
-                 stochastic/greedy 모두 동일한 dual_vars 적용 → advantage가 순수 policy 차이만 반영
-    """
     assigned = {f["id"]: False for f in flights}
     state    = init_state(flights, constraint)
 
@@ -412,12 +380,12 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
         n_flights = len(flights)
 
-        if action == n_flights:         # END_DUTY
+        if action == n_flights:         
             state, r, done = step(state, action, flights, assigned, constraint)
             total_reward += r
             continue
 
-        if action == n_flights + 1:     # END_PAIRING
+        if action == n_flights + 1:     
             n_pairings += 1
             total_legs_sum += state.get("total_legs", 0)
             state, r, done = step(state, action, flights, assigned, constraint)
@@ -426,7 +394,6 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
                 break
             continue
 
-        # flight action — π[flight_id] 추가 (CG dual feedback)
         flight_id = flights[action]["id"]
         _dw = dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT
         state, r, done = step(state, action, flights, assigned, constraint)
@@ -449,22 +416,12 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
                constraint_sampler=None, init_best=float("inf")):
-    """
-    Phase 2 — Column Generation dual feedback 학습.
-
-    매 PHASE2_LP_INTERVAL 에피소드마다:
-      1. pool 수집 (_collect_pool, no_grad)
-      2. LP relaxation → dual variable π[f] 추출 (set_partition.solve_lp_relaxation)
-      3. π[f]를 reward에 반영해 REINFORCE 업데이트 (run_episode_with_dual)
-
-    set_partition.py는 혜린 담당 — import만 사용, 파일 수정 없음.
-    """
     from set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
     best_avg_pairings = init_best
     greedy_pairings   = []
-    dual_vars         = {}  # {flight_id: π[f]}, LP interval마다 갱신, 사이에는 캐싱
+    dual_vars         = {}  
 
     print(f"\n{'='*60}")
     print(f"Phase 2: CG dual feedback  "
@@ -478,8 +435,6 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             continue
         flights, origins, dests, dep_times, arr_times, fly_times, base_airport = sample
 
-        # constraint_sampler가 있으면 에피소드마다 샘플링 — FiLM이 Phase 2에서도 constraint 변화 학습
-        # 없으면 고정 constraint 사용 (기존 동작 유지)
         base_c   = constraint_sampler() if constraint_sampler else constraint
         c        = {**base_c, "base_airport": base_airport}
         c_tensor = constraint_to_tensor(c, device=DEVICE)
@@ -487,15 +442,13 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         with torch.no_grad():
             encoded = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
 
-            # LP interval마다 pool 수집 → LP relaxation → dual vars 갱신
             if ep % config.PHASE2_LP_INTERVAL == 0:
                 pool      = _collect_pool(flights, c, encoder, decoder, encoded,
                                           n_rollouts=config.PHASE2_POOL_ROLLOUTS)
                 lp_result = solve_lp_relaxation(pool)
                 if lp_result is not None:
-                    dual_vars = lp_result["dual_vars"]  # {flight_id: π[f]}
+                    dual_vars = lp_result["dual_vars"]  
 
-        # dual feedback 포함 REINFORCE — warm-up 기간(PHASE2_DUAL_WARMUP) 동안 dual_weight를 0→full로 증가
         _eff_dw = config.PHASE2_DUAL_WEIGHT * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
         encoded_train = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
         reward_s, log_probs, entropies, metrics_s = run_episode_with_dual(
@@ -572,14 +525,8 @@ def run_curriculum_stage(
     flight_sampler, constraint_sampler=None,
     global_step_offset=0,
     entropy_start=0.05, entropy_end=0.005,
+    base_stage2_constraint=None,  # Stage 3 리플레이용 베이스 파라미터 추가
 ):
-    """
-    커리큘럼 1단계 실행.
-
-    flight_sampler: () → (flights, origins, dests, dep_times, arr_times, fly_times, base_airport)
-                    에피소드마다 호출 — (base, window) 쌍 랜덤 선택 + flight 로드
-    constraint_sampler: () → constraint dict. None이면 constraint_override 고정 사용.
-    """
     best_avg_pairings = float("inf")
     greedy_pairings = []
 
@@ -589,17 +536,33 @@ def run_curriculum_stage(
           + (" [constraint 랜덤 샘플링]" if constraint_sampler else ""))
     print(f"{'='*60}")
 
+    # [B 패턴 극복 조치] Stage 3 진입 시 파괴적 망각 차단을 위한 Backbone 가중치 보호 LR 스케일링
+    if stage == 3:
+        print(f"--> [CRITICAL] Stage 3 Detected: Scaling down learning rate by 30% to stabilize backbone.")
+        for g in optimizer.param_groups:
+            g["lr"] *= 0.3
+
     params = list(encoder.parameters()) + list(decoder.parameters())
 
     for ep in range(n_episodes):
-        # 에피소드마다 (base, window) 랜덤 선택
         sample = flight_sampler()
         if sample is None:
             continue
         flights, origins, dests, dep_times, arr_times, fly_times, base_airport = sample
 
-        c = constraint_sampler() if constraint_sampler else constraint_override
+        # [B 패턴 극복 조치] Stage 3에서 30% 확률로 Stage 2 기준 제약을 주입하여 과거 환경 기억 보존 (Continual Replay)
+        if stage == 3 and base_stage2_constraint is not None and random.random() < 0.3:
+            c = {
+                **base_stage2_constraint,
+                "max_duty_periods": 2,
+                "max_pairing_days": WINDOW_DAYS - 1,
+            }
+        else:
+            c = constraint_sampler() if constraint_sampler else constraint_override
+
         c = {**c, "base_airport": base_airport}  # 에피소드별 base 주입
+        
+        # 선택된 복원/샘플링 제약조건 사전(c)을 기반으로 정확히 텐서를 빌드하여 FiLM 정렬 유지
         c_tensor = constraint_to_tensor(c, device=DEVICE)
         encoded  = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
 
@@ -631,7 +594,6 @@ def run_curriculum_stage(
 
         avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
 
-        # best checkpoint: greedy pairings 25ep 이동평균 기준
         if len(greedy_pairings) >= 25:
             if avg25 < best_avg_pairings:
                 best_avg_pairings = avg25
@@ -672,24 +634,22 @@ def run_curriculum_stage(
 
 
 def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None, from_stage2=False):
-    WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
+    WINDOW_DAYS = config.WINDOW_DAYS  
 
     if multi_airline:
-        # BTS CSV 항공사만 — Turkish는 별도 .legs 포맷이라 multi-airline에서 제외
         import os as _os
         airlines = [a for a in config.AIRLINE_DATA if not _os.path.isdir(config.AIRLINE_DATA[a])]
         all_paths = [config.AIRLINE_DATA[a] for a in airlines]
         airport_map = build_airport_map(all_paths)
         all_base_ids = {a: bases_to_ids(config.AIRLINE_BASES[a], airport_map) for a in airlines}
-        # n_airports는 통합 맵 기준 — encoder embedding을 충분히 크게
         n_airports = len(airport_map)
         print(f"airports: {n_airports}개 (통합), airlines: {airlines}")
     else:
         airline_bases = config.AIRLINE_BASES[config.AIRLINE]
         if config.AIRLINE == "turkish":
             from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish
-            DATA_PATH    = None  # Turkish는 단일 CSV 없음
-            _turkish_df  = parse_legs_dir(config.AIRLINE_DATA["turkish"])  # 전체 파싱 (한 번만)
+            DATA_PATH    = None  
+            _turkish_df  = parse_legs_dir(config.AIRLINE_DATA["turkish"])  
             airport_map  = build_airport_map_turkish(df=_turkish_df)
         else:
             DATA_PATH   = config.AIRLINE_DATA[config.AIRLINE]
@@ -708,8 +668,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     ).to(DEVICE)
     decoder   = PointerDecoder(d_model=128, airport_emb_dim=32,
                                constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
-    # FiLM lr 분리: FiLM은 constraint 변화에 빠르게 반응해야 하므로 lr=1e-3
-    # skip_film=True(ablation)일 때는 FiLM이 identity → 분리 불필요, 단일 lr 유지
+    
     if skip_film:
         params    = list(encoder.parameters()) + list(decoder.parameters())
         optimizer = optim.Adam(params, lr=1e-4)
@@ -743,11 +702,9 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     save_dir = os.path.join(os.path.dirname(__file__), "..", "checkpoints", wandb.run.id)
     os.makedirs(save_dir, exist_ok=True)
 
-    # CSV 한 번만 로드 → flight_sampler 클로저에 캐싱 (에피소드마다 재로딩 방지)
     import pandas as pd
 
     if multi_airline:
-        # 항공사별 DataFrame + max_offset 사전 계산
         _df_caches = {}
         _max_offsets = {}
         for a in airlines:
@@ -757,11 +714,9 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             _df_caches[a]   = df
             _max_offsets[a] = max(0, df["FL_DATE"].nunique() - WINDOW_DAYS)
 
-        # 에피소드마다 선택된 항공사를 공유 — constraint_sampler가 읽기 위함
         _selected_airline = ["delta"]
 
         def flight_sampler():
-            """에피소드마다 항공사 + (base, window) 랜덤 선택"""
             airline      = random.choice(airlines)
             _selected_airline[0] = airline
             base_airport = random.choice(all_base_ids[airline])
@@ -781,9 +736,9 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
 
         _first_base = all_base_ids["delta"][0]
         base_constraint = _CONSTRAINT_FN["delta"](_first_base)
+
     else:
         if config.AIRLINE == "turkish":
-            # Section 1에서 이미 파싱한 _turkish_df 재사용 — CSV 재로딩 없음
             _df_cache  = _turkish_df
             total_days = _df_cache["dep_date_utc"].nunique()
             max_offset = max(0, total_days - WINDOW_DAYS)
@@ -799,7 +754,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                     return None
                 if not any(f["origin"] == base_airport for f in flights):
                     return None
-                origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS)
+                origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
                 return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
         else:
             DATA_PATH = config.AIRLINE_DATA[config.AIRLINE]
@@ -809,7 +764,6 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             max_offset = max(0, total_days - WINDOW_DAYS)
 
             def flight_sampler():
-                """에피소드마다 (base, window) 쌍 랜덤 선택 → flight 로드"""
                 base_airport = random.choice(base_ids)
                 offset_days  = random.randint(0, max_offset)
                 flights = load_flights_rolling(
@@ -822,18 +776,16 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                     return None
                 if not any(f["origin"] == base_airport for f in flights):
                     return None
-                origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS)
+                origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
                 return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
 
-        base_constraint = _CONSTRAINT_FN[config.AIRLINE](base_ids[0])  # base는 에피소드마다 교체됨
+        base_constraint = _CONSTRAINT_FN[config.AIRLINE](base_ids[0])
 
-    # sample_constraint: Stage 3 + Phase 2 공용 constraint 샘플러
-    # phase2_only=True일 때도 Phase 2에서 사용하므로 두 블록 밖에서 정의
-    _stage3_base = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+    _stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
     def sample_constraint():
         r = config.STAGE3_CONSTRAINT_RANGES
         if multi_airline:
-            airline_base = _CONSTRAINT_FN[_selected_airline[0]](0)
+            airline_base = _CONSTRAINT_FN[_selected_airline[0]](0) # 혹은 기존 찬주님 코드 방식대로 매칭
             base = {**airline_base, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
         else:
             base = _stage3_base
@@ -848,8 +800,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             "max_pairing_days": random.randint(*r["max_pairing_days"]),
         }
 
-    _s3_best     = float("inf")  # Stage 3 best avg_pairings → Phase 2 init_best 기준
-    _s3_ckpt_dir = save_dir      # stage3_best.pt 위치 (phase2_only 시 ckpt_dir로 덮어씀)
+    _s3_best     = float("inf")  
+    _s3_ckpt_dir = save_dir      
 
     if phase2_only:
         _s3_ckpt_dir = ckpt_dir if ckpt_dir else save_dir
@@ -861,7 +813,6 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
 
     if not phase2_only:
         if from_stage2:
-            # Stage 1/2 건너뜀 — stage2_best.pt 로드 후 Stage 3부터 시작
             _s2_load_dir = ckpt_dir
             if not _s2_load_dir:
                 raise ValueError("--from-stage2 사용 시 --ckpt-dir로 stage2_best.pt 폴더를 지정해야 합니다.")
@@ -888,24 +839,22 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                                  entropy_start=0.02, entropy_end=0.005)
 
         # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
-        # 매 에피소드 7개 constraint 전부 랜덤 샘플링 → FiLM이 다양한 constraint에 적응
-        # sample_constraint, _stage3_base는 Phase 2와 공용 — if not phase2_only 블록 밖에서 정의됨
         _s3_offset = 0 if from_stage2 else 3000
+        # [B 패턴 극복 조치] base_stage2_constraint 인자에 base_constraint를 주입하여 Stage 2 제약 복원 유도
         _s3_best = run_curriculum_stage(3, encoder, decoder, optimizer,
                              n_episodes=2000, constraint_override=_stage3_base,
                              save_dir=save_dir, flight_sampler=flight_sampler,
                              constraint_sampler=sample_constraint,
                              global_step_offset=_s3_offset,
-                             entropy_start=0.01, entropy_end=0.005)
+                             entropy_start=0.01, entropy_end=0.005,
+                             base_stage2_constraint=base_constraint)
 
-        # Phase 2 시작 전 stage3_best.pt 로드 — Stage 3 마지막 epoch이 아닌 best checkpoint에서 시작
         _s3_ckpt = torch.load(os.path.join(save_dir, "stage3_best.pt"), map_location=DEVICE, weights_only=True)
         encoder.load_state_dict(_s3_ckpt["encoder"])
         decoder.load_state_dict(_s3_ckpt["decoder"])
         print(f"Phase 2 시작: stage3_best.pt 로드 (best_avg={_s3_ckpt.get('best_avg_pairings', 0):.1f})")
 
     # ── FiLM 검증 공용 data setup ─────────────────────────────────────────
-    # 검증용 변수 결정 — multi-airline은 delta를 기준으로 검증
     if multi_airline:
         _val_data_path     = config.AIRLINE_DATA["delta"]
         _val_df            = _df_caches["delta"]
@@ -919,7 +868,6 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         _val_bases_save    = airline_bases
         _val_constraint_fn = _CONSTRAINT_FN[config.AIRLINE]
 
-    # 검증용 고정 데이터 (offset=0)
     if not multi_airline and config.AIRLINE == "turkish":
         val_flights = load_flights_rolling_turkish(
             WINDOW_DAYS, 0, airport_map,
@@ -932,13 +880,11 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             n_max=config.EPISODE_MAX_FLIGHTS,
             df=_val_df,
         )
-    val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS)
+    val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS * 24.0, device=DEVICE)
 
     N_FILM_ROLLOUTS = 10
 
     def _film_validation(label):
-        """max_duty_periods 1→4 변화 시 pairings 단조 감소 여부로 FiLM 학습 확인.
-        stochastic rollout × N_FILM_ROLLOUTS 평균 → 1회 greedy보다 신뢰도 높음."""
         encoder.eval(); decoder.eval()
         print()
         print("=" * 60)
@@ -949,7 +895,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                 val_c = {**_val_constraint_fn(_val_base), "max_duty_periods": dp,
                          "max_pairing_days": WINDOW_DAYS}
                 val_enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times,
-                                  val_fly_times, constraint_to_tensor(val_c))
+                                  val_fly_times, constraint_to_tensor(val_c, device=DEVICE))
                 p_list, dh_list, cov_list = [], [], []
                 for _ in range(N_FILM_ROLLOUTS):
                     _, _, _, m = run_episode(val_flights, val_c, encoder, decoder, val_enc, greedy=False)
@@ -962,12 +908,10 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                       f"coverage={sum(cov_list)/len(cov_list):.1f}%")
         encoder.train(); decoder.train()
 
-    # Stage 3 FiLM 검증 — Phase 2 전 기준점 (not phase2_only 시에만)
     if not phase2_only:
         _film_validation("Stage 3 best")
 
     # ── Phase 2: CG dual feedback ──────────────────────────────────────
-    # Stage 3 이후 동일 모델 이어서 학습 (Phase 1 → Phase 2 연속)
     phase2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
     phase2_offset = 0 if phase2_only else (2000 if from_stage2 else 1000 + 2000 + 2000)
 
@@ -981,7 +925,6 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                init_best=_s3_best)
 
     # ── FiLM 최종 검증: stage3_best.pt 기준 ───────────────────────────
-    # Phase 2가 FiLM weights를 덮어쓸 수 있으므로 stage3_best.pt로 복원 후 검증
     _film_ckpt = torch.load(os.path.join(_s3_ckpt_dir, "stage3_best.pt"), map_location=DEVICE, weights_only=True)
     encoder.load_state_dict(_film_ckpt["encoder"])
     decoder.load_state_dict(_film_ckpt["decoder"])
@@ -996,7 +939,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         "constraint_dim": len(FILM_CONSTRAINT_KEYS),
         "bases":          _val_bases_save,
         "window_days":    WINDOW_DAYS,
-        "max_time":       WINDOW_DAYS * 24,  # evaluate_ip.py가 ckpt["max_time"]으로 직접 읽음
+        "max_time":       WINDOW_DAYS * 24,  
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt (stage3_best 기준)")
 

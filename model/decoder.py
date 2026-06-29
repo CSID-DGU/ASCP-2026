@@ -13,7 +13,7 @@ class PointerDecoder(nn.Module):
     """
 
     def __init__(self, d_model: int = 128, airport_emb_dim: int = 32, constraint_dim: int = 7,
-                 skip_state_mlp: bool = False):
+                 n_scalars: int = 8, skip_state_mlp: bool = False):
         """
         d_model: attention 공간 차원 (encoder d_model과 일치해야 함)
         airport_emb_dim: state_vec 내 공항 embedding 차원 (encoder airport_emb_dim과 일치해야 함)
@@ -22,11 +22,12 @@ class PointerDecoder(nn.Module):
         """
         super().__init__()
 
-        # state_vec(78,) = current_airport_emb(32) + base_airport_emb(32) + scalars(7) + constraint_vec(7)
-        # scalars 7개: time_of_day, day_norm, duty_elapsed/NORM, legs/NORM, duty_period/NORM, is_resting, rest_remaining
-        # constraint_vec 추가 이유: FiLM이 flight embedding을 변조해도 decoder가 constraint를 직접 못 보면
-        #   policy가 constraint를 반영한 action을 선택하기 어려움. concatenate로 직접 전달.
-        state_input_dim = airport_emb_dim * 2 + 7 + constraint_dim
+        # state_vec(79,) = current_airport_emb(32) + base_airport_emb(32) + scalars(8) + constraint_vec(7)
+        # scalars 8개: time_of_day, day_norm, duty_elapsed/NORM, legs/NORM, duty_period/NORM,
+        #              is_resting, rest_remaining, total_legs/NORM (pairing 전체 누적 legs)
+        # total_legs 추가 이유: decoder가 현재 pairing에 legs가 몇 개 쌓였는지 알아야
+        #   END_PAIRING 타이밍을 최적화할 수 있음 (legs는 현재 duty 내만 반영)
+        state_input_dim = airport_emb_dim * 2 + n_scalars + constraint_dim
         self.state_mlp = nn.Sequential(
             nn.Linear(state_input_dim, d_model),
             nn.ReLU(),

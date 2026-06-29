@@ -650,7 +650,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
 
         base_constraint = _CONSTRAINT_FN[config.AIRLINE](base_ids[0])
 
-    _stage3_base = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+    _stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
     def sample_constraint():
         r = config.STAGE3_CONSTRAINT_RANGES
         if multi_airline:
