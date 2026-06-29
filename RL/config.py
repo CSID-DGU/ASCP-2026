@@ -95,7 +95,7 @@ PHASE2_DUAL_WEIGHT   = 0.6   # LP dual reward 가중치 — v9: bonus=3.0 스케
 # Reward shaping
 LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
 LEG_PER_PAIRING_BONUS = 3.0  # flight 선택 시 즉시 지급 (step reward에 반영) — credit assignment 해결
-END_DUTY_BONUS = 2.0          # v8: END_DUTY(overnight rest) 시 즉각 보너스 — multi-day pairing 직접 장려
+END_DUTY_BONUS = 6.0          # v10: 2.0 → 6.0 — overnight 사용률 강제 상승, FiLM 학습 촉진
                                # overnight 10h는 dead_time에서 제외 → legs↑ dead_time↑ 없이 avg_legs 개선 가능
                        # v7: END_PAIRING 지연 지급 → per-step 즉시 지급으로 구조 변경
                        # 임계값 = LEG_CONN_BONUS(1.5) + LEG_PER_PAIRING_BONUS(3.0) = 4.5h

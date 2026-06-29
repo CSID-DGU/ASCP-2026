@@ -51,6 +51,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     total_reward = 0
     n_pairings = 0
     n_deadheads = 0  # 강제 시작된 pairing 수 (connection 못 찾아서)
+    n_end_duties = 0
     total_legs_sum = 0
 
     max_steps = len(flights) * 20  # 무한루프 방지 (flight당 최대 20 step)
@@ -119,6 +120,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
         # END_DUTY (index N): step()이 rest 진입 처리
         if action == n_flights:
+            n_end_duties += 1
             state, r, done = step(state, action, flights, assigned, constraint)
             total_reward += r
             continue
@@ -146,11 +148,12 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     coverage_pct = (len(flights) - n_uncovered) / len(flights) * 100
 
     metrics = {
-        "n_pairings":  n_pairings,
-        "n_deadheads": n_deadheads,
-        "n_uncovered": n_uncovered,
+        "n_pairings":   n_pairings,
+        "n_deadheads":  n_deadheads,
+        "n_uncovered":  n_uncovered,
         "coverage_pct": coverage_pct,
-        "avg_legs":    total_legs_sum / n_pairings if n_pairings > 0 else 0.0,
+        "avg_legs":     total_legs_sum / n_pairings if n_pairings > 0 else 0.0,
+        "avg_overnight": n_end_duties / n_pairings if n_pairings > 0 else 0.0,
     }
     return total_reward, log_probs, entropies, metrics
 
@@ -355,6 +358,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     total_reward = 0
     n_pairings    = 0
     n_deadheads   = 0
+    n_end_duties  = 0
     total_legs_sum = 0
     base          = constraint["base_airport"]
 
@@ -414,6 +418,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
         n_flights = len(flights)
 
         if action == n_flights:         # END_DUTY
+            n_end_duties += 1
             state, r, done = step(state, action, flights, assigned, constraint)
             total_reward += r
             continue
@@ -439,11 +444,12 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     n_uncovered  = sum(1 for v in assigned.values() if not v)
     coverage_pct = (len(flights) - n_uncovered) / len(flights) * 100
     return total_reward, log_probs, entropies, {
-        "n_pairings":   n_pairings,
-        "n_deadheads":  n_deadheads,
-        "n_uncovered":  n_uncovered,
-        "coverage_pct": coverage_pct,
-        "avg_legs":     total_legs_sum / n_pairings if n_pairings > 0 else 0.0,
+        "n_pairings":    n_pairings,
+        "n_deadheads":   n_deadheads,
+        "n_uncovered":   n_uncovered,
+        "coverage_pct":  coverage_pct,
+        "avg_legs":      total_legs_sum / n_pairings if n_pairings > 0 else 0.0,
+        "avg_overnight": n_end_duties / n_pairings if n_pairings > 0 else 0.0,
     }
 
 
@@ -540,18 +546,19 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             wandb.save(ckpt_path)
 
         wandb.log({
-            "phase2/greedy_pairings":  metrics_g["n_pairings"],
-            "phase2/sample_pairings":  metrics_s["n_pairings"],
-            "phase2/greedy_deadheads": metrics_g["n_deadheads"],
-            "phase2/greedy_avg_legs":  metrics_g.get("avg_legs", 0),
-            "phase2/sample_reward":    reward_s,
-            "phase2/avg25":            avg25,
-            "phase2/advantage":        advantage,
-            "phase2/loss":             loss.item(),
-            "phase2/entropy_coef":     entropy_coef,
-            "phase2/best_avg25":       best_avg_pairings if best_avg_pairings < float("inf") else avg25,
-            "phase2/n_dual_keys":      len(dual_vars),
-            "phase2/dual_weight":      _eff_dw,
+            "phase2/greedy_pairings":     metrics_g["n_pairings"],
+            "phase2/sample_pairings":     metrics_s["n_pairings"],
+            "phase2/greedy_deadheads":    metrics_g["n_deadheads"],
+            "phase2/greedy_avg_legs":     metrics_g.get("avg_legs", 0),
+            "phase2/greedy_avg_overnight": metrics_g.get("avg_overnight", 0),
+            "phase2/sample_reward":       reward_s,
+            "phase2/avg25":               avg25,
+            "phase2/advantage":           advantage,
+            "phase2/loss":                loss.item(),
+            "phase2/entropy_coef":        entropy_coef,
+            "phase2/best_avg25":          best_avg_pairings if best_avg_pairings < float("inf") else avg25,
+            "phase2/n_dual_keys":         len(dual_vars),
+            "phase2/dual_weight":         _eff_dw,
         }, step=global_step_offset + ep)
 
         if ep % 25 == 0:
@@ -647,16 +654,17 @@ def run_curriculum_stage(
                 wandb.save(ckpt_path)
 
         wandb.log({
-            f"stage{stage}/greedy_pairings":  metrics_g["n_pairings"],
-            f"stage{stage}/sample_pairings":  metrics_s["n_pairings"],
-            f"stage{stage}/greedy_deadheads": metrics_g["n_deadheads"],
-            f"stage{stage}/greedy_avg_legs":  metrics_g.get("avg_legs", 0),
-            f"stage{stage}/sample_reward":    reward_s,
-            f"stage{stage}/avg25":            avg25,
-            f"stage{stage}/advantage":        advantage,
-            f"stage{stage}/loss":             loss.item(),
-            f"stage{stage}/entropy_coef":     entropy_coef,
-            f"stage{stage}/best_avg25":       best_avg_pairings if best_avg_pairings < float("inf") else avg25,
+            f"stage{stage}/greedy_pairings":   metrics_g["n_pairings"],
+            f"stage{stage}/sample_pairings":   metrics_s["n_pairings"],
+            f"stage{stage}/greedy_deadheads":  metrics_g["n_deadheads"],
+            f"stage{stage}/greedy_avg_legs":   metrics_g.get("avg_legs", 0),
+            f"stage{stage}/greedy_avg_overnight": metrics_g.get("avg_overnight", 0),
+            f"stage{stage}/sample_reward":     reward_s,
+            f"stage{stage}/avg25":             avg25,
+            f"stage{stage}/advantage":         advantage,
+            f"stage{stage}/loss":              loss.item(),
+            f"stage{stage}/entropy_coef":      entropy_coef,
+            f"stage{stage}/best_avg25":        best_avg_pairings if best_avg_pairings < float("inf") else avg25,
         }, step=global_step_offset + ep)
 
         if ep % 25 == 0:
@@ -951,14 +959,17 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     N_FILM_ROLLOUTS = 10
 
     def _film_validation(label):
-        """max_duty_periods 1→4 변화 시 pairings 단조 감소 여부로 FiLM 학습 확인.
-        stochastic rollout × N_FILM_ROLLOUTS 평균 → 1회 greedy보다 신뢰도 높음."""
+        """FiLM 학습 검증: constraint 변화 시 행동 변화 여부 측정.
+        (1) max_duty_periods 1→4: overnight 가능 횟수 변화 → pairings 수 단조 감소 기대
+        (2) max_legs 2→8: duty당 허용 leg 수 변화 → avg_legs 변화 기대
+        stochastic rollout × N_FILM_ROLLOUTS 평균."""
         encoder.eval(); decoder.eval()
         print()
         print("=" * 60)
-        print(f"FiLM 검증 ({label}): 같은 flights, 다른 max_duty_periods")
+        print(f"FiLM 검증 ({label}): 같은 flights, 다른 constraints")
         print("=" * 60)
         with torch.no_grad():
+            print(f"  [max_duty_periods 변화] (합격: dp=1→4 pairings ≥30% 감소)")
             for dp in [1, 2, 3, 4]:
                 val_c = {**_val_constraint_fn(_val_base), "max_duty_periods": dp,
                          "max_pairing_days": WINDOW_DAYS}
@@ -970,10 +981,27 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                     p_list.append(m["n_pairings"])
                     dh_list.append(m["n_deadheads"])
                     cov_list.append(m["coverage_pct"])
-                print(f"  max_duty_periods={dp} → "
+                print(f"    max_duty_periods={dp} → "
                       f"pairings(avg{N_FILM_ROLLOUTS})={sum(p_list)/len(p_list):.1f}  "
                       f"deadheads={sum(dh_list)/len(dh_list):.1f}  "
                       f"coverage={sum(cov_list)/len(cov_list):.1f}%")
+
+            print(f"  [max_legs 변화] (합격: legs=2→8에서 avg_legs 뚜렷이 증가)")
+            for ml in [2, 4, 8]:
+                val_c = {**_val_constraint_fn(_val_base), "max_legs": ml,
+                         "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS}
+                val_enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times,
+                                  val_fly_times, constraint_to_tensor(val_c, device=DEVICE))
+                p_list, l_list, on_list = [], [], []
+                for _ in range(N_FILM_ROLLOUTS):
+                    _, _, _, m = run_episode(val_flights, val_c, encoder, decoder, val_enc, greedy=False)
+                    p_list.append(m["n_pairings"])
+                    l_list.append(m.get("avg_legs", 0))
+                    on_list.append(m.get("avg_overnight", 0))
+                print(f"    max_legs={ml} → "
+                      f"pairings(avg{N_FILM_ROLLOUTS})={sum(p_list)/len(p_list):.1f}  "
+                      f"avg_legs={sum(l_list)/len(l_list):.2f}  "
+                      f"avg_overnight={sum(on_list)/len(on_list):.2f}")
         encoder.train(); decoder.train()
 
     # Stage 3 FiLM 검증 — Phase 2 전 기준점
