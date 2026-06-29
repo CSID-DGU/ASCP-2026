@@ -30,6 +30,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     pairing_fly      = 0.0
     pairing_last_arr = 0.0
     pairing_rest     = 0.0
+    pairing_n_duties = 1   # 현재 pairing의 duty 수 (overnight 발생 시 증가)
 
     def flush_pairing(is_forced=False):
         if len(current_legs) < 1 or pairing_dep is None:
@@ -50,16 +51,18 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "cost":        cost,
             "is_deadhead": is_forced,
             "n_legs":      n_legs,
+            "n_duties":    pairing_n_duties,
         })
 
     def start_new_pairing(f):
-        nonlocal pairing_dep, pairing_fly, pairing_last_arr, pairing_rest
+        nonlocal pairing_dep, pairing_fly, pairing_last_arr, pairing_rest, pairing_n_duties
         current_legs.clear()
         current_legs.append(f["id"])
         pairing_dep      = f["dep_time"]
         pairing_fly      = f["arr_time"] - f["dep_time"]
         pairing_last_arr = f["arr_time"]
         pairing_rest     = 0.0
+        pairing_n_duties = 1
 
     unassigned = [f for f in flights if not assigned[f["id"]]]
     if not unassigned:
@@ -115,7 +118,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             }
             continue
 
-        state_vec = state_to_vec(state, encoder, constraint, device=dev)
+        _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
+        state_vec = state_to_vec(state, encoder, constraint, device=dev, include_total_legs=_incl_total)
         probs     = decoder(encoded, state_vec, mask)
 
         if greedy:
@@ -124,7 +128,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             action = Categorical(probs).sample().item()
 
         if action == len(flights):             # END_DUTY
-            pairing_rest += constraint.get("min_rest", 10.0)
+            pairing_rest     += constraint.get("min_rest", 10.0)
+            pairing_n_duties += 1
             state, _, _ = step(state, action, flights, assigned, constraint)
             continue
 
@@ -173,15 +178,16 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
     n_flights    = len(flights)
     episode_base = constraint.get("base_airport", 0)
 
-    assigned  = [{f["id"]: False for f in flights} for _ in range(B)]
-    states    = [None] * B
-    cur_legs  = [[] for _ in range(B)]
-    pair_dep  = [None] * B
-    pair_fly  = [0.0] * B
-    pair_arr  = [0.0] * B
-    pair_rest = [0.0] * B
-    pairings  = [[] for _ in range(B)]
-    done      = [False] * B
+    assigned    = [{f["id"]: False for f in flights} for _ in range(B)]
+    states      = [None] * B
+    cur_legs    = [[] for _ in range(B)]
+    pair_dep    = [None] * B
+    pair_fly    = [0.0] * B
+    pair_arr    = [0.0] * B
+    pair_rest   = [0.0] * B
+    pair_duties = [1] * B   # 현재 pairing의 duty 수
+    pairings    = [[] for _ in range(B)]
+    done        = [False] * B
 
     def flush_env(i, forced=False):
         if not cur_legs[i] or pair_dep[i] is None:
@@ -195,15 +201,17 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                    + (config.IP_DEADHEAD_PENALTY if forced else 0.0)
                    + config.IP_PAIRING_FIXED_COST)
         pairings[i].append({"legs": list(cur_legs[i]), "fly": fly, "elapsed": elapsed,
-                             "dead_time": dead, "cost": cost, "is_deadhead": forced, "n_legs": n_legs})
+                             "dead_time": dead, "cost": cost, "is_deadhead": forced,
+                             "n_legs": n_legs, "n_duties": pair_duties[i]})
 
     def start_env(i, f):
         assigned[i][f["id"]] = True
-        cur_legs[i]  = [f["id"]]
-        pair_dep[i]  = f["dep_time"]
-        pair_fly[i]  = f["arr_time"] - f["dep_time"]
-        pair_arr[i]  = f["arr_time"]
-        pair_rest[i] = 0.0
+        cur_legs[i]    = [f["id"]]
+        pair_dep[i]    = f["dep_time"]
+        pair_fly[i]    = f["arr_time"] - f["dep_time"]
+        pair_arr[i]    = f["arr_time"]
+        pair_rest[i]   = 0.0
+        pair_duties[i] = 1
         states[i] = {
             "current_airport":    f["dest"],
             "current_time":       f["arr_time"],
@@ -254,8 +262,9 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
         masks_t = torch.stack([
             torch.tensor(ml, dtype=torch.float32) for _, ml in normal
         ]).to(dev)
+        _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
         svecs_t = torch.stack([
-            state_to_vec(states[i], encoder, constraint, device=dev) for i in idxs
+            state_to_vec(states[i], encoder, constraint, device=dev, include_total_legs=_incl_total) for i in idxs
         ]).to(dev)
 
         probs = decoder(encoded, svecs_t, masks_t)
@@ -266,7 +275,8 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
 
         for action, i in zip(actions, idxs):
             if action == n_flights:            # END_DUTY
-                pair_rest[i] += constraint.get("min_rest", 10.0)
+                pair_rest[i]   += constraint.get("min_rest", 10.0)
+                pair_duties[i] += 1
                 states[i], _, _ = step(states[i], action, flights, assigned[i], constraint)
 
             elif action == n_flights + 1:      # END_PAIRING

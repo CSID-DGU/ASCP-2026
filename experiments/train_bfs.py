@@ -216,7 +216,7 @@ def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
     return list(pool.values())
 
 
-def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False):
+def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False, dual_weight=None):
     assigned = {f["id"]: False for f in flights}
     state    = init_state(flights, constraint)
 
@@ -297,7 +297,8 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
         flight_id = flights[action]["id"]
         state, r, done = step(state, action, flights, assigned, constraint)
-        total_reward += r + dual_vars.get(flight_id, 0.0) * config.PHASE2_DUAL_WEIGHT
+        _dw = dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT
+        total_reward += r + dual_vars.get(flight_id, 0.0) * _dw
         if done:
             break
 
@@ -314,11 +315,11 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
-               constraint_sampler=None):
+               constraint_sampler=None, init_best=float("inf")):
     from set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
-    best_avg_pairings = float("inf")
+    best_avg_pairings = init_best
     greedy_pairings   = []
     dual_vars         = {}
 
@@ -348,9 +349,10 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 if lp_result is not None:
                     dual_vars = lp_result["dual_vars"]
 
+        _eff_dw = config.PHASE2_DUAL_WEIGHT * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
         encoded_train = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
         reward_s, log_probs, entropies, metrics_s = run_episode_with_dual(
-            flights, c, encoder, decoder, encoded_train, dual_vars
+            flights, c, encoder, decoder, encoded_train, dual_vars, dual_weight=_eff_dw
         )
         if len(log_probs) == 0:
             continue
@@ -358,7 +360,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         with torch.no_grad():
             encoded_g = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
             reward_g, _, _, metrics_g = run_episode_with_dual(
-                flights, c, encoder, decoder, encoded_g, dual_vars, greedy=True
+                flights, c, encoder, decoder, encoded_g, dual_vars, greedy=True, dual_weight=_eff_dw
             )
 
         greedy_pairings.append(metrics_g["n_pairings"])
@@ -508,7 +510,7 @@ def run_curriculum_stage(
     return best_avg_pairings
 
 
-def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None):
+def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None, from_stage2=False):
     WINDOW_DAYS = config.WINDOW_DAYS
 
     if multi_airline:
@@ -648,7 +650,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
 
         base_constraint = _CONSTRAINT_FN[config.AIRLINE](base_ids[0])
 
-    _stage3_base = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+    _stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
     def sample_constraint():
         r = config.STAGE3_CONSTRAINT_RANGES
         if multi_airline:
@@ -675,47 +677,57 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         decoder.load_state_dict(ckpt["decoder"])
         print(f"stage3_best.pt 로드 완료: {ckpt_path} → Phase 2만 실행")
 
+    _s3_best     = float("inf")
+    _s3_ckpt_dir = save_dir
+
+    if phase2_only:
+        _s3_ckpt_dir = ckpt_dir if ckpt_dir else save_dir
+        ckpt_path = os.path.join(_s3_ckpt_dir, "stage3_best.pt")
+        ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
+        encoder.load_state_dict(ckpt["encoder"])
+        decoder.load_state_dict(ckpt["decoder"])
+        print(f"stage3_best.pt 로드 완료: {ckpt_path} → Phase 2만 실행")
+
     if not phase2_only:
-        stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1}
-        run_curriculum_stage(1, encoder, decoder, optimizer,
-                             n_episodes=1000, constraint_override=stage1_c,
-                             save_dir=save_dir, flight_sampler=flight_sampler,
-                             global_step_offset=0,
-                             entropy_start=0.15, entropy_end=0.005)
+        if from_stage2:
+            _s2_load_dir = ckpt_dir
+            if not _s2_load_dir:
+                raise ValueError("--from-stage2 사용 시 --ckpt-dir로 stage2_best.pt 폴더를 지정해야 합니다.")
+            _s2_ckpt = torch.load(os.path.join(_s2_load_dir, "stage2_best.pt"), map_location=DEVICE, weights_only=True)
+            encoder.load_state_dict(_s2_ckpt["encoder"])
+            decoder.load_state_dict(_s2_ckpt["decoder"])
+            print(f"stage2_best.pt 로드: {_s2_load_dir} → Stage 3부터 실행")
+        else:
+            stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1}
+            run_curriculum_stage(1, encoder, decoder, optimizer,
+                                 n_episodes=1000, constraint_override=stage1_c,
+                                 save_dir=save_dir, flight_sampler=flight_sampler,
+                                 global_step_offset=0,
+                                 entropy_start=0.15, entropy_end=0.005)
 
-        stage2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
-        run_curriculum_stage(2, encoder, decoder, optimizer,
-                             n_episodes=2000, constraint_override=stage2_c,
-                             save_dir=save_dir, flight_sampler=flight_sampler,
-                             global_step_offset=1000,
-                             entropy_start=0.02, entropy_end=0.005)
+            stage2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+            run_curriculum_stage(2, encoder, decoder, optimizer,
+                                 n_episodes=2000, constraint_override=stage2_c,
+                                 save_dir=save_dir, flight_sampler=flight_sampler,
+                                 global_step_offset=1000,
+                                 entropy_start=0.02, entropy_end=0.005)
 
-        run_curriculum_stage(3, encoder, decoder, optimizer,
+        _s3_best = run_curriculum_stage(3, encoder, decoder, optimizer,
                              n_episodes=2000, constraint_override=_stage3_base,
                              save_dir=save_dir, flight_sampler=flight_sampler,
                              constraint_sampler=sample_constraint,
-                             global_step_offset=3000,
+                             global_step_offset=0 if from_stage2 else 3000,
                              entropy_start=0.01, entropy_end=0.005)
 
-    phase2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
-    phase2_offset = 0 if phase2_only else 1000 + 2000 + 2000
+        # Phase 2 시작 전 stage3_best.pt 로드 — 마지막 epoch이 아닌 best checkpoint에서 시작
+        _s3_ckpt = torch.load(os.path.join(save_dir, "stage3_best.pt"), map_location=DEVICE, weights_only=True)
+        encoder.load_state_dict(_s3_ckpt["encoder"])
+        decoder.load_state_dict(_s3_ckpt["decoder"])
+        print(f"Phase 2 시작: stage3_best.pt 로드 (best_avg={_s3_ckpt.get('best_avg_pairings', 0):.1f})")
 
-    run_phase2(encoder, decoder, optimizer,
-               n_episodes=config.PHASE2_N_EPISODES,
-               constraint=phase2_c,
-               save_dir=save_dir,
-               flight_sampler=flight_sampler,
-               global_step_offset=phase2_offset,
-               constraint_sampler=sample_constraint)
-
-    print()
-    print("=" * 60)
-    print("FiLM 검증: 같은 flights, 다른 max_legs")
-    print("=" * 60)
-
-    encoder.eval()
-    decoder.eval()
-    val_base    = base_ids[0] if not multi_airline else all_base_ids["delta"][0]
+    # ── FiLM 검증 공용 셋업 (Phase 2 전/후 공용) ──────────────────────────
+    N_FILM_ROLLOUTS = 10
+    val_base = base_ids[0] if not multi_airline else all_base_ids["delta"][0]
     val_flights_all = load_flights_rolling(
         DATA_PATH if not multi_airline else config.AIRLINE_DATA["delta"],
         WINDOW_DAYS, 0, airport_map,
@@ -726,17 +738,54 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(
         val_flights, WINDOW_DAYS * 24.0, device=DEVICE
     )
+    _val_constraint_fn = _CONSTRAINT_FN[config.AIRLINE if not multi_airline else "delta"]
 
-    with torch.no_grad():
-        for dp in [1, 2, 3, 4]:
-            c = {**_CONSTRAINT_FN[config.AIRLINE](val_base), "max_duty_periods": dp,
-                 "max_pairing_days": WINDOW_DAYS}
-            enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times,
-                          constraint_to_tensor(c, device=DEVICE))
-            _, _, _, metrics = run_episode(val_flights, c, encoder, decoder, enc, greedy=True)
-            print(f"  max_duty_periods={dp} → pairings: {metrics['n_pairings']:3d}  "
-                  f"deadheads: {metrics['n_deadheads']:3d}  "
-                  f"coverage: {metrics['coverage_pct']:5.1f}%")
+    def _film_validation(label):
+        encoder.eval(); decoder.eval()
+        print()
+        print("=" * 60)
+        print(f"FiLM 검증 ({label}): 같은 flights, 다른 max_duty_periods (stochastic×{N_FILM_ROLLOUTS})")
+        print("=" * 60)
+        with torch.no_grad():
+            for dp in [1, 2, 3, 4]:
+                val_c = {**_val_constraint_fn(val_base), "max_duty_periods": dp,
+                         "max_pairing_days": WINDOW_DAYS}
+                enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times,
+                              constraint_to_tensor(val_c, device=DEVICE))
+                p_list, dh_list, cov_list = [], [], []
+                for _ in range(N_FILM_ROLLOUTS):
+                    _, _, _, m = run_episode(val_flights, val_c, encoder, decoder, enc, greedy=False)
+                    p_list.append(m["n_pairings"])
+                    dh_list.append(m["n_deadheads"])
+                    cov_list.append(m["coverage_pct"])
+                print(f"  max_duty_periods={dp} → "
+                      f"pairings(avg{N_FILM_ROLLOUTS})={sum(p_list)/len(p_list):.1f}  "
+                      f"deadheads={sum(dh_list)/len(dh_list):.1f}  "
+                      f"coverage={sum(cov_list)/len(cov_list):.1f}%")
+        encoder.train(); decoder.train()
+
+    # Stage 3 best 기준 FiLM 검증 (Phase 2 전)
+    if not phase2_only:
+        _film_validation("Stage 3 best")
+
+    phase2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+    phase2_offset = 0 if phase2_only else (2000 if from_stage2 else 1000 + 2000 + 2000)
+
+    run_phase2(encoder, decoder, optimizer,
+               n_episodes=config.PHASE2_N_EPISODES,
+               constraint=phase2_c,
+               save_dir=save_dir,
+               flight_sampler=flight_sampler,
+               global_step_offset=phase2_offset,
+               constraint_sampler=sample_constraint,
+               init_best=_s3_best)
+
+    # Phase 2 후 FiLM 최종 검증 — stage3_best.pt 복원 후 (Phase 2가 FiLM 덮어쓸 수 있으므로)
+    _film_ckpt = torch.load(os.path.join(_s3_ckpt_dir, "stage3_best.pt"), map_location=DEVICE, weights_only=True)
+    encoder.load_state_dict(_film_ckpt["encoder"])
+    decoder.load_state_dict(_film_ckpt["decoder"])
+    print("FiLM 최종 검증: stage3_best.pt 로드")
+    _film_validation("final / stage3_best")
 
     torch.save({
         "encoder":        encoder.state_dict(),
@@ -758,11 +807,14 @@ if __name__ == "__main__":
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--log", default=os.path.join(os.path.dirname(__file__), "..", "log", "train_bfs_log.txt"))
     parser.add_argument("--phase2-only", action="store_true")
-    parser.add_argument("--ckpt-dir", default=None)
+    parser.add_argument("--from-stage2", action="store_true",
+                        help="stage2_best.pt 로드 후 Stage 3 + Phase 2만 실행 (--ckpt-dir 필수)")
+    parser.add_argument("--ckpt-dir", default=None,
+                        help="--phase2-only: stage3_best.pt 폴더 / --from-stage2: stage2_best.pt 폴더")
     parser.add_argument("--multi-airline", action="store_true")
     parser.add_argument("--skip-film", action="store_true")
     args = parser.parse_args()
     _set_device(args.device)
     print(f"[train_bfs] device: {DEVICE}  sampling: BFS connected")
     train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,
-          ckpt_dir=args.ckpt_dir)
+          ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2)
