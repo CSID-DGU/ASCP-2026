@@ -17,6 +17,7 @@ DEFAULT_CONSTRAINTS = {
     "min_rest":         10.0,   # duty 간 최소 휴식 (h) — FAR 117 §117.25
     "max_duty_periods":    2,   # pairing당 최대 overnight rest 수 (overnight 횟수 기준)
     "max_pairing_days":    5,   # pairing 최대 기간 (일) — BTS p95 추정
+    "min_pairing_legs":    2,   # END_PAIRING 허용 최소 leg 수 (항공사별 override)
     "pairing_cost":      5.0,   # END_PAIRING reward 패널티
     "uncovered_penalty": 10.0,  # 미배정 flight 1개당 패널티
     "base_penalty":      5.0,   # END_PAIRING 시 base 미복귀 패널티
@@ -61,7 +62,7 @@ STAGE3_CONSTRAINT_RANGES = {
     "max_duty":         (10.5, 14.0),   # NORM=14.0 → 0.75~1.0 (25% 변동) — 검증 12.0~14.0 완전 포함
     "min_rest":         (9.5,  12.0),   # NORM=12.0 → 0.79~1.0 (21% 변동) — 고정값 0%에서 확장
     "min_conn":         (0.5,  1.0),    # NORM=1.0  → 0.5~1.0  (50% 변동)
-    "max_conn":         (6.0,  14.0),   # NORM=14.0 → 0.43~1.0 (57% 변동) — coverage 개선 목적으로 확대
+    "max_conn":         (3.0,  12.0),   # NORM=14.0 → 0.21~0.86 (64% 변동) — Delta 기본값(12.0) 상한 포함, 과도한 확대 제거
     "max_legs":         (4,    10),     # NORM=10.0 → 0.4~1.0  (60% 변동)
     "max_duty_periods": (1,    4),      # NORM=4.0  → 0.25~1.0 (75% 변동)
     "max_pairing_days": (3,    7),      # NORM=8.0  → 0.375~0.875 (50% 변동)
@@ -94,7 +95,7 @@ PHASE2_DUAL_WEIGHT   = 0.6   # LP dual reward 가중치 — v9: bonus=3.0 스케
 # Reward shaping
 LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
 LEG_PER_PAIRING_BONUS = 3.0  # flight 선택 시 즉시 지급 (step reward에 반영) — credit assignment 해결
-END_DUTY_BONUS = 2.0          # v8: END_DUTY(overnight rest) 시 즉각 보너스 — multi-day pairing 직접 장려
+END_DUTY_BONUS = 6.0          # v10: 2.0 → 6.0 — overnight 사용률 강제 상승, FiLM 학습 촉진
                                # overnight 10h는 dead_time에서 제외 → legs↑ dead_time↑ 없이 avg_legs 개선 가능
                        # v7: END_PAIRING 지연 지급 → per-step 즉시 지급으로 구조 변경
                        # 임계값 = LEG_CONN_BONUS(1.5) + LEG_PER_PAIRING_BONUS(3.0) = 4.5h

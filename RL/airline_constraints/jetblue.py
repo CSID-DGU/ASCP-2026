@@ -9,5 +9,6 @@ JETBLUE_CONSTRAINTS = {
     "min_rest":        10.0,  # duty 간 최소 휴식 (h) — FAR 117 §117.25
     "max_duty_periods":   3,  # pairing당 최대 overnight rest 수 (overnight 횟수 기준, 상한)
     "max_pairing_days":   7,  # pairing 최대 기간 (일) — BTS p95 추정 (상한)
+    "min_pairing_legs":   3,  # END_PAIRING 허용 최소 leg 수 — 2-leg Nash 차단
     # base_airport 제외 — 에피소드별 주입
 }

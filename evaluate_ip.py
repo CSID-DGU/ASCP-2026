@@ -16,6 +16,7 @@ evaluate_ip.py는 에피소드당 최대 600편 subset만 커버 (n_max=600).
 
 import sys
 import os
+import math
 import random
 import argparse
 
@@ -27,6 +28,7 @@ sys.path.insert(0, "RL")
 DEVICE = torch.device("cpu")
 
 from loader import load_flights_rolling, build_airport_map, bases_to_ids
+from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish
 from constraints import (
     get_delta_constraints,
     get_alaska_constraints,
@@ -45,6 +47,35 @@ from set_partition import solve_set_covering
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings
 import config
+
+
+# ── 0. Turkish 윈도우 로더 ────────────────────────────────────────────────────
+
+def load_windows_turkish(turkish_df, airport_map, window_days=5):
+    """Turkish .legs 데이터를 window_days 단위 비겹침 윈도우로 분할, 전역 ID 부여."""
+    dates = sorted(turkish_df["dep_date_utc"].unique())
+    n_days = len(dates)
+    windows = []
+    global_offset = 0
+
+    for offset in range(0, n_days, window_days):
+        wf = load_flights_rolling_turkish(
+            window_days=window_days,
+            offset_days=offset,
+            airport_map=airport_map,
+            df=turkish_df,
+        )
+        for f in wf:
+            f["global_id"] = global_offset + f["id"]
+        global_offset += len(wf)
+        windows.append(wf)
+        print(
+            f"  window offset={offset:2d}: {len(wf):5d}편 "
+            f"(global {global_offset - len(wf)} ~ {global_offset - 1})",
+            flush=True,
+        )
+
+    return windows, global_offset
 
 
 # ── 1. 전체 데이터를 윈도우별로 로드, 전역 ID 부여 ─────────────────────────────
@@ -186,12 +217,19 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
 # ── 4. 전체 윈도우 pool 수집 ──────────────────────────────────────────────────
 
 def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
-                      n_rollouts_per_window=200,
+                      n_rollouts_per_chunk=5,
                       subset_size=config.EPISODE_MAX_FLIGHTS):
-    """모든 윈도우에서 rollout → 전역 ID 기반 pairing pool 생성."""
+    """모든 윈도우에서 rollout → 전역 ID 기반 pairing pool 생성.
+
+    window를 dep_time 순 subset_size 단위 순차 chunk로 분할한 뒤,
+    각 chunk에 n_rollouts_per_chunk번 stochastic + 1번 greedy rollout을 수행한다.
+    훈련 시 load_flights_rolling(dep_time 순 슬라이싱)과 동일한 분포로
+    모든 flight이 최소 1번 rollout에 포함되어 coverage 100% 보장.
+    """
     pool = {}
     covered_global = set()
     max_time = 5 * 24.0
+    base_id_set = set(base_ids)
 
     for w_idx, window_flights in enumerate(windows):
         if not window_flights:
@@ -200,37 +238,66 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         window_all_ids = set(f["global_id"] for f in window_flights)
         window_covered = set()
 
-        print(f"\n[Window {w_idx + 1}/{len(windows)}] {len(window_flights)}편", flush=True)
+        sorted_window = sorted(window_flights, key=lambda f: f["dep_time"])
+        chunks = [sorted_window[i:i + subset_size]
+                  for i in range(0, len(sorted_window), subset_size)]
 
-        for rollout_i in range(n_rollouts_per_window):
+        # chunk 내 base 출발편 보장: 없으면 window에서 가장 가까운 base 편을 복사해 주입
+        for c_idx, chunk in enumerate(chunks):
+            if not any(f["origin"] in base_id_set for f in chunk):
+                chunk_gids = {f["global_id"] for f in chunk}
+                candidates = [f for f in sorted_window
+                              if f["origin"] in base_id_set and f["global_id"] not in chunk_gids]
+                if candidates:
+                    inject = min(candidates,
+                                 key=lambda f: abs(f["dep_time"] - chunk[0]["dep_time"]))
+                    new_chunk = sorted([{**inject}] + list(chunk[:-1]),
+                                       key=lambda f: f["dep_time"])
+                    chunks[c_idx] = new_chunk
+
+        print(f"\n[Window {w_idx + 1}/{len(windows)}] {len(window_flights)}편 → {len(chunks)}개 chunk", flush=True)
+
+        rollout_count = 0
+        for c_idx, chunk in enumerate(chunks):
+            for local_id, f in enumerate(chunk):
+                f["local_id"] = local_id
+
             base_id = random.choice(base_ids)
-            c_b     = {**constraint, "base_airport": base_id}
-            subset  = sample_connected_subset(window_flights, subset_size, base_id, c_b)
+            c_b = {**constraint, "base_airport": base_id}
+
+            for _ in range(n_rollouts_per_chunk):
+                try:
+                    pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=False)
+                except Exception as e:
+                    print(f"  [warn] stochastic rollout 실패 (chunk={c_idx}): {e}", flush=True)
+                    continue
+                for p in pairings:
+                    key = tuple(sorted(p["legs"]))
+                    if key not in pool or p["cost"] < pool[key]["cost"]:
+                        pool[key] = p
+                    window_covered.update(p["legs"])
+                    covered_global.update(p["legs"])
+                rollout_count += 1
 
             try:
-                pairings = rollout_subset_global(subset, c_b, encoder, decoder, max_time)
+                pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=True)
             except Exception as e:
-                print(f"  [warn] rollout 실패 (base={base_id}): {e}", flush=True)
+                print(f"  [warn] greedy rollout 실패 (chunk={c_idx}): {e}", flush=True)
                 continue
-
             for p in pairings:
                 key = tuple(sorted(p["legs"]))
                 if key not in pool or p["cost"] < pool[key]["cost"]:
                     pool[key] = p
                 window_covered.update(p["legs"])
                 covered_global.update(p["legs"])
+            rollout_count += 1
 
-            if (rollout_i + 1) % 50 == 0:
-                print(
-                    f"  rollout {rollout_i + 1}/{n_rollouts_per_window}: "
-                    f"window {len(window_covered)}/{len(window_all_ids)}편 커버, "
-                    f"pool={len(pool)}",
-                    flush=True,
-                )
-
-            if window_covered >= window_all_ids:
-                print(f"  → 윈도우 전체 커버 달성 (rollout {rollout_i + 1}번)", flush=True)
-                break
+        print(
+            f"  총 {rollout_count}회 rollout: "
+            f"window {len(window_covered)}/{len(window_all_ids)}편 커버, "
+            f"pool={len(pool)}",
+            flush=True,
+        )
 
         uncov = len(window_all_ids - window_covered)
         if uncov > 0:
@@ -248,35 +315,45 @@ def evaluate_full(
     checkpoint_path,
     airline="delta",
     data_path=None,
-    n_rollouts_per_window=200,
+    n_rollouts_per_chunk=5,
     window_days=5,
     subset_size=config.EPISODE_MAX_FLIGHTS,
-    bases=("ATL", "DTW", "MSP", "JFK", "LAX", "SEA", "SLC"),
+    bases=None,
     ip_time_limit=3600,
     device="cpu",
+    turkish_files=None,
 ):
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
     소규모 데이터(예: 1주일 sample) 평가 시:
-        data_path=<sample.csv>, window_days=1, n_rollouts_per_window=100
+        data_path=<sample.csv>, window_days=1, n_rollouts_per_chunk=3
     """
     global DEVICE
     DEVICE = torch.device(device)
 
     if data_path is None:
         data_path = config.AIRLINE_DATA[airline]
+    if bases is None:
+        bases = config.AIRLINE_BASES[airline]
 
     # checkpoint를 먼저 로드해 vocab 크기 확인 — multi-airline 모델(n_airports=168)은
     # 통합 공항 맵이 필요. 단일 항공사 맵으로 빌드하면 ID 불일치로 임베딩 오류 발생.
     ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
     n_airports = ckpt.get("n_airports",
                           ckpt["encoder"]["airport_emb.weight"].shape[0])
-    if n_airports > 145:
-        map_paths = list(config.AIRLINE_DATA.values())
+
+    _turkish_df = None
+    if airline == "turkish":
+        _turkish_df = parse_legs_dir(data_path, files=turkish_files)
+        airport_map = build_airport_map_turkish(df=_turkish_df)
     else:
-        map_paths = data_path
-    airport_map = build_airport_map(map_paths)
-    base_ids    = bases_to_ids(bases, airport_map)
+        if n_airports > 145:
+            # Turkish(.legs 디렉토리)는 BTS CSV 로더로 처리 불가 → 제외
+            map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
+        else:
+            map_paths = data_path
+        airport_map = build_airport_map(map_paths)
+    base_ids = bases_to_ids(list(bases), airport_map)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
     decoder = PointerDecoder(constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
@@ -288,14 +365,17 @@ def evaluate_full(
     constraint = _GET_CONSTRAINT[airline](base_ids[0])
 
     print(f"\n전체 데이터 로드 중 ({airline}, window_days={window_days})...", flush=True)
-    windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
+    if airline == "turkish":
+        windows, n_total = load_windows_turkish(_turkish_df, airport_map, window_days)
+    else:
+        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
     print(f"총 {n_total}편, {len(windows)}개 윈도우", flush=True)
 
-    print(f"\nPool 수집 중 (rollouts/window={n_rollouts_per_window}, subset={subset_size})...", flush=True)
+    print(f"\nPool 수집 중 (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
     with torch.no_grad():
         pool, covered = collect_pool_full(
             windows, base_ids, constraint, encoder, decoder,
-            n_rollouts_per_window=n_rollouts_per_window,
+            n_rollouts_per_chunk=n_rollouts_per_chunk,
             subset_size=subset_size,
         )
 
@@ -308,12 +388,14 @@ def evaluate_full(
     legs_total = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
     avg_legs   = legs_total / len(sel) if sel else 0.0
     ftc        = dead_total / fly_total * 100 if fly_total > 0 else 0.0
+    man_days   = sum(math.ceil(p["elapsed"] / 24.0) for p in sel) if sel else 0
 
     print()
     print("=" * 60)
     print(f"결과 (전체 {n_total}편 커버)")
     print("=" * 60)
     print(f"  pairing 수:       {result['n_pairings']}")
+    print(f"  ManDays:          {man_days}")
     print(f"  coverage:         {result['coverage'] * 100:.1f}%")
     print(f"  uncoverable:      {result['uncoverable']}개 flight")
     print(f"  deadhead:         {result['deadhead_count']}개 flight")
@@ -335,8 +417,8 @@ if __name__ == "__main__":
     parser.add_argument("--data-path", default=None,
                         help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
                              "소규모 sample 평가 시 지정 (예: RL/data/sample_DL_*.csv)")
-    parser.add_argument("--n-rollouts-per-window", type=int, default=200,
-                        help="윈도우당 rollout 수. 많을수록 커버리지↑ (기본: 200)")
+    parser.add_argument("--n-rollouts-per-chunk", type=int, default=5,
+                        help="chunk당 stochastic rollout 수. window를 subset_size 단위 순차 chunk로 분할 (기본: 5)")
     parser.add_argument("--window-days", type=int, default=5,
                         help="윈도우 크기(일). 소규모(1주) 데이터는 1 권장 (기본: 5)")
     parser.add_argument("--subset-size", type=int, default=config.EPISODE_MAX_FLIGHTS,
@@ -344,6 +426,8 @@ if __name__ == "__main__":
     parser.add_argument("--ip-time-limit", type=int, default=3600,
                         help="CBC solver 제한 시간 초 (기본: 3600)")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--turkish-files", nargs="+", default=None,
+                        help="Turkish 전용. 사용할 .legs 파일 이름 목록. 예: tt201401.legs")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -356,9 +440,10 @@ if __name__ == "__main__":
         checkpoint_path=ckpt,
         airline=args.airline,
         data_path=args.data_path,
-        n_rollouts_per_window=args.n_rollouts_per_window,
+        n_rollouts_per_chunk=args.n_rollouts_per_chunk,
         window_days=args.window_days,
         subset_size=args.subset_size,
         ip_time_limit=args.ip_time_limit,
         device=args.device,
+        turkish_files=args.turkish_files,
     )
