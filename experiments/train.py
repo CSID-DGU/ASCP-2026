@@ -562,7 +562,7 @@ def run_curriculum_stage(
             c = {
                 **base_stage2_constraint,
                 "max_duty_periods": 2,
-                "max_pairing_days": WINDOW_DAYS - 1,
+                "max_pairing_days": config.WINDOW_DAYS - 1,
             }
         else:
             c = constraint_sampler() if constraint_sampler else constraint_override
