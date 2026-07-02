@@ -59,12 +59,12 @@ CONSTRAINT_NORMS = {
 #   - CONSTRAINT_NORMS 분모 대비 최소 20% 이상 변동폭 확보해야 FiLM MLP가 의미있는 gamma/beta 학습 가능
 #   - 검증 범위(12.0~14.0h)가 훈련 범위를 벗어나면 extrapolation → 항상 identity 출력
 STAGE3_CONSTRAINT_RANGES = {
-    "max_duty":         (10.5, 14.0),   # NORM=14.0 → 0.75~1.0 (25% 변동) — 검증 12.0~14.0 완전 포함
-    "min_rest":         (9.5,  12.0),   # NORM=12.0 → 0.79~1.0 (21% 변동) — 고정값 0%에서 확장
+    "max_duty":         (10.5, 14.0),   # NORM=14.0 → 0.75~1.0 (25% 변동)
+    "min_rest":         (9.5,  12.0),   # NORM=12.0 → 0.79~1.0 (21% 변동)
     "min_conn":         (0.5,  1.0),    # NORM=1.0  → 0.5~1.0  (50% 변동)
-    "max_conn":         (3.0,  12.0),   # NORM=14.0 → 0.21~0.86 (64% 변동) — Delta 기본값(12.0) 상한 포함, 과도한 확대 제거
+    "max_conn":         (9.0,  12.0),   # 하한 9.0(v14: 연결 불가 방지) + 상한 12.0(Delta 실제값 기준)
     "max_legs":         (4,    10),     # NORM=10.0 → 0.4~1.0  (60% 변동)
-    "max_duty_periods": (1,    4),      # NORM=4.0  → 0.25~1.0 (75% 변동)
+    "max_duty_periods": (2,    4),      # v14: 1→2 — min=1이면 overnight 불가 → 1-leg 정책으로 retreat
     "max_pairing_days": (3,    7),      # NORM=8.0  → 0.375~0.875 (50% 변동)
 }
 
@@ -72,8 +72,8 @@ STAGE3_CONSTRAINT_RANGES = {
 # Stage 2/3, Phase 2 모두 max_pairing_days = WINDOW_DAYS - 1로 설정
 WINDOW_DAYS = 5
 
-# 에피소드 최대 flight 수 — base-first sampling으로 이 수를 초과하지 않도록 제한
-# base↔X 편 전부 포함 + 나머지 spoke-spoke 랜덤 샘플링
+# 에피소드 최대 flight 수 — sample_connected_subnet으로 spoke-spoke 간선 포함해 샘플링
+# star graph 버그 수정으로 base-first → connected subnet 방식으로 변경
 EPISODE_MAX_FLIGHTS = 600
 
 # Phase 2 CG dual feedback 하이퍼파라미터
@@ -89,13 +89,12 @@ PHASE2_DUAL_WARMUP   = 100   # dual_weight warm-up 기간 (에피소드) — 처
 
 MIN_LEGS_FOR_PAIRING = 3      # pairing당 목표 최소 leg 수
 MIN_LEGS_PENALTY = -3.0       # total_legs < MIN_LEGS_FOR_PAIRING 시 END_PAIRING 추가 패널티
-                              # 2→3 leg 전환에 +4.0 점프를 만들어 avg_legs 3-5 달성 유도
 PHASE2_DUAL_WEIGHT   = 0.6   # LP dual reward 가중치 — v9: bonus=3.0 스케일에 맞게 0.1→0.6 (비율 0.2 유지)
 
 # Reward shaping
 LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
-LEG_PER_PAIRING_BONUS = 3.0  # flight 선택 시 즉시 지급 (step reward에 반영) — credit assignment 해결
-END_DUTY_BONUS = 6.0          # v10: 2.0 → 6.0 — overnight 사용률 강제 상승, FiLM 학습 촉진
+LEG_PER_PAIRING_BONUS = 5.0  # v13: 3.0→5.0 — leg 선택 즉시 보상 강화로 avg_legs 3+ 유도
+END_DUTY_BONUS = 6.0          # v15: 3.0→6.0 — overnight 사용률 강제 상승, FiLM 학습 촉진
                                # overnight 10h는 dead_time에서 제외 → legs↑ dead_time↑ 없이 avg_legs 개선 가능
                        # v7: END_PAIRING 지연 지급 → per-step 즉시 지급으로 구조 변경
                        # 임계값 = LEG_CONN_BONUS(1.5) + LEG_PER_PAIRING_BONUS(3.0) = 4.5h

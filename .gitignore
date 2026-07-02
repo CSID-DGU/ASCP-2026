@@ -12,6 +12,7 @@ checkpoints/
 *.legs
 *.png
 *.csv
+test/
 
 
 

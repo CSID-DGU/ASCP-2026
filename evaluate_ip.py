@@ -88,7 +88,7 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5):
         n_total    : 전체 flight 수 (= 전역 ID 상한)
     """
     df = pd.read_csv(data_path)
-    df = df[["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"]].dropna()
+    df = df[["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"]].dropna()
     df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
     dates = sorted(df["FL_DATE"].unique())
@@ -122,10 +122,14 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5):
 # ── 2. 윈도우 내 subset 샘플링 ────────────────────────────────────────────────
 
 def sample_connected_subset(window_flights, subset_size, base_id, constraint):
-    """Connectivity-aware subset sampling.
+    """Connectivity-aware subset sampling with random coverage guarantee.
 
-    BFS로 base 출발편에서 시작해 연결 가능한 편을 우선 선택한다.
-    무작위 샘플링 대비 subset 내 연결 밀도가 높아 RL이 multi-leg pairing을 형성할 수 있다.
+    BFS로 base 출발편에서 시작해 연결 가능한 편을 우선 선택하되,
+    subset의 BFS_RATIO만큼만 BFS로 채우고 나머지는 window 전체에서 pure random 선택.
+
+    이유: BFS가 hub-and-spoke 밀집 구간을 빠르게 채우면 연결이 없는 고립 항공편은
+         어떤 rollout에도 포함되지 않아 pool coverage가 ~85%에 그침
+         15% random 보장 → 300 rollouts 기준 항공편당 기대 포함 횟수 ≈5회 → 누락 확률 <1%
 
     Args:
         window_flights: 윈도우 내 전체 flight 리스트
@@ -133,6 +137,8 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
         base_id:        crew base 공항 정수 ID
         constraint:     제약 dict (min_conn, max_conn 단위: hours)
     """
+    BFS_RATIO = 0.85  # subset의 85%는 BFS-connected (RL multi-leg 밀도 유지)
+
     min_conn = constraint.get("min_conn", 0.65)   # hours
     max_conn = constraint.get("max_conn", 9.0)     # hours
 
@@ -144,12 +150,13 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
     selected_ids = set()
     selected = []
 
-    # BFS seed: base 출발편 무작위 순서
+    # BFS phase: subset의 BFS_RATIO까지만 채움
+    bfs_quota = max(1, int(subset_size * BFS_RATIO))
     base_departs = [f for f in window_flights if f["origin"] == base_id]
     random.shuffle(base_departs)
     queue = list(base_departs)
 
-    while queue and len(selected) < subset_size:
+    while queue and len(selected) < bfs_quota:
         f = queue.pop(0)
         if f["id"] in selected_ids:
             continue
@@ -165,22 +172,13 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
         random.shuffle(nexts)
         queue.extend(nexts)
 
-    # BFS로 못 채웠으면 base 인접편(출발/도착)으로 보충
-    if len(selected) < subset_size:
-        others = [f for f in window_flights
-                  if f["id"] not in selected_ids
-                  and (f["origin"] == base_id or f["dest"] == base_id)]
-        random.shuffle(others)
-        for f in others[:subset_size - len(selected)]:
-            selected_ids.add(f["id"])
-            selected.append(f)
-
-    # 그래도 부족하면 나머지 임의 보충
-    if len(selected) < subset_size:
-        others = [f for f in window_flights if f["id"] not in selected_ids]
-        random.shuffle(others)
-        for f in others[:subset_size - len(selected)]:
-            selected.append(f)
+    # Random phase: 나머지 슬롯을 window 전체에서 pure random 선택
+    # → 고립 항공편이 매 rollout마다 일정 확률로 포함되어 pool coverage 보장
+    remaining = [f for f in window_flights if f["id"] not in selected_ids]
+    random.shuffle(remaining)
+    for f in remaining[:subset_size - len(selected)]:
+        selected_ids.add(f["id"])
+        selected.append(f)
 
     selected = sorted(selected, key=lambda f: f["dep_time"])
     for local_id, f in enumerate(selected):
@@ -356,7 +354,11 @@ def evaluate_full(
     base_ids = bases_to_ids(list(bases), airport_map)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
-    decoder = PointerDecoder(constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
+    # 체크포인트 state_vec 차원 자동 감지 (v8=78dim/7scalars, v13+=79dim/8scalars)
+    airport_emb_dim = encoder.airport_emb.embedding_dim
+    ckpt_state_dim  = ckpt["decoder"]["state_mlp.0.weight"].shape[1]
+    n_scalars = ckpt_state_dim - airport_emb_dim * 2 - len(FILM_CONSTRAINT_KEYS)
+    decoder = PointerDecoder(constraint_dim=len(FILM_CONSTRAINT_KEYS), airport_emb_dim=airport_emb_dim, n_scalars=n_scalars).to(DEVICE)
     encoder.load_state_dict(ckpt["encoder"])
     decoder.load_state_dict(ckpt["decoder"])
     encoder.eval()
@@ -385,25 +387,28 @@ def evaluate_full(
     sel        = result["selected"]
     fly_total  = sum(p["fly"]                         for p in sel) if sel else 0.0
     dead_total = sum(p.get("dead_time", p["cost"])    for p in sel) if sel else 0.0
-    legs_total = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
-    avg_legs   = legs_total / len(sel) if sel else 0.0
-    ftc        = dead_total / fly_total * 100 if fly_total > 0 else 0.0
-    man_days   = sum(math.ceil(p["elapsed"] / 24.0) for p in sel) if sel else 0
+    legs_total   = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
+    duties_total = sum(p.get("n_duties", 1)            for p in sel) if sel else 0
+    man_days     = sum(math.ceil(p["elapsed"] / 24.0)  for p in sel) if sel else 0
+    avg_legs     = legs_total   / len(sel) if sel else 0.0
+    avg_duties   = duties_total / len(sel) if sel else 0.0
+    ftc          = dead_total / fly_total * 100 if fly_total > 0 else 0.0
 
     print()
     print("=" * 60)
     print(f"결과 (전체 {n_total}편 커버)")
     print("=" * 60)
-    print(f"  pairing 수:       {result['n_pairings']}")
-    print(f"  ManDays:          {man_days}")
-    print(f"  coverage:         {result['coverage'] * 100:.1f}%")
-    print(f"  uncoverable:      {result['uncoverable']}개 flight")
-    print(f"  deadhead:         {result['deadhead_count']}개 flight")
-    print(f"  fly time:         {fly_total:.2f}h")
-    print(f"  dead time:        {dead_total:.2f}h")
-    print(f"  FTC:              {ftc:.2f}%")
-    print(f"  avg legs/pairing: {avg_legs:.2f}")
-    print(f"  IP status:        {result['status']}")
+    print(f"  pairing 수:        {result['n_pairings']}")
+    print(f"  ManDays:           {man_days}")
+    print(f"  coverage:          {result['coverage'] * 100:.1f}%")
+    print(f"  uncoverable:       {result['uncoverable']}개 flight")
+    print(f"  deadhead:          {result['deadhead_count']}개 flight")
+    print(f"  fly time:          {fly_total:.2f}h")
+    print(f"  dead time:         {dead_total:.2f}h")
+    print(f"  FTC:               {ftc:.2f}%")
+    print(f"  avg legs/pairing:  {avg_legs:.2f}")
+    print(f"  avg duties/pairing:{avg_duties:.2f}")
+    print(f"  IP status:         {result['status']}")
 
     return result
 

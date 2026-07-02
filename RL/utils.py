@@ -45,14 +45,14 @@ def flights_to_tensors(flights, max_time, device=None):
     return origins, dests, dep_norm, arr_norm, fly_norm
 
 
-def state_to_vec(state, encoder, constraint, device=None):
-    """environment state dict → decoder 입력 tensor (78,)
+def state_to_vec(state, encoder, constraint, device=None, include_total_legs=True):
+    """environment state dict → decoder 입력 tensor (79,)
 
-    state_vec = current_airport_emb(32) + base_airport_emb(32) + scalars(7) + constraint_vec(7)
+    state_vec = current_airport_emb(32) + base_airport_emb(32) + scalars(8) + constraint_vec(7)
 
-    scalars 7개:
+    scalars 8개:
       time_of_day, day_norm, duty_elapsed/NORM, legs/NORM,
-      duty_period/NORM, is_resting, rest_remaining
+      duty_period/NORM, is_resting, rest_remaining, total_legs/NORM
 
     constraint_vec: FILM_CONSTRAINT_KEYS 정규화값 — decoder가 constraint를 직접 볼 수 있게 함.
 
@@ -78,17 +78,21 @@ def state_to_vec(state, encoder, constraint, device=None):
     else:
         rest_remaining = 0.0
 
+    scalars = [
+        time_of_day,
+        day_norm,
+        duty_elapsed / config.CONSTRAINT_NORMS["max_duty"],
+        state.get("legs", 0) / config.CONSTRAINT_NORMS["max_legs"],
+        duty_period_norm,
+        1.0 if state.get("is_resting", False) else 0.0,
+        rest_remaining,
+    ]
+    if include_total_legs:
+        scalars.append(state.get("total_legs", 0) / config.CONSTRAINT_NORMS["max_legs"])
+
     return torch.cat([
         current_emb,
         base_emb,
-        torch.tensor([
-            time_of_day,
-            day_norm,
-            duty_elapsed / config.CONSTRAINT_NORMS["max_duty"],
-            state.get("legs", 0) / config.CONSTRAINT_NORMS["max_legs"],
-            duty_period_norm,
-            1.0 if state.get("is_resting", False) else 0.0,
-            rest_remaining,
-        ], dtype=torch.float32).to(dev),
+        torch.tensor(scalars, dtype=torch.float32).to(dev),
         constraint_to_tensor(constraint, device=dev),
     ])
