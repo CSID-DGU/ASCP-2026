@@ -65,7 +65,7 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
     """
     df = pd.read_csv(path)
     df = df[[
-        "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
+        "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"
     ]].dropna()
     df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
@@ -86,15 +86,11 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
     else:
         df = df.head(limit)
 
-    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
-    df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
-    # 자정을 넘는 항공편: FL_DATE는 출발일 기준 → arr_time이 dep_time보다 작으면 +24
-    df.loc[df["arr_time"] < df["dep_time"], "arr_time"] += 24
-
     base_date = df["FL_DATE"].min()
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    df["dep_time"] += df["day_offset"] * 24
-    df["arr_time"] += df["day_offset"] * 24
+    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
+    # CRS_ELAPSED_TIME(분) 기반으로 arr_time 계산 — 로컬 시각 기반 +24 휴리스틱 제거
+    df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
 
@@ -113,6 +109,36 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
 
     return flights
 
+
+
+def sample_connected_subnet(flights_window, base_id, n_max):
+    """공항(스테이션) 집합 기반 서브넷 샘플링 — star graph 문제 해결
+      1. base를 반드시 포함
+      2. 교통량 상위 spoke를 하나씩 추가
+      3. chosen 공항 집합 '내부' 간선(origin∈chosen AND dest∈chosen)만 포함
+         → spoke-spoke 간선이 살아남아 ATL→MSP→SLC→ATL 같은 긴 chain 가능
+      4. n_max 초과 시 시간순으로 잘라냄
+    """
+    from collections import Counter
+    deg = Counter()
+    for f in flights_window:
+        deg[f["origin"]] += 1
+        deg[f["dest"]] += 1
+    spokes = [a for a, _ in deg.most_common() if a != base_id]
+    chosen = {base_id}
+    out = []
+    for s in spokes:
+        chosen.add(s)
+        candidate = [f for f in flights_window
+                     if f["origin"] in chosen and f["dest"] in chosen]
+        if len(candidate) >= n_max:
+            out = candidate
+            break
+        out = candidate
+    out = sorted(out, key=lambda f: f["dep_time"])[:n_max]
+    for i, f in enumerate(out):
+        f["id"] = i
+    return out
 
 
 def load_flights_rolling(
@@ -149,7 +175,7 @@ def load_flights_rolling(
     if df is None:
         df = pd.read_csv(path)
         df = df[[
-            "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
+            "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"
         ]].dropna()
         df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
@@ -168,13 +194,10 @@ def load_flights_rolling(
     df = df[df["FL_DATE"].isin(window_dates)].copy()
 
     # 시간 변환 + 윈도우 시작일 기준 day offset
-    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
-    df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
-    df.loc[df["arr_time"] < df["dep_time"], "arr_time"] += 24
     base_date = min(window_dates)
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    df["dep_time"] += df["day_offset"] * 24
-    df["arr_time"] += df["day_offset"] * 24
+    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
+    df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
 
@@ -192,19 +215,8 @@ def load_flights_rolling(
             "arr_time": float(row["arr_time"]),
         })
 
-    # base-first sampling: base 관련 편 우선, 나머지 랜덤 샘플링
+    # connected subnet sampling: star graph 문제 해결 (base-first 랜덤 샘플링 → 공항 집합 기반)
     if n_max is not None and len(flights) > n_max and base_airport is not None:
-        base_fs = [f for f in flights if f["origin"] == base_airport or f["dest"] == base_airport]
-        mid_fs  = [f for f in flights if f["origin"] != base_airport and f["dest"] != base_airport]
-        if len(base_fs) >= n_max:
-            # base 관련 편만으로도 n_max 초과 → base 편에서 랜덤 샘플링
-            random.shuffle(base_fs)
-            flights = sorted(base_fs[:n_max], key=lambda f: f["dep_time"])
-        else:
-            remaining = n_max - len(base_fs)
-            random.shuffle(mid_fs)
-            flights = sorted(base_fs + mid_fs[:remaining], key=lambda f: f["dep_time"])
-        for i, f in enumerate(flights):
-            f["id"] = i
+        flights = sample_connected_subnet(flights, base_airport, n_max)
 
     return flights
