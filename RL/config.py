@@ -72,8 +72,8 @@ STAGE3_CONSTRAINT_RANGES = {
 # Stage 2/3, Phase 2 모두 max_pairing_days = WINDOW_DAYS - 1로 설정
 WINDOW_DAYS = 5
 
-# 에피소드 최대 flight 수 — base-first sampling으로 이 수를 초과하지 않도록 제한
-# base↔X 편 전부 포함 + 나머지 spoke-spoke 랜덤 샘플링
+# 에피소드 최대 flight 수 — sample_connected_subnet으로 spoke-spoke 간선 포함해 샘플링
+# star graph 버그 수정으로 base-first → connected subnet 방식으로 변경
 EPISODE_MAX_FLIGHTS = 600
 
 # Phase 2 CG dual feedback 하이퍼파라미터
