@@ -88,7 +88,7 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5):
         n_total    : 전체 flight 수 (= 전역 ID 상한)
     """
     df = pd.read_csv(data_path)
-    df = df[["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"]].dropna()
+    df = df[["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"]].dropna()
     df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
     dates = sorted(df["FL_DATE"].unique())

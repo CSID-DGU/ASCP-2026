@@ -79,6 +79,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
             earliest = sorted(base_unassigned or unassigned, key=lambda x: x["dep_time"])[0]
 
             if not state.get("pairing_start", False):
+                total_legs_sum += state.get("total_legs", 0) 
                 n_pairings += 1
                 n_deadheads += 1
                 # BASE_PENALTY, PAIRING_COST는 environment step()과 중복되지 않도록
@@ -350,6 +351,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             base_unassigned = [f for f in unassigned if f["origin"] == base]
             earliest = sorted(base_unassigned or unassigned, key=lambda x: x["dep_time"])[0]
             if not state.get("pairing_start", False):
+                total_legs_sum += state.get("total_legs", 0)  # 측정 버그 수정: deadhead 시 legs 분자에 포함
                 n_pairings  += 1
                 n_deadheads += 1
                 total_reward -= config.DEFAULT_CONSTRAINTS["pairing_cost"]
@@ -717,7 +719,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         _max_offsets = {}
         for a in airlines:
             p = config.AIRLINE_DATA[a]
-            df = pd.read_csv(p, usecols=["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"]).dropna()
+            df = pd.read_csv(p, usecols=["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"]).dropna()
             df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
             _df_caches[a]   = df
             _max_offsets[a] = max(0, df["FL_DATE"].nunique() - WINDOW_DAYS)
@@ -767,7 +769,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                 return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
         else:
             DATA_PATH = config.AIRLINE_DATA[config.AIRLINE]
-            _df_cache = pd.read_csv(DATA_PATH, usecols=["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"]).dropna()
+            _df_cache = pd.read_csv(DATA_PATH, usecols=["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"]).dropna()
             _df_cache["FL_DATE"] = pd.to_datetime(_df_cache["FL_DATE"], format="mixed")
             total_days = _df_cache["FL_DATE"].nunique()
             max_offset = max(0, total_days - WINDOW_DAYS)
