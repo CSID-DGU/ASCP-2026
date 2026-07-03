@@ -28,24 +28,28 @@ sys.path.insert(0, "RL")
 DEVICE = torch.device("cpu")
 
 from loader import load_flights_rolling, build_airport_map, bases_to_ids, sample_connected_subnet as sample_connected_subnet_std
-from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish, sample_connected_subnet as sample_connected_subnet_turkish
+from turkish.loader_turkish import (
+    parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish,
+    sample_connected_subnet as sample_connected_subnet_turkish,
+    ZEREN_FEB_FILE, ZEREN_FEB_WINDOW,
+)
+from turkish.constraints_turkish import get_turkish_constraints as get_turkish_constraints_hb
 from constraints import (
     get_delta_constraints,
     get_alaska_constraints,
     get_jetblue_constraints,
-    get_turkish_constraints,
     FILM_CONSTRAINT_KEYS,
 )
 _GET_CONSTRAINT = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints,
+    "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용 (log/0703/base.md)
 }
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
 from utils import constraint_to_tensor, flights_to_tensors
-from rollout import rollout_with_pairings
+from rollout import rollout_with_pairings, set_environment
 import config
 
 
@@ -80,8 +84,11 @@ def load_windows_turkish(turkish_df, airport_map, window_days=5):
 
 # ── 1. 전체 데이터를 윈도우별로 로드, 전역 ID 부여 ─────────────────────────────
 
-def load_windows_with_global_ids(data_path, airport_map, window_days=5):
+def load_windows_with_global_ids(data_path, airport_map, window_days=5, use_utc=False):
     """전체 CSV를 window_days 단위 비겹침 윈도우로 분할, 전역 ID 부여.
+
+    use_utc: True면 dep_time을 UTC로 앵커링(RL/loader.py 참고) — 이 옵션으로 학습한
+        체크포인트를 평가할 때만 켤 것. 기존 체크포인트에 켜면 OOD.
 
     Returns:
         windows    : list of flight lists. 각 flight에 'global_id' 필드 추가됨.
@@ -217,7 +224,7 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
 def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_sampler):
     """윈도우 전체를 connected-subnet 기반 chunk로 파티셔닝 (완전 소진할 때까지 반복).
 
-    학습(RL/loader.py, RL/turkish_loader.py)의 sample_connected_subnet과 동일한 로직으로
+    학습(RL/loader.py, RL/turkish/loader_turkish.py)의 sample_connected_subnet과 동일한 로직으로
     각 chunk를 만들되, remaining이 빌 때까지 반복해 모든 flight이 정확히 1개 chunk에
     속하도록 해 coverage 100%를 유지한다 (star graph 버그 수정 후 eval도 학습과 같은
     연결 밀도 분포를 보도록 맞춤 — log/0703/avg_legs_eval_버그_분석.md 참고).
@@ -353,6 +360,7 @@ def evaluate_full(
     """
     global DEVICE
     DEVICE = torch.device(device)
+    set_environment(airline)
 
     if data_path is None:
         data_path = config.AIRLINE_DATA[airline]
@@ -367,7 +375,12 @@ def evaluate_full(
 
     _turkish_df = None
     if airline == "turkish":
-        _turkish_df = parse_legs_dir(data_path, files=turkish_files)
+        # turkish_files 미지정 시 Zeren Feb 벤치마크 윈도우(15,742편, 목표 15,738 대비
+        # 오차 0.03%)를 기본값으로 사용 — log/0703/zeren_재현_시도_정리.md 시도 5
+        if turkish_files is None:
+            _turkish_df = parse_legs_dir(data_path, files=[ZEREN_FEB_FILE], date_range=ZEREN_FEB_WINDOW)
+        else:
+            _turkish_df = parse_legs_dir(data_path, files=turkish_files)
         airport_map = build_airport_map_turkish(df=_turkish_df)
     else:
         if n_airports > 145:
@@ -389,13 +402,16 @@ def evaluate_full(
     encoder.eval()
     decoder.eval()
 
-    constraint = _GET_CONSTRAINT[airline](base_ids[0])
+    if airline == "turkish":
+        constraint = _GET_CONSTRAINT[airline](base_ids[0], base_ids=base_ids)
+    else:
+        constraint = _GET_CONSTRAINT[airline](base_ids[0])
 
     print(f"\n전체 데이터 로드 중 ({airline}, window_days={window_days})...", flush=True)
     if airline == "turkish":
         windows, n_total = load_windows_turkish(_turkish_df, airport_map, window_days)
     else:
-        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
+        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days, use_utc=use_utc)
     print(f"총 {n_total}편, {len(windows)}개 윈도우", flush=True)
 
     connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
@@ -460,7 +476,12 @@ if __name__ == "__main__":
                         help="CBC solver 제한 시간 초 (기본: 3600)")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--turkish-files", nargs="+", default=None,
-                        help="Turkish 전용. 사용할 .legs 파일 이름 목록. 예: tt201401.legs")
+                        help="Turkish 전용. 사용할 .legs 파일 이름 목록. 미지정 시 Zeren Feb "
+                             "벤치마크 윈도우(tt201402.legs, 2/1~3/8, 15,742편) 기본 사용. "
+                             "명시 지정 시 날짜 필터 없이 해당 파일 전체 사용.")
+    parser.add_argument("--use-utc", action="store_true",
+                        help="dep_time을 UTC 절대시간으로 앵커링. --use-utc로 학습한 체크포인트만 "
+                             "이 옵션 켠 채로 평가할 것 — 기존 체크포인트에 켜면 OOD")
     args = parser.parse_args()
 
     ckpt = args.checkpoint

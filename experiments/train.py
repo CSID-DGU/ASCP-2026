@@ -10,24 +10,41 @@ import wandb
 
 from model import FlightEncoder, PointerDecoder
 from loader import build_airport_map, bases_to_ids, load_flights_rolling
-from environment import get_mask, step, final_reward
+import environment as _env_default
+from turkish.environment_turkish import get_mask as _get_mask_turkish, step as _step_turkish, final_reward as _final_reward_turkish
+from turkish.constraints_turkish import get_turkish_constraints as get_turkish_constraints_hb
 from constraints import (
     get_delta_constraints, get_alaska_constraints,
-    get_jetblue_constraints, get_turkish_constraints,
+    get_jetblue_constraints,
     FILM_CONSTRAINT_KEYS,
 )
+
+get_mask, step, final_reward = _env_default.get_mask, _env_default.step, _env_default.final_reward
+
+
+def _select_environment(airline):
+    """airline에 맞는 get_mask/step/final_reward 구현으로 전환 (turkish는 HB1/HB2 비대칭
+    종료 허용, log/0703/base.md 참고). run_episode 등 이 모듈의 get_mask/step/final_reward를
+    참조하는 모든 호출부에 즉시 반영됨 (모듈 전역 rebind)."""
+    global get_mask, step, final_reward
+    if airline == "turkish":
+        get_mask, step, final_reward = _get_mask_turkish, _step_turkish, _final_reward_turkish
+    else:
+        get_mask, step, final_reward = _env_default.get_mask, _env_default.step, _env_default.final_reward
+
 
 _CONSTRAINT_FN = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints,
+    "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용 (base_ids는 train()에서 주입)
 }
 from state import init_state
 from utils import flights_to_tensors, constraint_to_tensor, state_to_vec
 import config
 
 DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
+USE_UTC = False  # dep_time UTC 앵커링 여부 — --use-utc로 켬
 
 
 def _set_device(device_str: str):
@@ -646,6 +663,8 @@ def run_curriculum_stage(
 def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None, from_stage2=False, turkish_files=None):
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
+    _select_environment("multi" if multi_airline else config.AIRLINE)
+
     if multi_airline:
         import os as _os
         airlines = [a for a in config.AIRLINE_DATA if not _os.path.isdir(config.AIRLINE_DATA[a])]
@@ -657,9 +676,17 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     else:
         airline_bases = config.AIRLINE_BASES[config.AIRLINE]
         if config.AIRLINE == "turkish":
-            from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish
+            from turkish.loader_turkish import (
+                parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish,
+                ZEREN_FEB_FILE, ZEREN_FEB_WINDOW,
+            )
             DATA_PATH    = None  # Turkish는 단일 CSV 없음
-            _turkish_df  = parse_legs_dir(config.AIRLINE_DATA["turkish"], files=turkish_files)
+            # turkish_files 미지정 시 Zeren Feb 벤치마크 윈도우(15,742편, 목표 15,738 대비
+            # 오차 0.03%) 기본 사용 — log/0703/zeren_재현_시도_정리.md 시도 5
+            if turkish_files is None:
+                _turkish_df = parse_legs_dir(config.AIRLINE_DATA["turkish"], files=[ZEREN_FEB_FILE], date_range=ZEREN_FEB_WINDOW)
+            else:
+                _turkish_df = parse_legs_dir(config.AIRLINE_DATA["turkish"], files=turkish_files)
             airport_map  = build_airport_map_turkish(df=_turkish_df)
         else:
             DATA_PATH   = config.AIRLINE_DATA[config.AIRLINE]
@@ -667,6 +694,9 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         base_ids   = bases_to_ids(airline_bases, airport_map)
         n_airports = len(airport_map)
         print(f"airports: {n_airports}개, airline: {config.AIRLINE}, bases: {airline_bases}")
+        if config.AIRLINE == "turkish":
+            # HB1/HB2 비대칭 종료 허용 — base_ids를 클로저로 캡처해 get_turkish_constraints_hb에 주입
+            _CONSTRAINT_FN["turkish"] = lambda b, _hb=base_ids: get_turkish_constraints_hb(b, base_ids=_hb)
 
     encoder = FlightEncoder(
         n_airports=n_airports,
@@ -1011,12 +1041,18 @@ if __name__ == "__main__":
     parser.add_argument("--airline", default=None,
                         help="단일 항공사 지정 (delta/alaska/jetblue/turkish). 미지정 시 config.AIRLINE 사용")
     parser.add_argument("--turkish-files", default=None,
-                        help="Turkish 학습 시 사용할 .legs 파일 이름 콤마 구분 (예: tt201401.legs). 미지정 시 전체 파일 사용")
+                        help="Turkish 학습 시 사용할 .legs 파일 이름 콤마 구분 (예: tt201401.legs). 미지정 시 "
+                             "Zeren Feb 벤치마크 윈도우(tt201402.legs, 2/1~3/8, 15,742편) 기본 사용")
+    parser.add_argument("--use-utc", action="store_true",
+                        help="dep_time을 UTC 절대시간으로 앵커링. 새로 이 옵션으로 학습한 모델만 "
+                             "이 옵션 켠 채로 평가해야 함 — 기존 체크포인트에 켜면 OOD")
     args = parser.parse_args()
     if args.airline:
         config.AIRLINE = args.airline
     _set_device(args.device)
+    USE_UTC = args.use_utc
     print(f"device: {DEVICE}")
+    print(f"use_utc: {USE_UTC}")
     print(f"log: {args.log}")
     _turkish_files = [f.strip() for f in args.turkish_files.split(",")] if args.turkish_files else None
     train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,
