@@ -2,6 +2,40 @@ import random
 import pandas as pd
 from collections import Counter
 
+# 1월 기준 표준시 UTC 오프셋 (DST 없음 — 진단 A 전용)
+# UTC = 미국 현지시각 - offset  (offset이 음수이므로 UTC = 현지 + |offset|)
+_UTC_OFFSETS_JAN = {
+    # Eastern (UTC-5)
+    "ATL": -5, "DTW": -5, "JFK": -5, "LGA": -5, "EWR": -5,
+    "BOS": -5, "PHL": -5, "CLT": -5, "IAD": -5, "DCA": -5,
+    "MIA": -5, "FLL": -5, "MCO": -5, "TPA": -5, "PBI": -5,
+    "CVG": -5, "CMH": -5, "IND": -5, "PIT": -5, "BUF": -5,
+    "RDU": -5, "CLE": -5, "BWI": -5, "SDF": -5, "ORF": -5,
+    "RIC": -5, "GRR": -5, "LEX": -5, "SAV": -5, "CHS": -5,
+    "GSP": -5, "AVL": -5, "BHM": -5, "TYS": -5, "RSW": -5,
+    "JAX": -5, "TLH": -5, "PNS": -5, "MOB": -5, "MGM": -5,
+    # Central (UTC-6)
+    "ORD": -6, "MDW": -6, "MSP": -6, "MSY": -6, "STL": -6,
+    "MEM": -6, "BNA": -6, "DFW": -6, "DAL": -6, "IAH": -6,
+    "HOU": -6, "SAT": -6, "AUS": -6, "OKC": -6, "TUL": -6,
+    "OMA": -6, "DSM": -6, "MCI": -6, "ICT": -6, "LIT": -6,
+    "XNA": -6, "MKE": -6, "MSN": -6, "FSD": -6, "FAR": -6,
+    "BIS": -6, "CID": -6, "JAN": -6, "BTR": -6, "SHV": -6,
+    # Mountain (UTC-7) — PHX/TUS: AZ는 연중 UTC-7
+    "DEN": -7, "SLC": -7, "PHX": -7, "TUS": -7, "ABQ": -7,
+    "ELP": -7, "BOI": -7, "BZN": -7, "JAC": -7, "COS": -7,
+    "HLN": -7, "MSO": -7, "FCA": -7, "GTF": -7, "BIL": -7,
+    # Pacific (UTC-8)
+    "LAX": -8, "SFO": -8, "SEA": -8, "PDX": -8, "LAS": -8,
+    "SMF": -8, "SAN": -8, "SJC": -8, "OAK": -8, "RNO": -8,
+    "SNA": -8, "BUR": -8, "ONT": -8, "FAT": -8, "MFR": -8,
+    "EUG": -8, "RDM": -8, "GEG": -8,
+    # Alaska (UTC-9)
+    "ANC": -9, "FAI": -9, "JNU": -9, "KTN": -9,
+    # Hawaii (UTC-10)
+    "HNL": -10, "OGG": -10, "KOA": -10, "LIH": -10, "ITO": -10,
+}
+
 
 def convert_time(hhmm):
     hhmm = int(hhmm)
@@ -149,6 +183,7 @@ def load_flights_rolling(
     base_airport=None,
     n_max=None,
     df=None,
+    use_utc=False,
 ):
     """슬라이딩 윈도우 방식으로 실제 날짜 데이터 로드.
 
@@ -196,7 +231,12 @@ def load_flights_rolling(
     # 시간 변환 + 윈도우 시작일 기준 day offset
     base_date = min(window_dates)
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
+    if use_utc:
+        # 현지시각 → UTC: dep_time_UTC = local - utc_offset (offset 음수이므로 +|offset|)
+        utc_off = df["ORIGIN"].map(_UTC_OFFSETS_JAN).fillna(-5)
+        df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24 - utc_off
+    else:
+        df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)

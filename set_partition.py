@@ -94,57 +94,67 @@ def solve_lp_relaxation(
 def column_reduction(
     pairings: List[Dict],
     reduced_costs: List[float],
-    threshold: float = 1e-6,
+    keep_ratio: float = 2.0,
+    per_flight_keep: int = 3,
 ) -> List[Dict]:
-    """
-    reduced cost 기반 column reduction
+    M = len(pairings)
+    if M == 0:
+        return []
 
-    rc_j ≤ threshold인 pairing만 유지.
-    단, 각 flight를 커버하는 pairing이 최소 1개는 남도록 보장.
+    n_legs = [p.get("n_legs", len(p["legs"])) for p in pairings]
 
-    Args:
-        threshold: 기본값 1e-6 ≈ 0 (수치 오차 허용)
-    """
-    kept_set = {j for j, rc in enumerate(reduced_costs) if rc <= threshold}
+    covered_flights: set = set()
+    for p in pairings:
+        covered_flights.update(p["legs"])
 
+    target = int(max(keep_ratio * len(covered_flights), 1))
+    if target >= M:
+        return list(pairings)
+
+    # 0) fallback 1-leg (is_deadhead=True, len==1)는 무조건 보존 — Set Partitioning feasibility 보장
+    kept = {j for j, p in enumerate(pairings)
+            if p.get("is_deadhead") and len(p["legs"]) == 1}
+
+    # 1) 전역 상위 K: rc 오름차순, 동률이면 긴 페어링 우선
+    order = sorted(range(M), key=lambda j: (reduced_costs[j], -n_legs[j]))
+    kept.update(order[:target])
+
+    # 2) flight별 커버리지 보장 (긴 페어링 우선)
     flight_to_pairings: Dict[int, List[int]] = defaultdict(list)
     for j, p in enumerate(pairings):
         for leg in p["legs"]:
             flight_to_pairings[leg].append(j)
 
-    for pairing_ids in flight_to_pairings.values():
-        if not any(j in kept_set for j in pairing_ids):
-            best_j = min(pairing_ids, key=lambda j: reduced_costs[j])
-            kept_set.add(best_j)
+    for js in flight_to_pairings.values():
+        if sum(1 for j in js if j in kept) >= per_flight_keep:
+            continue
+        ranked = sorted(js, key=lambda j: (reduced_costs[j], -n_legs[j]))
+        for j in ranked[:per_flight_keep]:
+            kept.add(j)
 
-    return [pairings[j] for j in sorted(kept_set)]
+    return [pairings[j] for j in sorted(kept)]
 
 
 def solve_set_covering(
     pairings: List[Dict],
     n_flights: int,
-    lambda_dh: float = 1.0,
     time_limit: int  = 300,
     use_gurobi: bool = False,
     verbose: bool    = False,
 ) -> Dict:
     """
-    Set Covering IP를 풀어 최적 pairing subset 선택
+    Set Partitioning IP를 풀어 최적 pairing subset 선택
 
-    Set Covering(≥1): 같은 flight를 여러 pairing이 커버 가능 → Deadhead 허용.
-    lambda_dh로 DH 패널티를 조절한다 (0이면 DH 억제 없음).
+    Set Partitioning(==1): 각 flight는 정확히 1개 pairing에만 포함
+    - covering(>=1) 대비 IP가 짧은 것 여러 개로 타일링하는 통로 차단 → 긴 페어링 선호
+    - feasibility는 collect_pool_full의 fallback(cost=200) 1-leg가 보장
 
     Args:
         pairings:   pairing dict 리스트 (legs, cost 필드 필요)
         n_flights:  전체 flight 수 (flight ID: 0 ~ n_flights-1)
-        lambda_dh:  DH 패널티 가중치
         time_limit: solver 제한 시간 (초)
         use_gurobi: True면 Gurobi 사용, 실패 시 CBC로 fallback
         verbose:    solver 로그 출력 여부
-
-    Returns:
-        selected, n_pairings, total_cost, coverage, status,
-        uncoverable, deadhead_count, deadhead_flights
     """
     if not pairings:
         return {
@@ -161,55 +171,107 @@ def solve_set_covering(
     covered_flights = set(flight_to_pairings.keys())
     uncoverable     = set(range(n_flights)) - covered_flights
 
-    M = len(pairings)
-    prob = pulp.LpProblem("crew_pairing_sc", pulp.LpMinimize)
+    pre_selected_idx: set = set()
+    pre_excluded_flights: set = set()   # 이미 처리된 flight (IP 제약에서 제외)
 
-    x = [pulp.LpVariable(f"x_{j}", cat="Binary") for j in range(M)]
-    d = {i: pulp.LpVariable(f"d_{i}", lowBound=0) for i in covered_flights}
+    changed = True
+    while changed:
+        changed = False
+        for i in covered_flights - pre_excluded_flights:
+            active = [j for j in flight_to_pairings[i] if j not in pre_selected_idx
+                      and not any(leg in pre_excluded_flights for leg in pairings[j]["legs"]
+                                  if leg != i)]
+            # 유효 후보가 1개 → 강제 선택
+            if len(active) == 1:
+                j = active[0]
+                pre_selected_idx.add(j)
+                for leg in pairings[j]["legs"]:
+                    pre_excluded_flights.add(leg)
+                changed = True
 
-    prob += (
-        pulp.lpSum(pairings[j]["cost"] * x[j] for j in range(M))
-        + lambda_dh * pulp.lpSum(d.values())
-    )
+    pre_selected = [pairings[j] for j in pre_selected_idx]
+    remaining_flights = covered_flights - pre_excluded_flights
+    remaining_pairing_idx = [
+        j for j in range(len(pairings))
+        if j not in pre_selected_idx
+        and not any(leg in pre_excluded_flights for leg in pairings[j]["legs"])
+    ]
+    remaining_pairings = [pairings[j] for j in remaining_pairing_idx]
 
-    for i in covered_flights:
-        cover_sum = pulp.lpSum(x[j] for j in flight_to_pairings[i])
-        prob += (cover_sum >= 1,          f"cover_{i}")
-        prob += (d[i] >= cover_sum - 1,   f"dh_{i}")
+    print(f"  [unit-prop] 확정 {len(pre_selected)}개 pairing ({len(pre_excluded_flights)}편) "
+          f"→ IP 잔여 {len(remaining_pairings)}개 pairing / {len(remaining_flights)}편", flush=True)
 
-    if use_gurobi:
-        try:
-            solver = pulp.GUROBI(timeLimit=time_limit, msg=int(verbose))
-        except Exception:
-            print("[warn] Gurobi 사용 불가 → CBC로 대체")
+    # ── IP: 잔여 pairings만 풀기 ────────────────────────────────────────────────
+    ip_selected = []
+    ip_status   = "Optimal"
+
+    if remaining_pairings and remaining_flights:
+        r_flight_to_pairings: Dict[int, List[int]] = defaultdict(list)
+        for rj, p in enumerate(remaining_pairings):
+            for leg in p["legs"]:
+                if leg in remaining_flights:
+                    r_flight_to_pairings[leg].append(rj)
+
+        R = len(remaining_pairings)
+        prob = pulp.LpProblem("crew_pairing_sp", pulp.LpMinimize)
+        x = [pulp.LpVariable(f"x_{rj}", cat="Binary") for rj in range(R)]
+        prob += pulp.lpSum(remaining_pairings[rj]["cost"] * x[rj] for rj in range(R))
+
+        for i in remaining_flights:
+            if r_flight_to_pairings[i]:
+                cover_sum = pulp.lpSum(x[rj] for rj in r_flight_to_pairings[i])
+                prob += (cover_sum == 1, f"cover_{i}")
+
+        if use_gurobi:
+            try:
+                solver = pulp.GUROBI(timeLimit=time_limit, msg=int(verbose))
+            except Exception:
+                print("[warn] Gurobi 사용 불가 → CBC로 대체")
+                solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=int(verbose))
+        else:
             solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=int(verbose))
-    else:
-        solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=int(verbose))
 
-    prob.solve(solver)
+        prob.solve(solver)
+        ip_status   = pulp.LpStatus[prob.status]
+        ip_selected = [remaining_pairings[rj] for rj in range(R) if (x[rj].value() or 0) > 0.5]
 
-    selected = [pairings[j] for j in range(M) if (x[j].value() or 0) > 0.5]
+    selected = pre_selected + ip_selected
+
+    # IP Not Solved / Infeasible 시 미커버 편에 fallback 1-leg 강제 배정 → coverage 100% 보장
+    if ip_status not in ("Optimal",):
+        covered_so_far = set()
+        for p in selected:
+            covered_so_far.update(p["legs"])
+        fallback_map = {
+            p["legs"][0]: p for p in pairings
+            if p.get("is_deadhead") and len(p["legs"]) == 1
+        }
+        for fid in covered_flights - covered_so_far:
+            if fid in fallback_map:
+                selected.append(fallback_map[fid])
 
     covered_legs = set()
     for p in selected:
         covered_legs.update(p["legs"])
     covered_count = len(covered_legs & set(range(n_flights)))
 
-    deadhead_flights = [
-        i for i in covered_flights if (d[i].value() or 0) > 0.5
+    # fallback(cost=200, is_deadhead=True) 선택된 것 = 미커버 deadhead
+    fallback_flights = [
+        p["legs"][0] for p in selected
+        if p.get("is_deadhead") and len(p["legs"]) == 1
     ]
 
     total_legs = sum(len(p["legs"]) for p in selected)
     avg_legs   = total_legs / len(selected) if selected else 0.0
 
     return {
-        "selected":            selected,
-        "n_pairings":          len(selected),
-        "total_cost":          sum(p["cost"] for p in selected),
-        "coverage":            covered_count / n_flights if n_flights > 0 else 0.0,
-        "status":              pulp.LpStatus[prob.status],
-        "uncoverable":         len(uncoverable),
-        "deadhead_count":      len(deadhead_flights),
-        "deadhead_flights":    deadhead_flights,
+        "selected":             selected,
+        "n_pairings":           len(selected),
+        "total_cost":           sum(p["cost"] for p in selected),
+        "coverage":             covered_count / n_flights if n_flights > 0 else 0.0,
+        "status":               ip_status,
+        "uncoverable":          len(uncoverable),
+        "deadhead_count":       len(fallback_flights),
+        "deadhead_flights":     fallback_flights,
         "avg_legs_per_pairing": avg_legs,
     }

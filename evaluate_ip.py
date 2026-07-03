@@ -20,6 +20,7 @@ import math
 import random
 import argparse
 
+import numpy as np
 import torch
 import pandas as pd
 
@@ -27,7 +28,7 @@ sys.path.insert(0, "RL")
 
 DEVICE = torch.device("cpu")
 
-from loader import load_flights_rolling, build_airport_map, bases_to_ids
+from loader import load_flights_rolling, build_airport_map, bases_to_ids, sample_connected_subnet
 from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish
 from constraints import (
     get_delta_constraints,
@@ -43,7 +44,7 @@ _GET_CONSTRAINT = {
     "turkish": get_turkish_constraints,
 }
 from model import FlightEncoder, PointerDecoder
-from set_partition import solve_set_covering
+from set_partition import solve_set_covering, solve_lp_relaxation, column_reduction
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings
 import config
@@ -80,7 +81,7 @@ def load_windows_turkish(turkish_df, airport_map, window_days=5):
 
 # ── 1. 전체 데이터를 윈도우별로 로드, 전역 ID 부여 ─────────────────────────────
 
-def load_windows_with_global_ids(data_path, airport_map, window_days=5):
+def load_windows_with_global_ids(data_path, airport_map, window_days=5, use_utc=False):
     """전체 CSV를 window_days 단위 비겹침 윈도우로 분할, 전역 ID 부여.
 
     Returns:
@@ -105,6 +106,7 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5):
             airport_map=airport_map,
             n_max=None,
             df=df,
+            use_utc=use_utc,
         )
         for f in wf:
             f["global_id"] = global_offset + f["id"]
@@ -219,15 +221,42 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       subset_size=config.EPISODE_MAX_FLIGHTS):
     """모든 윈도우에서 rollout → 전역 ID 기반 pairing pool 생성.
 
-    window를 dep_time 순 subset_size 단위 순차 chunk로 분할한 뒤,
-    각 chunk에 n_rollouts_per_chunk번 stochastic + 1번 greedy rollout을 수행한다.
-    훈련 시 load_flights_rolling(dep_time 순 슬라이싱)과 동일한 분포로
-    모든 flight이 최소 1번 rollout에 포함되어 coverage 100% 보장.
+    [Phase 1] station-set rollout (n_rollouts_per_chunk회):
+        5일치 전체 window에서 sample_connected_subnet으로 subnet 샘플링
+        → overnight 포함 multi-day 긴 pairing 생성 (avg_legs 3+)
+        → 단, 매번 같은 top-traffic 편만 뽑혀 전체의 ~12%만 커버
+
+    [Phase 2] sequential chunk rollout (미커버 편 대상):
+        Phase 1에서 못 커버한 편을 dep_time 순 chunk로 분할해 rollout
+        → 모든 편이 최소 1회 rollout에 포함 → 커버리지 100% 달성
+        → Phase 1보다 짧은 pairing이지만 실제 rollout pairing (fallback 아님)
+
+    [Fallback] cost=200 1-leg: Phase 2로도 못 커버한 극소수 편의 IP feasibility 보장
     """
     pool = {}
     covered_global = set()
     max_time = 5 * 24.0
-    base_id_set = set(base_ids)
+
+    def run_rollout(subset_flights, base_id, greedy, diag_label=None):
+        """subset rollout 1회 실행 → pool에 누적."""
+        c_b = {**constraint, "base_airport": base_id}
+        subset = [{**f, "local_id": lid} for lid, f in enumerate(subset_flights)]
+        try:
+            pairings = rollout_subset_global(subset, c_b, encoder, decoder, max_time, greedy=greedy)
+        except Exception as e:
+            print(f"  [warn] rollout 실패: {e}", flush=True)
+            return set()
+        if diag_label:
+            _ll = [p.get("n_legs", len(p["legs"])) for p in pairings]
+            _fly = [round(p.get("fly", -1.0), 1) for p in pairings[:3]]
+            print(f"  [{diag_label}] pairings={len(_ll)} avg_legs={np.mean(_ll):.2f} fly샘플={_fly}", flush=True)
+        covered = set()
+        for p in pairings:
+            key = tuple(sorted(p["legs"]))
+            if key not in pool or p["cost"] < pool[key]["cost"]:
+                pool[key] = p
+            covered.update(p["legs"])
+        return covered
 
     for w_idx, window_flights in enumerate(windows):
         if not window_flights:
@@ -236,70 +265,64 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         window_all_ids = set(f["global_id"] for f in window_flights)
         window_covered = set()
 
-        sorted_window = sorted(window_flights, key=lambda f: f["dep_time"])
-        chunks = [sorted_window[i:i + subset_size]
-                  for i in range(0, len(sorted_window), subset_size)]
+        # ── Phase 1: station-set rollout (긴 pairing 생성) ──────────────────
+        n_chunk_equiv    = math.ceil(len(window_flights) / subset_size)
+        n_phase1_rollouts = n_chunk_equiv * (n_rollouts_per_chunk + 1)
+        print(f"\n[Window {w_idx+1}/{len(windows)}] {len(window_flights)}편 "
+              f"| Phase1: {n_phase1_rollouts}회 station-set rollout", flush=True)
 
-        # chunk 내 base 출발편 보장: 없으면 window에서 가장 가까운 base 편을 복사해 주입
-        for c_idx, chunk in enumerate(chunks):
-            if not any(f["origin"] in base_id_set for f in chunk):
-                chunk_gids = {f["global_id"] for f in chunk}
-                candidates = [f for f in sorted_window
-                              if f["origin"] in base_id_set and f["global_id"] not in chunk_gids]
-                if candidates:
-                    inject = min(candidates,
-                                 key=lambda f: abs(f["dep_time"] - chunk[0]["dep_time"]))
-                    new_chunk = sorted([{**inject}] + list(chunk[:-1]),
-                                       key=lambda f: f["dep_time"])
-                    chunks[c_idx] = new_chunk
-
-        print(f"\n[Window {w_idx + 1}/{len(windows)}] {len(window_flights)}편 → {len(chunks)}개 chunk", flush=True)
-
-        rollout_count = 0
-        for c_idx, chunk in enumerate(chunks):
-            for local_id, f in enumerate(chunk):
-                f["local_id"] = local_id
-
+        for r_idx in range(n_phase1_rollouts):
             base_id = random.choice(base_ids)
-            c_b = {**constraint, "base_airport": base_id}
+            greedy  = (r_idx % (n_rollouts_per_chunk + 1) == n_rollouts_per_chunk)
+            raw_subset = sample_connected_subnet(window_flights, base_id, subset_size)
 
-            for _ in range(n_rollouts_per_chunk):
-                try:
-                    pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=False)
-                except Exception as e:
-                    print(f"  [warn] stochastic rollout 실패 (chunk={c_idx}): {e}", flush=True)
-                    continue
-                for p in pairings:
-                    key = tuple(sorted(p["legs"]))
-                    if key not in pool or p["cost"] < pool[key]["cost"]:
-                        pool[key] = p
-                    window_covered.update(p["legs"])
-                    covered_global.update(p["legs"])
-                rollout_count += 1
+            if w_idx == 0 and r_idx == 0:
+                _dep = [f["dep_time"] for f in raw_subset]
+                _sp  = (max(_dep) - min(_dep)) / 24 if len(_dep) > 1 else 0.0
+                _st  = len({f["origin"] for f in raw_subset} | {f["dest"] for f in raw_subset})
+                print(f"  [subset0] n={len(raw_subset)} span={_sp:.1f}d stations={_st}", flush=True)
 
-            try:
-                pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=True)
-            except Exception as e:
-                print(f"  [warn] greedy rollout 실패 (chunk={c_idx}): {e}", flush=True)
-                continue
-            for p in pairings:
-                key = tuple(sorted(p["legs"]))
-                if key not in pool or p["cost"] < pool[key]["cost"]:
-                    pool[key] = p
-                window_covered.update(p["legs"])
-                covered_global.update(p["legs"])
-            rollout_count += 1
+            covered = run_rollout(raw_subset, base_id, greedy,
+                                  diag_label="rollout0" if (w_idx == 0 and r_idx == 0) else None)
+            window_covered.update(covered)
+            covered_global.update(covered)
 
-        print(
-            f"  총 {rollout_count}회 rollout: "
-            f"window {len(window_covered)}/{len(window_all_ids)}편 커버, "
-            f"pool={len(pool)}",
-            flush=True,
+        print(f"  Phase1 완료: {len(window_covered)}/{len(window_all_ids)}편 커버", flush=True)
+
+        # ── Phase 2: sequential chunk rollout (미커버 편 커버) ───────────────
+        uncovered_flights = sorted(
+            [f for f in window_flights if f["global_id"] not in window_covered],
+            key=lambda f: f["dep_time"]
         )
+        if uncovered_flights:
+            chunks = [uncovered_flights[i:i+subset_size]
+                      for i in range(0, len(uncovered_flights), subset_size)]
+            print(f"  Phase2: 미커버 {len(uncovered_flights)}편 → {len(chunks)}개 chunk rollout", flush=True)
+            for chunk in chunks:
+                base_id = random.choice(base_ids)
+                # stochastic + greedy 각 1회
+                for greedy in [False, True]:
+                    covered = run_rollout(chunk, base_id, greedy)
+                    window_covered.update(covered)
+                    covered_global.update(covered)
 
-        uncov = len(window_all_ids - window_covered)
-        if uncov > 0:
-            print(f"  미커버: {uncov}편 (IP에서 uncoverable로 처리됨)", flush=True)
+        # ── Fallback: 극소수 미커버 편 ──────────────────────────────────────
+        remaining = [f for f in window_flights if f["global_id"] not in window_covered]
+        for f in remaining:
+            gid = f["global_id"]
+            key = (gid,)
+            if key not in pool:
+                pool[key] = {
+                    "legs": [gid], "cost": 200.0, "fly": 0.0,
+                    "elapsed": 0.0, "dead_time": 0.0, "n_legs": 1,
+                    "n_duties": 1, "is_deadhead": True, "last_dest": None,
+                }
+            window_covered.add(gid)
+            covered_global.add(gid)
+        if remaining:
+            print(f"  [warn] fallback 추가: {len(remaining)}편", flush=True)
+
+        print(f"  최종: {len(window_covered)}/{len(window_all_ids)}편 커버, pool={len(pool)}", flush=True)
 
     total_flights = sum(len(w) for w in windows)
     print(f"\n총 pool: {len(pool)}개 pairing")
@@ -320,6 +343,7 @@ def evaluate_full(
     ip_time_limit=3600,
     device="cpu",
     turkish_files=None,
+    use_utc=False,
 ):
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
@@ -370,7 +394,7 @@ def evaluate_full(
     if airline == "turkish":
         windows, n_total = load_windows_turkish(_turkish_df, airport_map, window_days)
     else:
-        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
+        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days, use_utc=use_utc)
     print(f"총 {n_total}편, {len(windows)}개 윈도우", flush=True)
 
     print(f"\nPool 수집 중 (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
@@ -381,18 +405,40 @@ def evaluate_full(
             subset_size=subset_size,
         )
 
+    # pool 진단 (전체 / fallback 제외 실제 rollout pairing만)
+    _L      = np.array([p.get("n_legs", len(p["legs"])) for p in pool])
+    real    = [p for p in pool if not (p.get("is_deadhead") and len(p["legs"]) == 1)]
+    _L_real = np.array([p.get("n_legs", len(p["legs"])) for p in real]) if real else np.array([0])
+    print(f"[POOL] n={len(pool)} avg_legs={_L.mean():.2f} legs>=4={100*((_L>=4).mean()):.0f}%"
+          f"  |  실제rollout {len(real)}개 avg_legs={_L_real.mean():.2f} legs>=4={100*((_L_real>=4).mean()):.0f}%", flush=True)
+
+    # LP relaxation (lambda_dh=0) → column reduction → IP
+    lp_result = solve_lp_relaxation(pool, lambda_dh=0.0)
+    if lp_result is not None:
+        pool = column_reduction(pool, lp_result["reduced_costs"], keep_ratio=0.5, per_flight_keep=3)
+        _L2 = np.array([p.get("n_legs", len(p["legs"])) for p in pool])
+        print(f"[REDUCED] n={len(pool)} avg_legs={_L2.mean():.2f} legs>=4={100*((_L2>=4).mean()):.0f}%", flush=True)
+
     print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s)...", flush=True)
     result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit)
 
     sel        = result["selected"]
-    fly_total  = sum(p["fly"]                         for p in sel) if sel else 0.0
-    dead_total = sum(p.get("dead_time", p["cost"])    for p in sel) if sel else 0.0
-    legs_total   = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
-    duties_total = sum(p.get("n_duties", 1)            for p in sel) if sel else 0
-    man_days     = sum(math.ceil(p["elapsed"] / 24.0)  for p in sel) if sel else 0
+    fly_total    = sum(p.get("fly", 0.0)                  for p in sel) if sel else 0.0
+    dead_total   = sum(p.get("dead_time", p["cost"])      for p in sel) if sel else 0.0
+    legs_total   = sum(p.get("n_legs", len(p["legs"]))    for p in sel) if sel else 0
+    duties_total = sum(p.get("n_duties", 1)               for p in sel) if sel else 0
+    man_days     = sum(math.ceil(p.get("elapsed", 0.0) / 24.0) for p in sel) if sel else 0
     avg_legs     = legs_total   / len(sel) if sel else 0.0
     avg_duties   = duties_total / len(sel) if sel else 0.0
     ftc          = dead_total / fly_total * 100 if fly_total > 0 else 0.0
+
+    # base 미복귀 pairing 수 (LLM eval의 repositioning_dh와 동일한 개념)
+    # last_dest=None인 fallback 1-leg는 제외 (운항 자체가 없으므로 미복귀 개념 적용 불가)
+    base_id_set = set(base_ids)
+    non_return  = sum(
+        1 for p in sel
+        if p.get("last_dest") is not None and p.get("last_dest") not in base_id_set
+    ) if sel else 0
 
     print()
     print("=" * 60)
@@ -402,7 +448,8 @@ def evaluate_full(
     print(f"  ManDays:           {man_days}")
     print(f"  coverage:          {result['coverage'] * 100:.1f}%")
     print(f"  uncoverable:       {result['uncoverable']}개 flight")
-    print(f"  deadhead:          {result['deadhead_count']}개 flight")
+    print(f"  base 미복귀:       {non_return}개 pairing  (← LLM repositioning_dh와 동일 개념)")
+    print(f"  deadhead(미커버):  {result['deadhead_count']}개 flight")
     print(f"  fly time:          {fly_total:.2f}h")
     print(f"  dead time:         {dead_total:.2f}h")
     print(f"  FTC:               {ftc:.2f}%")
@@ -428,8 +475,11 @@ if __name__ == "__main__":
                         help="윈도우 크기(일). 소규모(1주) 데이터는 1 권장 (기본: 5)")
     parser.add_argument("--subset-size", type=int, default=config.EPISODE_MAX_FLIGHTS,
                         help=f"rollout당 flight 수 (기본: {config.EPISODE_MAX_FLIGHTS})")
-    parser.add_argument("--ip-time-limit", type=int, default=3600,
-                        help="CBC solver 제한 시간 초 (기본: 3600)")
+    parser.add_argument("--ip-time-limit", type=int, default=7200,
+                        help="CBC solver 제한 시간 초 (기본: 7200)")
+    parser.add_argument("--use-utc", action="store_true",
+                        help="dep_time을 UTC로 변환 (1월 표준시 기준, 진단 A용). "
+                             "dead_time/FTC 정상화 여부 확인 목적. avg_legs는 OOD로 신뢰 불가.")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--turkish-files", nargs="+", default=None,
                         help="Turkish 전용. 사용할 .legs 파일 이름 목록. 예: tt201401.legs")
@@ -451,4 +501,5 @@ if __name__ == "__main__":
         ip_time_limit=args.ip_time_limit,
         device=args.device,
         turkish_files=args.turkish_files,
+        use_utc=args.use_utc,
     )

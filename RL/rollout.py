@@ -43,6 +43,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
                 - config.IP_LEG_BONUS * max(n_legs - 1, 0)
                 + (config.IP_DEADHEAD_PENALTY if is_forced else 0.0)
                 + config.IP_PAIRING_FIXED_COST)
+        last_fid  = current_legs[-1]
+        last_dest = flights[last_fid]["dest"]   # 정수 airport ID (airport_map 기준)
         pairings.append({
             "legs":        list(current_legs),
             "fly":         fly,
@@ -52,6 +54,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "is_deadhead": is_forced,
             "n_legs":      n_legs,
             "n_duties":    pairing_n_duties,
+            "last_dest":   last_dest,
         })
 
     def start_new_pairing(f):
@@ -200,9 +203,12 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                    - config.IP_LEG_BONUS * max(n_legs - 1, 0)
                    + (config.IP_DEADHEAD_PENALTY if forced else 0.0)
                    + config.IP_PAIRING_FIXED_COST)
+        last_fid  = cur_legs[i][-1]
+        last_dest = flights[last_fid]["dest"]   # 정수 airport ID (airport_map 기준)
         pairings[i].append({"legs": list(cur_legs[i]), "fly": fly, "elapsed": elapsed,
                              "dead_time": dead, "cost": cost, "is_deadhead": forced,
-                             "n_legs": n_legs, "n_duties": pair_duties[i]})
+                             "n_legs": n_legs, "n_duties": pair_duties[i],
+                             "last_dest": last_dest})
 
     def start_env(i, f):
         assigned[i][f["id"]] = True
