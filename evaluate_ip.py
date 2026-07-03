@@ -27,8 +27,8 @@ sys.path.insert(0, "RL")
 
 DEVICE = torch.device("cpu")
 
-from loader import load_flights_rolling, build_airport_map, bases_to_ids
-from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish
+from loader import load_flights_rolling, build_airport_map, bases_to_ids, sample_connected_subnet as sample_connected_subnet_std
+from turkish_loader import parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish, sample_connected_subnet as sample_connected_subnet_turkish
 from constraints import (
     get_delta_constraints,
     get_alaska_constraints,
@@ -212,17 +212,43 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
     return raw_pairings
 
 
+# ── 3-1. 윈도우 전체를 connectivity 기반 chunk로 파티셔닝 ─────────────────────
+
+def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_sampler):
+    """윈도우 전체를 connected-subnet 기반 chunk로 파티셔닝 (완전 소진할 때까지 반복).
+
+    학습(RL/loader.py, RL/turkish_loader.py)의 sample_connected_subnet과 동일한 로직으로
+    각 chunk를 만들되, remaining이 빌 때까지 반복해 모든 flight이 정확히 1개 chunk에
+    속하도록 해 coverage 100%를 유지한다 (star graph 버그 수정 후 eval도 학습과 같은
+    연결 밀도 분포를 보도록 맞춤 — log/0703/avg_legs_eval_버그_분석.md 참고).
+    """
+    remaining = list(window_flights)
+    chunks = []
+    while remaining:
+        for i, f in enumerate(remaining):
+            f["id"] = i
+        base_id = random.choice(base_ids)
+        chunk = connected_sampler(remaining, base_id, chunk_size)
+        if not chunk:
+            chunk = sorted(remaining, key=lambda f: f["dep_time"])[:chunk_size]
+        chosen_gids = {f["global_id"] for f in chunk}
+        remaining = [f for f in remaining if f["global_id"] not in chosen_gids]
+        chunks.append(sorted(chunk, key=lambda f: f["dep_time"]))
+    return chunks
+
+
 # ── 4. 전체 윈도우 pool 수집 ──────────────────────────────────────────────────
 
 def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       n_rollouts_per_chunk=5,
-                      subset_size=config.EPISODE_MAX_FLIGHTS):
+                      subset_size=config.EPISODE_MAX_FLIGHTS,
+                      connected_sampler=sample_connected_subnet_std):
     """모든 윈도우에서 rollout → 전역 ID 기반 pairing pool 생성.
 
-    window를 dep_time 순 subset_size 단위 순차 chunk로 분할한 뒤,
-    각 chunk에 n_rollouts_per_chunk번 stochastic + 1번 greedy rollout을 수행한다.
-    훈련 시 load_flights_rolling(dep_time 순 슬라이싱)과 동일한 분포로
-    모든 flight이 최소 1번 rollout에 포함되어 coverage 100% 보장.
+    window를 connected_sampler(학습과 동일한 sample_connected_subnet)로 connectivity 기반
+    chunk로 분할한 뒤, 각 chunk에 n_rollouts_per_chunk번 stochastic + 1번 greedy rollout을
+    수행한다. remaining이 빌 때까지 반복 파티셔닝하므로 모든 flight이 최소 1번 rollout에
+    포함되어 coverage 100%를 보장하면서, 동시에 학습 때와 같은 연결 밀도를 유지한다.
     """
     pool = {}
     covered_global = set()
@@ -236,15 +262,14 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         window_all_ids = set(f["global_id"] for f in window_flights)
         window_covered = set()
 
-        sorted_window = sorted(window_flights, key=lambda f: f["dep_time"])
-        chunks = [sorted_window[i:i + subset_size]
-                  for i in range(0, len(sorted_window), subset_size)]
+        chunks = partition_connected_chunks(window_flights, base_ids, subset_size, connected_sampler)
 
         # chunk 내 base 출발편 보장: 없으면 window에서 가장 가까운 base 편을 복사해 주입
+        # (connected-subnet 파티셔닝은 대부분 base 출발편을 포함하지만 tail chunk 등 예외 대비)
         for c_idx, chunk in enumerate(chunks):
             if not any(f["origin"] in base_id_set for f in chunk):
                 chunk_gids = {f["global_id"] for f in chunk}
-                candidates = [f for f in sorted_window
+                candidates = [f for f in window_flights
                               if f["origin"] in base_id_set and f["global_id"] not in chunk_gids]
                 if candidates:
                     inject = min(candidates,
@@ -373,12 +398,15 @@ def evaluate_full(
         windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
     print(f"총 {n_total}편, {len(windows)}개 윈도우", flush=True)
 
+    connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
+
     print(f"\nPool 수집 중 (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
     with torch.no_grad():
         pool, covered = collect_pool_full(
             windows, base_ids, constraint, encoder, decoder,
             n_rollouts_per_chunk=n_rollouts_per_chunk,
             subset_size=subset_size,
+            connected_sampler=connected_sampler,
         )
 
     print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s)...", flush=True)

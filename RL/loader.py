@@ -10,6 +10,40 @@ def convert_time(hhmm):
     return h + m / 60
 
 
+# 공항별 UTC 오프셋(분, 표준시 기준). BTS CRS_DEP_TIME/CRS_ARR_TIME은 각 공항의 현지
+# 로컬시각이라, 서로 다른 타임존의 공항을 잇는 연결편은 dep_time을 그대로 빼면 gap이
+# 음수/이상값으로 나와 실제로는 연결 가능한 편이 마스크에서 차단된다 (예: ATL(ET)→LAX(PT)
+# 착륙 후 다음 편 dep_time이 PT 기준이라 ET 기준 current_time과 clock이 안 맞음).
+# dep_time을 UTC 절대시간으로 앵커링하면 arr_time = dep_time + elapsed(block time,
+# 타임존 무관)만으로 도착 시각도 자동으로 올바른 UTC가 된다.
+# (analysis/flight_time_distribution.py의 _UTC 테이블과 동일 출처)
+_UTC_OFFSET_MIN = {
+    **{ap: -600 for ap in ['HNL', 'KOA', 'LIH', 'OGG']},
+    **{ap: -540 for ap in ['ANC', 'FAI']},
+    **{ap: -480 for ap in ['GEG', 'LAS', 'LAX', 'OAK', 'ONT', 'PDX', 'PSP', 'RNO', 'SAN', 'SEA',
+                            'SFO', 'SJC', 'SMF', 'SNA']},
+    **{ap: -420 for ap in ['ABQ', 'BIL', 'BOI', 'BZN', 'COS', 'DEN', 'EGE', 'ELP', 'FCA', 'HDN',
+                            'JAC', 'MSO', 'MTJ', 'PHX', 'SLC', 'TUS']},
+    **{ap: -360 for ap in ['ATW', 'AUS', 'BHM', 'BIS', 'BNA', 'BTR', 'CID', 'DAL', 'DFW', 'DSM',
+                            'ECP', 'FAR', 'FSD', 'GPT', 'GRB', 'HOU', 'HSV', 'IAH', 'ICT', 'JAN',
+                            'LFT', 'LIT', 'MCI', 'MDW', 'MEM', 'MKE', 'MOB', 'MSN', 'MSP', 'MSY',
+                            'OKC', 'OMA', 'ORD', 'PNS', 'SAT', 'STL', 'TUL', 'VPS', 'XNA']},
+    **{ap: -300 for ap in ['ABE', 'AGS', 'ALB', 'ATL', 'AVL', 'AVP', 'BDL', 'BOS', 'BUF', 'BWI',
+                            'CAE', 'CAK', 'CHA', 'CHO', 'CHS', 'CLE', 'CLT', 'CMH', 'CRW', 'CVG',
+                            'DAB', 'DAY', 'DCA', 'DTW', 'EWR', 'EYW', 'FAY', 'FLL', 'FNT', 'GNV',
+                            'GRR', 'GSO', 'GSP', 'HPN', 'IAD', 'ILM', 'IND', 'JAX', 'JFK', 'LEX',
+                            'LGA', 'MCO', 'MDT', 'MHT', 'MIA', 'MLB', 'MYR', 'ORF', 'PBI', 'PHF',
+                            'PHL', 'PIT', 'PVD', 'PWM', 'RDU', 'RIC', 'ROA', 'ROC', 'RSW', 'SAV',
+                            'SDF', 'SRQ', 'SYR', 'TLH', 'TPA', 'TRI', 'TYS']},
+    **{ap: -240 for ap in ['SJU', 'STT', 'STX']},
+}
+
+
+def utc_offset_hours(airport_code):
+    """공항의 UTC 오프셋(시간). 목록에 없으면 Eastern(-5h)을 기본값으로 사용."""
+    return _UTC_OFFSET_MIN.get(airport_code, -300) / 60.0
+
+
 def build_airport_map(path):
     """전체 BTS CSV 기준으로 공항→int 맵을 생성한다.
 
@@ -88,8 +122,14 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
 
     base_date = df["FL_DATE"].min()
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
-    # CRS_ELAPSED_TIME(분) 기반으로 arr_time 계산 — 로컬 시각 기반 +24 휴리스틱 제거
+    # dep_time을 UTC 절대시간으로 앵커링 (출발 공항 로컬시각 - UTC 오프셋)
+    # → 서로 다른 타임존 공항 간 연결편 gap 계산이 정확해짐 (log/0703/공유받은문제.md 참고)
+    df["dep_time"] = (
+        df["CRS_DEP_TIME"].apply(convert_time)
+        + df["day_offset"] * 24
+        - df["ORIGIN"].map(utc_offset_hours)
+    )
+    # CRS_ELAPSED_TIME(분, block time)은 타임존 무관 → dep_time(UTC)에 더하면 arr_time도 UTC
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
@@ -196,7 +236,12 @@ def load_flights_rolling(
     # 시간 변환 + 윈도우 시작일 기준 day offset
     base_date = min(window_dates)
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
+    # dep_time을 UTC 절대시간으로 앵커링 — load_flights()와 동일 이유 (log/0703/공유받은문제.md)
+    df["dep_time"] = (
+        df["CRS_DEP_TIME"].apply(convert_time)
+        + df["day_offset"] * 24
+        - df["ORIGIN"].map(utc_offset_hours)
+    )
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
