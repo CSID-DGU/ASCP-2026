@@ -24,7 +24,7 @@ get_mask, step, final_reward = _env_default.get_mask, _env_default.step, _env_de
 
 def _select_environment(airline):
     """airline에 맞는 get_mask/step/final_reward 구현으로 전환 (turkish는 HB1/HB2 비대칭
-    종료 허용, log/0703/base.md 참고). run_episode 등 이 모듈의 get_mask/step/final_reward를
+    종료 허용). run_episode 등 이 모듈의 get_mask/step/final_reward를
     참조하는 모든 호출부에 즉시 반영됨 (모듈 전역 rebind)."""
     global get_mask, step, final_reward
     if airline == "turkish":
@@ -682,7 +682,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             )
             DATA_PATH    = None  # Turkish는 단일 CSV 없음
             # turkish_files 미지정 시 Zeren Feb 벤치마크 윈도우(15,742편, 목표 15,738 대비
-            # 오차 0.03%) 기본 사용 — log/0703/zeren_재현_시도_정리.md 시도 5
+            # 오차 0.03%) 기본 사용
             if turkish_files is None:
                 _turkish_df = parse_legs_dir(config.AIRLINE_DATA["turkish"], files=[ZEREN_FEB_FILE], date_range=ZEREN_FEB_WINDOW)
             else:

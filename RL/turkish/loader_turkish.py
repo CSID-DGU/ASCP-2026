@@ -15,8 +15,8 @@ from collections import Counter
 
 # Zeren & Özkol (2016, Expert Systems With Applications 55) Table 2 재현 —
 # "planning month + N일" 중 N을 0~15로 스캔하면 6개월 전부 N=6~7에서 오차 1.3% 이내로
-# 수렴함 (log/0703/zeren_재현_시도_정리.md 시도 5). Feb는 N=7일 때 15,742편으로
-# 목표(15,738) 대비 오차 0.03%. 이 값을 turkish 데이터셋의 기본 윈도우로 채택.
+# 수렴함. Feb는 N=7일 때 15,742편으로 목표(15,738) 대비 오차 0.03%.
+# 이 값을 turkish 데이터셋의 기본 윈도우로 채택.
 ZEREN_FEB_FILE = "tt201402.legs"
 ZEREN_FEB_WINDOW = ("2014-02-01", "2014-03-08")  # buffer=7일, [start, end) 반개구간
 

@@ -17,8 +17,8 @@ get_mask, step = _env_default.get_mask, _env_default.step
 
 
 def set_environment(airline):
-    """airline에 맞는 get_mask/step 구현으로 전환 (turkish는 HB1/HB2 비대칭 종료 허용,
-    log/0703/base.md 참고). collect_pool_full/rollout_subset_global 등 이 모듈의 get_mask/step을
+    """airline에 맞는 get_mask/step 구현으로 전환 (turkish는 HB1/HB2 비대칭 종료 허용).
+    collect_pool_full/rollout_subset_global 등 이 모듈의 get_mask/step을
     참조하는 모든 호출부에 즉시 반영됨 (모듈 전역 rebind)."""
     global get_mask, step
     if airline == "turkish":

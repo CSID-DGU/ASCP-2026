@@ -42,7 +42,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
     # pairing 첫 leg: base-origin 미배정 편이 남아있으면 base 출발 강제
     # base-origin 소진 시 origin 제한 해제 → deadhead loop 방지
-    # HB1/HB2 비대칭 허용: base_ids가 있으면 그 중 아무 base 출발이든 인정 (log/0703/base.md)
+    # HB1/HB2 비대칭 허용: base_ids가 있으면 그 중 아무 base 출발이든 인정
     # base_remaining은 후보 flight f에 의존하지 않으므로(loop-invariant) 루프 밖에서 1회만 계산 —
     # 루프 안에서 매번 재계산하면 O(N^2)이 되어 저연결 base(HB2)에서 episode당 수십 초까지
     # 느려짐 (log/0704 turkish 스모크 테스트에서 발견)
@@ -165,7 +165,7 @@ def step(state, action, flights, assigned, constraint=None):
         base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
         # constraint["base_airport"] 에피소드별 주입
         base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-        # HB1/HB2 비대칭 허용: base_ids가 있으면 그 중 아무 base 복귀든 무패널티 (log/0703/base.md)
+        # HB1/HB2 비대칭 허용: base_ids가 있으면 그 중 아무 base 복귀든 무패널티
         base_id_set = set(c.get("base_ids") or [base])
 
         total_legs = state.get("total_legs", 0)

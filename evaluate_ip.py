@@ -44,7 +44,7 @@ _GET_CONSTRAINT = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용 (log/0703/base.md)
+    "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용
 }
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering
@@ -228,7 +228,7 @@ def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_s
     학습(RL/loader.py, RL/turkish/loader_turkish.py)의 sample_connected_subnet과 동일한 로직으로
     각 chunk를 만들되, remaining이 빌 때까지 반복해 모든 flight이 정확히 1개 chunk에
     속하도록 해 coverage 100%를 유지한다 (star graph 버그 수정 후 eval도 학습과 같은
-    연결 밀도 분포를 보도록 맞춤 — log/0703/avg_legs_eval_버그_분석.md 참고).
+    연결 밀도 분포를 보도록 맞춤).
     """
     remaining = list(window_flights)
     chunks = []
@@ -378,7 +378,7 @@ def evaluate_full(
     _turkish_df = None
     if airline == "turkish":
         # turkish_files 미지정 시 Zeren Feb 벤치마크 윈도우(15,742편, 목표 15,738 대비
-        # 오차 0.03%)를 기본값으로 사용 — log/0703/zeren_재현_시도_정리.md 시도 5
+        # 오차 0.03%)를 기본값으로 사용
         if turkish_files is None:
             _turkish_df = parse_legs_dir(data_path, files=[ZEREN_FEB_FILE], date_range=ZEREN_FEB_WINDOW)
         else:

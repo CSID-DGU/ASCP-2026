@@ -5,7 +5,6 @@
 # 다른 쪽에서 끝나도 무패널티인 게 맞다 (RL/data/timetables/ttfields.txt 1번 필드 설명 참고).
 # 반면 delta 등은 base가 서로 다른 도시에 있어 이 논리가 적용되면 안 되므로, 원본
 # RL/constraints.py는 그대로 두고 turkish에만 base_ids(집합) 기반 로직을 별도로 둔다.
-# (log/0703/base.md 참고)
 
 from airline_constraints.turkish import TURKISH_CONSTRAINTS
 
