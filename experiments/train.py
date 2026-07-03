@@ -766,6 +766,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                 base_airport=base_airport,
                 n_max=config.EPISODE_MAX_FLIGHTS,
                 df=_df_caches[airline],
+                use_utc=USE_UTC,
             )
             if not flights:
                 return None
@@ -812,6 +813,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                     base_airport=base_airport,
                     n_max=config.EPISODE_MAX_FLIGHTS,
                     df=_df_cache,
+                    use_utc=USE_UTC,
                 )
                 if not flights:
                     return None
@@ -932,6 +934,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             base_airport=_val_base,
             n_max=config.EPISODE_MAX_FLIGHTS,
             df=_val_df,
+            use_utc=USE_UTC,
         )
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS * 24.0, device=DEVICE)
 

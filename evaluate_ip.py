@@ -112,6 +112,7 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5, use_utc=
             airport_map=airport_map,
             n_max=None,
             df=df,
+            use_utc=use_utc,
         )
         for f in wf:
             f["global_id"] = global_offset + f["id"]
@@ -352,6 +353,7 @@ def evaluate_full(
     ip_time_limit=3600,
     device="cpu",
     turkish_files=None,
+    use_utc=False,
 ):
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
@@ -500,4 +502,5 @@ if __name__ == "__main__":
         ip_time_limit=args.ip_time_limit,
         device=args.device,
         turkish_files=args.turkish_files,
+        use_utc=args.use_utc,
     )
