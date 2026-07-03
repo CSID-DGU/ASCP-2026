@@ -91,11 +91,16 @@ def get_bases(flights, n_bases=3):
     return [a for a, _ in counts.most_common(n_bases)]
 
 
-def load_flights(path, limit=50, seed=42, n_days_max=None):
+def load_flights(path, limit=50, seed=42, n_days_max=None, use_utc=False):
     """BTS 데이터에서 flight 로드.
 
     공항 인덱스: 전체 CSV 기준 빈도 내림차순 → index 0 = 허브.
     limit과 무관하게 항상 동일한 airport_map이 사용된다.
+
+    use_utc: True면 dep_time을 UTC 절대시간으로 앵커링.
+        기본 False — 기존 체크포인트들은 이 수정 전(로컬시각) loader로 학습됐으므로, eval에서
+        무조건 켜면 학습 때 못 본 분포를 주는 OOD 상태가 됨. 새로 이 옵션을 켜고 학습한
+        모델을 평가할 때만 켜서 써야 함.
     """
     df = pd.read_csv(path)
     df = df[[
@@ -122,14 +127,12 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
 
     base_date = df["FL_DATE"].min()
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    # dep_time을 UTC 절대시간으로 앵커링 (출발 공항 로컬시각 - UTC 오프셋)
-    # → 서로 다른 타임존 공항 간 연결편 gap 계산이 정확해짐 (log/0703/공유받은문제.md 참고)
-    df["dep_time"] = (
-        df["CRS_DEP_TIME"].apply(convert_time)
-        + df["day_offset"] * 24
-        - df["ORIGIN"].map(utc_offset_hours)
-    )
-    # CRS_ELAPSED_TIME(분, block time)은 타임존 무관 → dep_time(UTC)에 더하면 arr_time도 UTC
+    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
+    if use_utc:
+        # dep_time을 UTC 절대시간으로 앵커링 (출발 공항 로컬시각 - UTC 오프셋)
+        # → 서로 다른 타임존 공항 간 연결편 gap 계산이 정확해짐
+        df["dep_time"] -= df["ORIGIN"].map(utc_offset_hours)
+    # CRS_ELAPSED_TIME(분, block time)은 타임존 무관 → dep_time에 더하면 arr_time도 같은 기준
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
@@ -189,6 +192,7 @@ def load_flights_rolling(
     base_airport=None,
     n_max=None,
     df=None,
+    use_utc=False,
 ):
     """슬라이딩 윈도우 방식으로 실제 날짜 데이터 로드.
 
@@ -236,12 +240,10 @@ def load_flights_rolling(
     # 시간 변환 + 윈도우 시작일 기준 day offset
     base_date = min(window_dates)
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    # dep_time을 UTC 절대시간으로 앵커링 — load_flights()와 동일 이유 (log/0703/공유받은문제.md)
-    df["dep_time"] = (
-        df["CRS_DEP_TIME"].apply(convert_time)
-        + df["day_offset"] * 24
-        - df["ORIGIN"].map(utc_offset_hours)
-    )
+    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
+    if use_utc:
+        # dep_time을 UTC 절대시간으로 앵커링 — load_flights()와 동일 이유
+        df["dep_time"] -= df["ORIGIN"].map(utc_offset_hours)
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
