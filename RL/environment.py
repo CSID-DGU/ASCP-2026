@@ -40,6 +40,18 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     duty_start_time  = state.get("duty_start_time", state["current_time"])
     pairing_start_time = state.get("pairing_start_time", state["current_time"])
 
+    # pairing 첫 leg: base-origin 미배정 편이 남아있으면 base 출발 강제
+    # base-origin 소진 시 origin 제한 해제 → deadhead loop 방지
+    # base_remaining은 후보 flight f에 의존하지 않으므로(loop-invariant) 루프 밖에서 1회만 계산 —
+    # 루프 안에서 매번 재계산하면 O(N^2)이 되어 저연결 base(예: turkish HB2)에서 episode당
+    # 수십 초까지 느려짐 (log/0704 turkish 스모크 테스트에서 발견)
+    base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+    if pairing_start:
+        base_remaining = any(
+            not assigned[fl["id"]] and fl["origin"] == base_ap
+            for fl in flights
+        )
+
     for i, f in enumerate(flights):
         if assigned[f["id"]]:
             continue
@@ -47,14 +59,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         valid = True
 
         # 1. 공항 연결 검사
-        # pairing 첫 leg: base-origin 미배정 편이 남아있으면 base 출발 강제
-        # base-origin 소진 시 origin 제한 해제 → deadhead loop 방지
         if pairing_start:
-            base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-            base_remaining = any(
-                not assigned[fl["id"]] and fl["origin"] == base_ap
-                for fl in flights
-            )
             if base_remaining and f["origin"] != base_ap:
                 valid = False
         elif f["origin"] != state["current_airport"]:
