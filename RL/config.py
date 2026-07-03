@@ -96,6 +96,11 @@ LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단
 LEG_PER_PAIRING_BONUS = 5.0  # v13: 3.0→5.0 — leg 선택 즉시 보상 강화로 avg_legs 3+ 유도
 END_DUTY_BONUS = 6.0          # v15: 3.0→6.0 — overnight 사용률 강제 상승, FiLM 학습 촉진
                                # overnight 10h는 dead_time에서 제외 → legs↑ dead_time↑ 없이 avg_legs 개선 가능
+MIN_LEGS_FOR_DUTY_BONUS = 2    # v16: END_DUTY_BONUS가 무위험 고정보상이라 duty를 짧게 끝내고
+                               # 반복 수령하는 유인이 생김(dp 늘어나도 duty당 leg 수가 오히려 감소).
+                               # 현재 duty의 leg 수가 이 값 미만이면 보너스를
+                               # legs/MIN_LEGS_FOR_DUTY_BONUS 비율로 깎아서 "짧은 duty로 END_DUTY
+                               # 남발" 유인 제거, legs≥이 값이면 기존과 동일
                        # v7: END_PAIRING 지연 지급 → per-step 즉시 지급으로 구조 변경
                        # 임계값 = LEG_CONN_BONUS(1.5) + LEG_PER_PAIRING_BONUS(3.0) = 4.5h
                        # avg gap 4.27h < 4.5h → 대부분 연결이 reward-positive → avg_legs 3+ 목표

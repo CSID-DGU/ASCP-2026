@@ -145,7 +145,12 @@ def step(state, action, flights, assigned, constraint=None):
         }
         # v8: overnight rest 직접 장려 — multi-day pairing 유도
         # overnight 10h는 dead_time에서 제외되므로 legs↑ dead_time 증가 없이 avg_legs 개선 가능
-        return next_state, config.END_DUTY_BONUS, False
+        # v16: duty당 leg 수가 MIN_LEGS_FOR_DUTY_BONUS 미만이면 보너스를 비례 축소 —
+        # END_DUTY가 무위험 고정보상이라 duty를 짧게 끝내고 반복 수령하는 유인을 제거
+        duty_legs = state.get("legs", 0)
+        min_legs = config.MIN_LEGS_FOR_DUTY_BONUS
+        scale = min(1.0, duty_legs / min_legs) if min_legs > 0 else 1.0
+        return next_state, config.END_DUTY_BONUS * scale, False
 
     # END_PAIRING → pairing 비용 부과 후 새 pairing 시작 (또는 에피소드 종료)
     if action == N + 1:
