@@ -107,6 +107,15 @@ MIN_LEGS_FOR_DUTY_BONUS = 2    # v16: END_DUTY_BONUS가 무위험 고정보상�
                        # dead_time 상승 감수 (avg gap 연결 허용하므로)
                        # pairing 첫 편 및 rest 직후 편에는 적용 안 함 (연결이 아니므로)
 
+# v18(0704): rest 직후 첫 편은 위 LEG_PER_PAIRING_BONUS만 받고 대기시간에 대한 페널티가
+# 전혀 없었음 — get_mask()도 rest 이후엔 max_conn 상한이 없어 정책이 다음 편을 아무리
+# 늦게 골라도 학습 신호가 무관심. IP 평가 단계의 dead_time은 이 초과 대기(실제 gap -
+# min_rest)를 고스란히 비용으로 잡아 FTC=200%대까지 치솟는 원인이 됨(실측: duty-간
+# 초과대기가 duty-내부 gap의 3.47배). intra-duty gap 패널티(1.0/h 스케일)보다 훨씬
+# 완만하게 시작해 overnight 사용 유인(END_DUTY_BONUS) 자체는 죽이지 않으면서 방향만
+# 튼다 — 값은 1차 시도, 재학습 결과 보고 재조정 필요.
+POST_REST_GAP_PENALTY = 0.2
+
 # IP/LP cost 함수 상수 — evaluate_ip.py, train.py Phase 2 공용
 # cost = dead_time - LEG_BONUS_IP*(n_legs-1) + DEADHEAD_PENALTY_IP*(강제종료) + PAIRING_FIXED_COST
 IP_LEG_BONUS        = 1.5   # leg 추가될수록 cost 감소 → 효율적 연결 장려
