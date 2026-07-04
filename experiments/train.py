@@ -1003,11 +1003,27 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                init_best=_s3_best)
 
     # ── FiLM 최종 검증: stage3_best.pt 기준 ───────────────────────────
+    # (Phase 2가 FiLM 가중치를 덮어썼을 수 있으므로 검증만 stage3_best로 임시 복원해서 확인)
     _film_ckpt = torch.load(os.path.join(_s3_ckpt_dir, "stage3_best.pt"), map_location=DEVICE, weights_only=True)
     encoder.load_state_dict(_film_ckpt["encoder"])
     decoder.load_state_dict(_film_ckpt["decoder"])
     print("FiLM 최종 검증: stage3_best.pt 로드")
     _film_validation("final / stage3_best")
+
+    # ── 최종 모델 선택: Phase 2가 Stage3 기록을 갱신했으면 phase2_best, 아니면 stage3_best ──
+    # (수정 전에는 위 검증용 stage3_best 복원이 그대로 저장까지 이어져 Phase 2 결과가
+    #  phase2_best.pt를 만든 경우에도 model_latest.pt엔 절대 반영되지 않았음)
+    _phase2_ckpt_path = os.path.join(save_dir, "phase2_best.pt")
+    if os.path.exists(_phase2_ckpt_path):
+        _phase2_ckpt = torch.load(_phase2_ckpt_path, map_location=DEVICE, weights_only=True)
+        encoder.load_state_dict(_phase2_ckpt["encoder"])
+        decoder.load_state_dict(_phase2_ckpt["decoder"])
+        print(f"최종 모델: phase2_best.pt 사용 (avg_pairings={_phase2_ckpt['best_avg_pairings']:.1f} "
+              f"< stage3 {_s3_best:.1f})")
+    else:
+        encoder.load_state_dict(_film_ckpt["encoder"])
+        decoder.load_state_dict(_film_ckpt["decoder"])
+        print(f"최종 모델: stage3_best.pt 사용 (Phase 2가 {_s3_best:.1f} 기록을 못 넘김)")
 
     # ── 최종 모델 저장 ────────────────────────────────────────────────
     torch.save({
@@ -1017,9 +1033,9 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         "constraint_dim": len(FILM_CONSTRAINT_KEYS),
         "bases":          _val_bases_save,
         "window_days":    WINDOW_DAYS,
-        "max_time":       WINDOW_DAYS * 24,  
+        "max_time":       WINDOW_DAYS * 24,
     }, os.path.join(save_dir, "model_latest.pt"))
-    print(f"\n모델 저장: checkpoints/model_latest.pt (stage3_best 기준)")
+    print(f"\n모델 저장: checkpoints/model_latest.pt")
 
     wandb.finish(quiet=True)
 
