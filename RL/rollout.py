@@ -45,6 +45,10 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     pairing_last_arr = 0.0
     pairing_rest     = 0.0
     pairing_n_duties = 1   # 현재 pairing의 duty 수 (overnight 발생 시 증가)
+    # [진단용] dead_time을 duty 내부 연결 gap과 duty 간 초과 대기(실제 휴식 - min_rest)로
+    # 분리 계측. dead_time 계산식/cost 자체는 손대지 않음 — 순수 부가 필드.
+    pairing_intra_gap    = 0.0
+    pairing_inter_excess = 0.0
 
     def flush_pairing(is_forced=False):
         if len(current_legs) < 1 or pairing_dep is None:
@@ -66,10 +70,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "is_deadhead": is_forced,
             "n_legs":      n_legs,
             "n_duties":    pairing_n_duties,
+            "intra_duty_gap":    pairing_intra_gap,
+            "inter_duty_excess": pairing_inter_excess,
         })
 
     def start_new_pairing(f):
         nonlocal pairing_dep, pairing_fly, pairing_last_arr, pairing_rest, pairing_n_duties
+        nonlocal pairing_intra_gap, pairing_inter_excess
         current_legs.clear()
         current_legs.append(f["id"])
         pairing_dep      = f["dep_time"]
@@ -77,6 +84,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         pairing_last_arr = f["arr_time"]
         pairing_rest     = 0.0
         pairing_n_duties = 1
+        pairing_intra_gap    = 0.0
+        pairing_inter_excess = 0.0
 
     unassigned = [f for f in flights if not assigned[f["id"]]]
     if not unassigned:
@@ -176,6 +185,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         current_legs.append(f["id"])
         pairing_fly      += f["arr_time"] - f["dep_time"]
         pairing_last_arr  = f["arr_time"]
+
+        # [진단용, 실험 A] 선택 직전 state 기준으로 gap 종류 분리 집계
+        if not state.get("pairing_start", False) and not state.get("is_resting", False):
+            pairing_intra_gap += f["dep_time"] - state["current_time"]
+        elif state.get("is_resting", False):
+            rest_end = state.get("rest_end_time", f["dep_time"])
+            pairing_inter_excess += max(f["dep_time"] - rest_end, 0.0)
 
         state, _, done = step(state, action, flights, assigned, constraint)
         if done:

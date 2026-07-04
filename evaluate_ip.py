@@ -351,6 +351,7 @@ def evaluate_full(
     subset_size=config.EPISODE_MAX_FLIGHTS,
     bases=None,
     ip_time_limit=3600,
+    lambda_dh=1.0,
     device="cpu",
     turkish_files=None,
     use_utc=False,
@@ -427,8 +428,8 @@ def evaluate_full(
             connected_sampler=connected_sampler,
         )
 
-    print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s)...", flush=True)
-    result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit)
+    print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
+    result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh)
 
     sel        = result["selected"]
     fly_total  = sum(p["fly"]                         for p in sel) if sel else 0.0
@@ -439,6 +440,9 @@ def evaluate_full(
     avg_legs     = legs_total   / len(sel) if sel else 0.0
     avg_duties   = duties_total / len(sel) if sel else 0.0
     ftc          = dead_total / fly_total * 100 if fly_total > 0 else 0.0
+    # [진단용] dead_time을 duty 내부/duty 간으로 분리 집계
+    intra_gap_total  = sum(p.get("intra_duty_gap", 0.0)    for p in sel) if sel else 0.0
+    inter_excess_total = sum(p.get("inter_duty_excess", 0.0) for p in sel) if sel else 0.0
 
     print()
     print("=" * 60)
@@ -451,6 +455,8 @@ def evaluate_full(
     print(f"  deadhead:          {result['deadhead_count']}개 flight")
     print(f"  fly time:          {fly_total:.2f}h")
     print(f"  dead time:         {dead_total:.2f}h")
+    print(f"    - duty 내부 연결 gap:     {intra_gap_total:.2f}h ({intra_gap_total/dead_total*100 if dead_total>0 else 0:.1f}%)")
+    print(f"    - duty 간 초과 대기(>min_rest): {inter_excess_total:.2f}h ({inter_excess_total/dead_total*100 if dead_total>0 else 0:.1f}%)")
     print(f"  FTC:               {ftc:.2f}%")
     print(f"  avg legs/pairing:  {avg_legs:.2f}")
     print(f"  avg duties/pairing:{avg_duties:.2f}")
@@ -476,6 +482,8 @@ if __name__ == "__main__":
                         help=f"rollout당 flight 수 (기본: {config.EPISODE_MAX_FLIGHTS})")
     parser.add_argument("--ip-time-limit", type=int, default=3600,
                         help="CBC solver 제한 시간 초 (기본: 3600)")
+    parser.add_argument("--lambda-dh", type=float, default=1.0,
+                        help="DH 패널티 가중치 (기본: 1.0)")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--turkish-files", nargs="+", default=None,
                         help="Turkish 전용. 사용할 .legs 파일 이름 목록. 미지정 시 Zeren Feb "
@@ -500,6 +508,7 @@ if __name__ == "__main__":
         window_days=args.window_days,
         subset_size=args.subset_size,
         ip_time_limit=args.ip_time_limit,
+        lambda_dh=args.lambda_dh,
         device=args.device,
         turkish_files=args.turkish_files,
         use_utc=args.use_utc,
