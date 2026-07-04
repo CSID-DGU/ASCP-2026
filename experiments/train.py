@@ -993,14 +993,17 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     phase2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
     phase2_offset = 0 if phase2_only else (2000 if from_stage2 else 1000 + 2000 + 2000)
 
-    run_phase2(encoder, decoder, optimizer,
+    # init_best을 Stage3 기록으로 주지 않고 무한대(기본값)로 둠 — Stage3를 못 넘어도
+    # phase2_best.pt가 Phase2 자체의 최고점으로 항상 생기게 함(avg_pairings가 dead_time/FTC를
+    # 반영 못 하는 지표라 "Stage3를 못 넘음=평가할 가치 없음"으로 단정할 수 없음). Stage3 대비
+    # 비교는 아래에서 참고용으로만 출력.
+    _p2_best = run_phase2(encoder, decoder, optimizer,
                n_episodes=config.PHASE2_N_EPISODES,
                constraint=phase2_c,
                save_dir=save_dir,
                flight_sampler=flight_sampler,
                global_step_offset=phase2_offset,
-               constraint_sampler=sample_constraint,
-               init_best=_s3_best)
+               constraint_sampler=sample_constraint)
 
     # ── FiLM 최종 검증: stage3_best.pt 기준 ───────────────────────────
     # (Phase 2가 FiLM 가중치를 덮어썼을 수 있으므로 검증만 stage3_best로 임시 복원해서 확인)
@@ -1010,20 +1013,20 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
     print("FiLM 최종 검증: stage3_best.pt 로드")
     _film_validation("final / stage3_best")
 
-    # ── 최종 모델 선택: Phase 2가 Stage3 기록을 갱신했으면 phase2_best, 아니면 stage3_best ──
-    # (수정 전에는 위 검증용 stage3_best 복원이 그대로 저장까지 이어져 Phase 2 결과가
-    #  phase2_best.pt를 만든 경우에도 model_latest.pt엔 절대 반영되지 않았음)
+    # ── 최종 모델 선택: Phase 2의 avg_pairings가 Stage3보다 실제로 더 낮을 때만 phase2_best ──
+    # phase2_best.pt는 이제(init_best=inf) Stage3를 못 넘어도 항상 생기므로, 파일 존재
+    # 여부가 아니라 avg_pairings 값 자체를 직접 비교해야 함(존재 여부만 보면 항상 phase2가
+    # 선택돼버려 이 로직이 무력화됨).
     _phase2_ckpt_path = os.path.join(save_dir, "phase2_best.pt")
-    if os.path.exists(_phase2_ckpt_path):
+    if os.path.exists(_phase2_ckpt_path) and _p2_best < _s3_best:
         _phase2_ckpt = torch.load(_phase2_ckpt_path, map_location=DEVICE, weights_only=True)
         encoder.load_state_dict(_phase2_ckpt["encoder"])
         decoder.load_state_dict(_phase2_ckpt["decoder"])
-        print(f"최종 모델: phase2_best.pt 사용 (avg_pairings={_phase2_ckpt['best_avg_pairings']:.1f} "
-              f"< stage3 {_s3_best:.1f})")
+        print(f"최종 모델: phase2_best.pt 사용 (avg_pairings={_p2_best:.1f} < stage3 {_s3_best:.1f})")
     else:
         encoder.load_state_dict(_film_ckpt["encoder"])
         decoder.load_state_dict(_film_ckpt["decoder"])
-        print(f"최종 모델: stage3_best.pt 사용 (Phase 2가 {_s3_best:.1f} 기록을 못 넘김)")
+        print(f"최종 모델: stage3_best.pt 사용 (Phase 2 {_p2_best:.1f}가 {_s3_best:.1f} 기록을 못 넘김)")
 
     # ── 최종 모델 저장 ────────────────────────────────────────────────
     torch.save({
