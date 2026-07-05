@@ -111,10 +111,11 @@ MIN_LEGS_FOR_DUTY_BONUS = 2    # v16: END_DUTY_BONUS가 무위험 고정보상�
 # 전혀 없었음 — get_mask()도 rest 이후엔 max_conn 상한이 없어 정책이 다음 편을 아무리
 # 늦게 골라도 학습 신호가 무관심. IP 평가 단계의 dead_time은 이 초과 대기(실제 gap -
 # min_rest)를 고스란히 비용으로 잡아 FTC=200%대까지 치솟는 원인이 됨(실측: duty-간
-# 초과대기가 duty-내부 gap의 3.47배). intra-duty gap 패널티(1.0/h 스케일)보다 훨씬
-# 완만하게 시작해 overnight 사용 유인(END_DUTY_BONUS) 자체는 죽이지 않으면서 방향만
-# 튼다 — 값은 1차 시도, 재학습 결과 보고 재조정 필요.
-POST_REST_GAP_PENALTY = 0.2
+# 초과대기가 duty-내부 gap의 3.47배).
+# v19(0705): k=0.2로 재학습한 결과 inter_duty_excess가 오히려 증가(347,603.7h→
+# 370,735.9h/363,471.3h, +4.6~6.7%) — 0.2는 정책 행동을 바꾸기에 너무 완만했다고 판단,
+# 0.2→0.4로 상향.
+POST_REST_GAP_PENALTY = 0.4
 
 # IP/LP cost 함수 상수 — evaluate_ip.py, train.py Phase 2 공용
 # cost = dead_time - LEG_BONUS_IP*(n_legs-1) + DEADHEAD_PENALTY_IP*(강제종료) + PAIRING_FIXED_COST
