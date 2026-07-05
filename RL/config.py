@@ -117,6 +117,14 @@ MIN_LEGS_FOR_DUTY_BONUS = 2    # v16: END_DUTY_BONUS가 무위험 고정보상�
 # 0.2→0.4로 상향.
 POST_REST_GAP_PENALTY = 0.4
 
+# 실험 C(0705): soft reward penalty(POST_REST_GAP_PENALTY)만으로는 duty-간 초과대기가
+# 안 줄었을 가능성 — 후보 flight 자체가 이미 다 긴 대기를 요구하는 구조적 상황이면
+# reward 크기를 아무리 키워도 "가장 덜 나쁜 선택"만 바뀔 뿐 총량은 안 줄어들 수 있음.
+# get_mask()에 하드 상한을 둬서 이 경우 자체를 원천 차단 — rest_end로부터 이 값(h)을
+# 넘는 flight는 mask에서 제외(후보가 하나도 안 남으면 END_PAIRING으로 조기 종료,
+# get_mask()의 END_PAIRING 조건은 is_resting 여부와 무관해 항상 탈출구로 남아있음).
+MAX_POST_REST_GAP = 24.0
+
 # IP/LP cost 함수 상수 — evaluate_ip.py, train.py Phase 2 공용
 # cost = dead_time - LEG_BONUS_IP*(n_legs-1) + DEADHEAD_PENALTY_IP*(강제종료) + PAIRING_FIXED_COST
 IP_LEG_BONUS        = 1.5   # leg 추가될수록 cost 감소 → 효율적 연결 장려

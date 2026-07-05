@@ -72,6 +72,9 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
             # rest 미종료 시 탑승 불가
             if f["dep_time"] < rest_end:
                 valid = False
+            # 실험 C: rest 종료 후 초과 대기가 상한을 넘는 flight도 후보에서 제외
+            elif f["dep_time"] - rest_end > config.MAX_POST_REST_GAP:
+                valid = False
         else:
             if not pairing_start:
                 gap = f["dep_time"] - state["current_time"]
