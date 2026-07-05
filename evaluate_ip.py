@@ -428,7 +428,7 @@ def evaluate_full(
             connected_sampler=connected_sampler,
         )
 
-    print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh}, gap_weight={GAP_COST_WEIGHT})...", flush=True)
+    print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh}", flush=True)
     result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh)
 
     sel        = result["selected"]
