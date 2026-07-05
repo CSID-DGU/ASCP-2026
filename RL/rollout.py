@@ -56,7 +56,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         elapsed   = pairing_last_arr - pairing_dep
         fly       = pairing_fly
         n_legs    = len(current_legs)
-        dead_time = max(elapsed - fly - pairing_rest, 0.0)
+        # dead_time = duty 내부 연결 gap만 (overnight 초과 제외 — LLM eval과 동일 기준)
+        dead_time = pairing_intra_gap
         cost = (dead_time
                 - config.IP_LEG_BONUS * max(n_legs - 1, 0)
                 + (config.IP_DEADHEAD_PENALTY if is_forced else 0.0)
@@ -215,7 +216,9 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
     pair_fly    = [0.0] * B
     pair_arr    = [0.0] * B
     pair_rest   = [0.0] * B
-    pair_duties = [1] * B   # 현재 pairing의 duty 수
+    pair_duties      = [1]   * B   # 현재 pairing의 duty 수
+    pair_intra_gap   = [0.0] * B   # duty 내부 연결 gap (FTC 기준)
+    pair_inter_excess= [0.0] * B   # overnight 초과 대기 (FTC 제외)
     pairings    = [[] for _ in range(B)]
     done        = [False] * B
 
@@ -225,14 +228,17 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
         elapsed = pair_arr[i] - pair_dep[i]
         fly     = pair_fly[i]
         n_legs  = len(cur_legs[i])
-        dead    = max(elapsed - fly - pair_rest[i], 0.0)
+        # dead_time = duty 내부 연결 gap만 (overnight 초과 제외 — LLM eval과 동일 기준)
+        dead    = pair_intra_gap[i]
         cost    = (dead
                    - config.IP_LEG_BONUS * max(n_legs - 1, 0)
                    + (config.IP_DEADHEAD_PENALTY if forced else 0.0)
                    + config.IP_PAIRING_FIXED_COST)
         pairings[i].append({"legs": list(cur_legs[i]), "fly": fly, "elapsed": elapsed,
                              "dead_time": dead, "cost": cost, "is_deadhead": forced,
-                             "n_legs": n_legs, "n_duties": pair_duties[i]})
+                             "n_legs": n_legs, "n_duties": pair_duties[i],
+                             "intra_duty_gap":    pair_intra_gap[i],
+                             "inter_duty_excess": pair_inter_excess[i]})
 
     def start_env(i, f):
         assigned[i][f["id"]] = True
@@ -240,8 +246,10 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
         pair_dep[i]    = f["dep_time"]
         pair_fly[i]    = f["arr_time"] - f["dep_time"]
         pair_arr[i]    = f["arr_time"]
-        pair_rest[i]   = 0.0
-        pair_duties[i] = 1
+        pair_rest[i]        = 0.0
+        pair_duties[i]      = 1
+        pair_intra_gap[i]   = 0.0
+        pair_inter_excess[i]= 0.0
         states[i] = {
             "current_airport":    f["dest"],
             "current_time":       f["arr_time"],
@@ -323,6 +331,12 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                 cur_legs[i].append(f["id"])
                 pair_fly[i] += f["arr_time"] - f["dep_time"]
                 pair_arr[i]  = f["arr_time"]
+                # gap 종류 분리 집계
+                if not states[i].get("pairing_start", False) and not states[i].get("is_resting", False):
+                    pair_intra_gap[i] += f["dep_time"] - states[i]["current_time"]
+                elif states[i].get("is_resting", False):
+                    rest_end = states[i].get("rest_end_time", f["dep_time"])
+                    pair_inter_excess[i] += max(f["dep_time"] - rest_end, 0.0)
                 states[i], _, done_flag = step(states[i], action, flights, assigned[i], constraint)
                 if done_flag:
                     flush_env(i)

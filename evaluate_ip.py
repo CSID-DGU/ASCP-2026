@@ -428,7 +428,7 @@ def evaluate_full(
             connected_sampler=connected_sampler,
         )
 
-    print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
+    print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh}, gap_weight={GAP_COST_WEIGHT})...", flush=True)
     result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh)
 
     sel        = result["selected"]
@@ -439,10 +439,11 @@ def evaluate_full(
     man_days     = sum(math.ceil(p["elapsed"] / 24.0)  for p in sel) if sel else 0
     avg_legs     = legs_total   / len(sel) if sel else 0.0
     avg_duties   = duties_total / len(sel) if sel else 0.0
-    ftc          = dead_total / fly_total * 100 if fly_total > 0 else 0.0
-    # [진단용] dead_time을 duty 내부/duty 간으로 분리 집계
-    intra_gap_total  = sum(p.get("intra_duty_gap", 0.0)    for p in sel) if sel else 0.0
+    # dead_time = elapsed - fly - n_overnights×min_rest → overnight 초과분 포함 (FTC 과다 계산)
+    # FTC는 duty 내부 연결 gap만으로 계산해야 함 → intra_duty_gap 사용
+    intra_gap_total    = sum(p.get("intra_duty_gap", 0.0)    for p in sel) if sel else 0.0
     inter_excess_total = sum(p.get("inter_duty_excess", 0.0) for p in sel) if sel else 0.0
+    ftc = intra_gap_total / fly_total * 100 if fly_total > 0 else 0.0
 
     print()
     print("=" * 60)
@@ -454,10 +455,10 @@ def evaluate_full(
     print(f"  uncoverable:       {result['uncoverable']}개 flight")
     print(f"  deadhead:          {result['deadhead_count']}개 flight")
     print(f"  fly time:          {fly_total:.2f}h")
-    print(f"  dead time:         {dead_total:.2f}h")
-    print(f"    - duty 내부 연결 gap:     {intra_gap_total:.2f}h ({intra_gap_total/dead_total*100 if dead_total>0 else 0:.1f}%)")
-    print(f"    - duty 간 초과 대기(>min_rest): {inter_excess_total:.2f}h ({inter_excess_total/dead_total*100 if dead_total>0 else 0:.1f}%)")
-    print(f"  FTC:               {ftc:.2f}%")
+    print(f"  dead time (total): {dead_total:.2f}h")
+    print(f"    intra-duty gap:  {intra_gap_total:.2f}h  ← FTC 기준")
+    print(f"    overnight excess:{inter_excess_total:.2f}h  (실제 overnight - min_rest)")
+    print(f"  FTC:               {ftc:.2f}%  (= intra-duty gap / fly)")
     print(f"  avg legs/pairing:  {avg_legs:.2f}")
     print(f"  avg duties/pairing:{avg_duties:.2f}")
     print(f"  IP status:         {result['status']}")
