@@ -72,9 +72,6 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
             # rest 미종료 시 탑승 불가
             if f["dep_time"] < rest_end:
                 valid = False
-            # 실험 C: rest 종료 후 초과 대기가 상한을 넘는 flight도 후보에서 제외
-            elif f["dep_time"] - rest_end > config.MAX_POST_REST_GAP:
-                valid = False
         else:
             if not pairing_start:
                 gap = f["dep_time"] - state["current_time"]
@@ -231,18 +228,13 @@ def step(state, action, flights, assigned, constraint=None):
     }
 
     # dead time reward: duty 중간 flight 간 대기 시간 패널티 + 연결 보너스
-    # pairing 진짜 첫 편은 gap 패널티 없음. rest 직후 첫 편은 v18부터 초과 대기시간
-    # (실제 gap - min_rest)에 완만한 페널티 부과 (RL/environment.py와 동일 수정)
+    # pairing 첫 편이거나 rest 직후 첫 편은 gap 패널티 없음
     # LEG_PER_PAIRING_BONUS: 모든 flight 선택 시 즉시 지급 (END_PAIRING 지연 지급 제거)
     # → credit assignment 문제 해결: agent가 multi-leg 가치를 즉각 인식
     if not state.get("pairing_start", False) and not state.get("is_resting", False):
         reward = -(f["dep_time"] - state["current_time"]) + config.LEG_CONN_BONUS + config.LEG_PER_PAIRING_BONUS
-    elif state.get("is_resting", False):
-        rest_end = state.get("rest_end_time", f["dep_time"])
-        excess = max(f["dep_time"] - rest_end, 0.0)
-        reward = config.LEG_PER_PAIRING_BONUS - config.POST_REST_GAP_PENALTY * excess
     else:
-        reward = config.LEG_PER_PAIRING_BONUS  # pairing 진짜 첫 편: 패널티 없음
+        reward = config.LEG_PER_PAIRING_BONUS  # 첫 편 / rest 직후: gap 패널티 없이 bonus만
 
     return next_state, reward, False
 

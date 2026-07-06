@@ -107,24 +107,6 @@ MIN_LEGS_FOR_DUTY_BONUS = 2    # v16: END_DUTY_BONUS가 무위험 고정보상�
                        # dead_time 상승 감수 (avg gap 연결 허용하므로)
                        # pairing 첫 편 및 rest 직후 편에는 적용 안 함 (연결이 아니므로)
 
-# v18(0704): rest 직후 첫 편은 위 LEG_PER_PAIRING_BONUS만 받고 대기시간에 대한 페널티가
-# 전혀 없었음 — get_mask()도 rest 이후엔 max_conn 상한이 없어 정책이 다음 편을 아무리
-# 늦게 골라도 학습 신호가 무관심. IP 평가 단계의 dead_time은 이 초과 대기(실제 gap -
-# min_rest)를 고스란히 비용으로 잡아 FTC=200%대까지 치솟는 원인이 됨(실측: duty-간
-# 초과대기가 duty-내부 gap의 3.47배).
-# v19(0705): k=0.2로 재학습한 결과 inter_duty_excess가 오히려 증가(347,603.7h→
-# 370,735.9h/363,471.3h, +4.6~6.7%) — 0.2는 정책 행동을 바꾸기에 너무 완만했다고 판단,
-# 0.2→0.4로 상향.
-POST_REST_GAP_PENALTY = 0.4
-
-# 실험 C(0705): soft reward penalty(POST_REST_GAP_PENALTY)만으로는 duty-간 초과대기가
-# 안 줄었을 가능성 — 후보 flight 자체가 이미 다 긴 대기를 요구하는 구조적 상황이면
-# reward 크기를 아무리 키워도 "가장 덜 나쁜 선택"만 바뀔 뿐 총량은 안 줄어들 수 있음.
-# get_mask()에 하드 상한을 둬서 이 경우 자체를 원천 차단 — rest_end로부터 이 값(h)을
-# 넘는 flight는 mask에서 제외(후보가 하나도 안 남으면 END_PAIRING으로 조기 종료,
-# get_mask()의 END_PAIRING 조건은 is_resting 여부와 무관해 항상 탈출구로 남아있음).
-MAX_POST_REST_GAP = 24.0
-
 # IP/LP cost 함수 상수 — evaluate_ip.py, train.py Phase 2 공용
 # cost = dead_time - LEG_BONUS_IP*(n_legs-1) + DEADHEAD_PENALTY_IP*(강제종료) + PAIRING_FIXED_COST
 IP_LEG_BONUS        = 1.5   # leg 추가될수록 cost 감소 → 효율적 연결 장려
