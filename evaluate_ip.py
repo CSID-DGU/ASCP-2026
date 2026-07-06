@@ -439,10 +439,10 @@ def evaluate_full(
     man_days     = sum(math.ceil(p["elapsed"] / 24.0)  for p in sel) if sel else 0
     avg_legs     = legs_total   / len(sel) if sel else 0.0
     avg_duties   = duties_total / len(sel) if sel else 0.0
-    ftc          = dead_total / fly_total * 100 if fly_total > 0 else 0.0
-    # [진단용] dead_time을 duty 내부/duty 간으로 분리 집계
-    intra_gap_total  = sum(p.get("intra_duty_gap", 0.0)    for p in sel) if sel else 0.0
+    # FTC는 duty 내부 gap만 반영(overnight 초과 제외) — cost는 그대로 둠(ManDays 유인 보존)
+    intra_gap_total    = sum(p.get("intra_duty_gap", 0.0)    for p in sel) if sel else 0.0
     inter_excess_total = sum(p.get("inter_duty_excess", 0.0) for p in sel) if sel else 0.0
+    ftc = intra_gap_total / fly_total * 100 if fly_total > 0 else 0.0
 
     print()
     print("=" * 60)
