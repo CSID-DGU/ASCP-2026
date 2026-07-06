@@ -11,7 +11,7 @@ from torch.distributions import Categorical
 import config
 import environment as _env_default
 from turkish.environment_turkish import get_mask as _get_mask_turkish, step as _step_turkish
-from utils import state_to_vec
+from utils import state_to_vec, flight_gap_bias, flight_gap_bias_batch
 
 get_mask, step = _env_default.get_mask, _env_default.step
 
@@ -143,7 +143,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 
         _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
         state_vec = state_to_vec(state, encoder, constraint, device=dev, include_total_legs=_incl_total)
-        probs     = decoder(encoded, state_vec, mask)
+        gap_bias  = flight_gap_bias(state, flights, constraint, device=dev)
+        probs     = decoder(encoded, state_vec, mask, gap_bias=gap_bias)
 
         if greedy:
             action = probs.argmax().item()
@@ -296,8 +297,9 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
         svecs_t = torch.stack([
             state_to_vec(states[i], encoder, constraint, device=dev, include_total_legs=_incl_total) for i in idxs
         ]).to(dev)
+        gap_bias_t = flight_gap_bias_batch([states[i] for i in idxs], flights, constraint, device=dev)
 
-        probs = decoder(encoded, svecs_t, masks_t)
+        probs = decoder(encoded, svecs_t, masks_t, gap_bias=gap_bias_t)
         if greedy:
             actions = probs.argmax(dim=-1).cpu().tolist()
         else:

@@ -96,3 +96,25 @@ def state_to_vec(state, encoder, constraint, device=None, include_total_legs=Tru
         torch.tensor(scalars, dtype=torch.float32).to(dev),
         constraint_to_tensor(constraint, device=dev),
     ])
+
+
+def flight_gap_bias(state, flights, constraint, device=None):
+    """decoder gap_bias 입력 — (N+2,), 마지막 2개(END_DUTY/END_PAIRING)는 항상 0.
+
+    duty-내부 연결 시점(pairing_start/is_resting 아닐 때)에만 실제 gap을 채우고,
+    그 외에는 전부 0(gap_weight가 안 걸림).
+    """
+    dev = device or torch.device("cpu")
+    n = len(flights)
+    if state.get("pairing_start", False) or state.get("is_resting", False):
+        return torch.zeros(n + 2, dtype=torch.float32, device=dev)
+    cap = constraint.get("max_conn", config.DEFAULT_CONSTRAINTS["max_conn"])
+    current_time = state["current_time"]
+    gaps = [min(max(f["dep_time"] - current_time, 0.0), cap) / cap for f in flights]
+    return torch.tensor(gaps + [0.0, 0.0], dtype=torch.float32, device=dev)
+
+
+def flight_gap_bias_batch(states, flights, constraint, device=None):
+    """flight_gap_bias의 배치 버전 — states: state dict 리스트. 반환: (B, N+2)"""
+    dev = device or torch.device("cpu")
+    return torch.stack([flight_gap_bias(s, flights, constraint, device=dev) for s in states])

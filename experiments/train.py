@@ -40,7 +40,7 @@ _CONSTRAINT_FN = {
     "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용 (base_ids는 train()에서 주입)
 }
 from state import init_state
-from utils import flights_to_tensors, constraint_to_tensor, state_to_vec
+from utils import flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias
 import config
 
 DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
@@ -123,7 +123,8 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
         # 찬주 decoder
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
-        probs = decoder(encoded, state_vec, mask)
+        gap_bias  = flight_gap_bias(state, flights, constraint, device=DEVICE)
+        probs = decoder(encoded, state_vec, mask, gap_bias=gap_bias)
 
         if greedy:
             action = probs.argmax().item()
@@ -275,7 +276,8 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             continue
 
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
-        probs     = decoder(encoded, state_vec, mask)
+        gap_bias  = flight_gap_bias(state, flights, constraint, device=DEVICE)
+        probs     = decoder(encoded, state_vec, mask, gap_bias=gap_bias)
         action    = probs.argmax().item() if greedy else Categorical(probs).sample().item()
 
         if action == len(flights):          # END_DUTY
@@ -391,7 +393,8 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             continue
 
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
-        probs     = decoder(encoded, state_vec, mask)
+        gap_bias  = flight_gap_bias(state, flights, constraint, device=DEVICE)
+        probs     = decoder(encoded, state_vec, mask, gap_bias=gap_bias)
         if greedy:
             action = probs.argmax().item()
         else:
@@ -530,6 +533,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             "phase2/best_avg25":          best_avg_pairings if best_avg_pairings < float("inf") else avg25,
             "phase2/n_dual_keys":         len(dual_vars),
             "phase2/dual_weight":         _eff_dw,
+            "phase2/gap_weight":          decoder.gap_weight.item(),
         }, step=global_step_offset + ep)
 
         if ep % 25 == 0:
@@ -645,6 +649,7 @@ def run_curriculum_stage(
             f"stage{stage}/loss":              loss.item(),
             f"stage{stage}/entropy_coef":      entropy_coef,
             f"stage{stage}/best_avg25":        best_avg_pairings if best_avg_pairings < float("inf") else avg25,
+            f"stage{stage}/gap_weight":        decoder.gap_weight.item(),
         }, step=global_step_offset + ep)
 
         if ep % 25 == 0:

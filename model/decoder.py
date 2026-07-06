@@ -41,6 +41,9 @@ class PointerDecoder(nn.Module):
         self.W_q = nn.Linear(d_model, d_model, bias=False)
         self.W_k = nn.Linear(d_model, d_model, bias=False)
 
+        # gap_bias용 학습 가능 스칼라 — 음수로 초기화(gap 클수록 score 낮게)
+        self.gap_weight = nn.Parameter(torch.tensor(-1.0))
+
         # END_DUTY, END_PAIRING 각각 학습 가능한 벡터
         self.end_duty_token    = nn.Parameter(torch.randn(d_model))
         self.end_pairing_token = nn.Parameter(torch.randn(d_model))
@@ -52,6 +55,7 @@ class PointerDecoder(nn.Module):
         encoded_flights: torch.Tensor,
         state_vec: torch.Tensor,
         mask: torch.Tensor,
+        gap_bias: torch.Tensor = None,
         return_logits: bool = False,
     ) -> torch.Tensor:
         """
@@ -59,6 +63,8 @@ class PointerDecoder(nn.Module):
             encoded_flights: (N, d_model)
             state_vec: (state_dim,) 또는 (B, state_dim) — 배치 rollout 지원
             mask: (N+2,) 또는 (B, N+2)
+            gap_bias: (N+2,) 또는 (B, N+2) — 후보별 정규화 gap([0,1], END_DUTY/END_PAIRING은
+                0). None이면 기존과 동일(bias 없음). `RL/utils.py::flight_gap_bias()` 참고.
             return_logits: True면 softmax 전 raw score 반환 — REINFORCE log_prob 계산 시 수치 안정성
         Returns:
             probs or logits: (N+2,) 또는 (B, N+2)
@@ -80,6 +86,9 @@ class PointerDecoder(nn.Module):
             scores = torch.einsum('bd,nd->bn', q, k) / math.sqrt(self.d_model)
         else:
             scores = (k @ q) / math.sqrt(self.d_model)  # (N+2,)
+
+        if gap_bias is not None:
+            scores = scores + self.gap_weight * gap_bias
 
         scores = scores.masked_fill(mask == 0, float('-inf'))
 
