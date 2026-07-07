@@ -22,6 +22,7 @@ def init_state(flights, constraint):
         "duty_time":          0.0,
         "duty_start_time":    first["dep_time"],      # 현재 duty 시작 시각 (FAA window 기준점)
         "legs":               0,                      # 현재 duty 내 선택된 flight 수
+        "total_legs":         0,                      # 현재 pairing 전체 누적 flight 수 (END_PAIRING bonus 계산용)
 
         # 에피소드 전체 추적
         "remaining":          len(flights),           # 미배정 flight 수

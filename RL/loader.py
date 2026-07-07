@@ -10,14 +10,52 @@ def convert_time(hhmm):
     return h + m / 60
 
 
+# 공항별 UTC 오프셋(분, 표준시 기준). BTS CRS_DEP_TIME/CRS_ARR_TIME은 각 공항의 현지
+# 로컬시각이라, 서로 다른 타임존의 공항을 잇는 연결편은 dep_time을 그대로 빼면 gap이
+# 음수/이상값으로 나와 실제로는 연결 가능한 편이 마스크에서 차단된다 (예: ATL(ET)→LAX(PT)
+# 착륙 후 다음 편 dep_time이 PT 기준이라 ET 기준 current_time과 clock이 안 맞음).
+# dep_time을 UTC 절대시간으로 앵커링하면 arr_time = dep_time + elapsed(block time,
+# 타임존 무관)만으로 도착 시각도 자동으로 올바른 UTC가 된다.
+# (analysis/flight_time_distribution.py의 _UTC 테이블과 동일 출처)
+_UTC_OFFSET_MIN = {
+    **{ap: -600 for ap in ['HNL', 'KOA', 'LIH', 'OGG']},
+    **{ap: -540 for ap in ['ANC', 'FAI']},
+    **{ap: -480 for ap in ['GEG', 'LAS', 'LAX', 'OAK', 'ONT', 'PDX', 'PSP', 'RNO', 'SAN', 'SEA',
+                            'SFO', 'SJC', 'SMF', 'SNA']},
+    **{ap: -420 for ap in ['ABQ', 'BIL', 'BOI', 'BZN', 'COS', 'DEN', 'EGE', 'ELP', 'FCA', 'HDN',
+                            'JAC', 'MSO', 'MTJ', 'PHX', 'SLC', 'TUS']},
+    **{ap: -360 for ap in ['ATW', 'AUS', 'BHM', 'BIS', 'BNA', 'BTR', 'CID', 'DAL', 'DFW', 'DSM',
+                            'ECP', 'FAR', 'FSD', 'GPT', 'GRB', 'HOU', 'HSV', 'IAH', 'ICT', 'JAN',
+                            'LFT', 'LIT', 'MCI', 'MDW', 'MEM', 'MKE', 'MOB', 'MSN', 'MSP', 'MSY',
+                            'OKC', 'OMA', 'ORD', 'PNS', 'SAT', 'STL', 'TUL', 'VPS', 'XNA']},
+    **{ap: -300 for ap in ['ABE', 'AGS', 'ALB', 'ATL', 'AVL', 'AVP', 'BDL', 'BOS', 'BUF', 'BWI',
+                            'CAE', 'CAK', 'CHA', 'CHO', 'CHS', 'CLE', 'CLT', 'CMH', 'CRW', 'CVG',
+                            'DAB', 'DAY', 'DCA', 'DTW', 'EWR', 'EYW', 'FAY', 'FLL', 'FNT', 'GNV',
+                            'GRR', 'GSO', 'GSP', 'HPN', 'IAD', 'ILM', 'IND', 'JAX', 'JFK', 'LEX',
+                            'LGA', 'MCO', 'MDT', 'MHT', 'MIA', 'MLB', 'MYR', 'ORF', 'PBI', 'PHF',
+                            'PHL', 'PIT', 'PVD', 'PWM', 'RDU', 'RIC', 'ROA', 'ROC', 'RSW', 'SAV',
+                            'SDF', 'SRQ', 'SYR', 'TLH', 'TPA', 'TRI', 'TYS']},
+    **{ap: -240 for ap in ['SJU', 'STT', 'STX']},
+}
+
+
+def utc_offset_hours(airport_code):
+    """공항의 UTC 오프셋(시간). 목록에 없으면 Eastern(-5h)을 기본값으로 사용."""
+    return _UTC_OFFSET_MIN.get(airport_code, -300) / 60.0
+
+
 def build_airport_map(path):
     """전체 BTS CSV 기준으로 공항→int 맵을 생성한다.
 
+    path: str 또는 str 리스트. 여러 항공사 CSV를 합쳐 통합 공항 ID 공간 구성 가능.
     빈도 내림차순 정렬: index 0 = 가장 빈도 높은 공항(허브/base 후보).
     에피소드마다 다른 rolling window를 써도 ID가 일관된다.
     """
-    df = pd.read_csv(path, usecols=["ORIGIN", "DEST"]).dropna()
-    counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
+    paths = [path] if isinstance(path, str) else path
+    counts = Counter()
+    for p in paths:
+        df = pd.read_csv(p, usecols=["ORIGIN", "DEST"]).dropna()
+        counts.update(list(df["ORIGIN"]) + list(df["DEST"]))
     airports_sorted = sorted(counts.keys(), key=lambda a: -counts[a])
     return {a: i for i, a in enumerate(airports_sorted)}
 
@@ -30,12 +68,14 @@ def bases_to_ids(bases, airport_map):
         airport_map: build_airport_map()으로 생성한 공항→int 맵
 
     Returns:
-        정수 ID 리스트. airport_map에 없는 코드는 무시한다.
+        정수 ID 리스트. airport_map에 없는 코드는 경고 후 무시한다.
     """
     ids = [airport_map[b] for b in bases if b in airport_map]
-    if len(ids) < len(bases):
-        missing = [b for b in bases if b not in airport_map]
-        raise ValueError(f"airport_map에 없는 base: {missing}")
+    missing = [b for b in bases if b not in airport_map]
+    if missing:
+        print(f"[bases_to_ids] 경고: airport_map에 없는 base 제외됨: {missing}")
+    if not ids:
+        raise ValueError(f"유효한 base가 없음. bases={bases}")
     return ids
 
 
@@ -51,15 +91,20 @@ def get_bases(flights, n_bases=3):
     return [a for a, _ in counts.most_common(n_bases)]
 
 
-def load_flights(path, limit=50, seed=42, n_days_max=None):
+def load_flights(path, limit=50, seed=42, n_days_max=None, use_utc=False):
     """BTS 데이터에서 flight 로드.
 
     공항 인덱스: 전체 CSV 기준 빈도 내림차순 → index 0 = 허브.
     limit과 무관하게 항상 동일한 airport_map이 사용된다.
+
+    use_utc: True면 dep_time을 UTC 절대시간으로 앵커링.
+        기본 False — 기존 체크포인트들은 이 수정 전(로컬시각) loader로 학습됐으므로, eval에서
+        무조건 켜면 학습 때 못 본 분포를 주는 OOD 상태가 됨. 새로 이 옵션을 켜고 학습한
+        모델을 평가할 때만 켜서 써야 함.
     """
     df = pd.read_csv(path)
     df = df[[
-        "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
+        "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"
     ]].dropna()
     df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
@@ -80,15 +125,15 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
     else:
         df = df.head(limit)
 
-    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
-    df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
-    # 자정을 넘는 항공편: FL_DATE는 출발일 기준 → arr_time이 dep_time보다 작으면 +24
-    df.loc[df["arr_time"] < df["dep_time"], "arr_time"] += 24
-
     base_date = df["FL_DATE"].min()
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    df["dep_time"] += df["day_offset"] * 24
-    df["arr_time"] += df["day_offset"] * 24
+    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
+    if use_utc:
+        # dep_time을 UTC 절대시간으로 앵커링 (출발 공항 로컬시각 - UTC 오프셋)
+        # → 서로 다른 타임존 공항 간 연결편 gap 계산이 정확해짐
+        df["dep_time"] -= df["ORIGIN"].map(utc_offset_hours)
+    # CRS_ELAPSED_TIME(분, block time)은 타임존 무관 → dep_time에 더하면 arr_time도 같은 기준
+    df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
 
@@ -109,6 +154,36 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
 
 
 
+def sample_connected_subnet(flights_window, base_id, n_max):
+    """공항(스테이션) 집합 기반 서브넷 샘플링 — star graph 문제 해결
+      1. base를 반드시 포함
+      2. 교통량 상위 spoke를 하나씩 추가
+      3. chosen 공항 집합 '내부' 간선(origin∈chosen AND dest∈chosen)만 포함
+         → spoke-spoke 간선이 살아남아 ATL→MSP→SLC→ATL 같은 긴 chain 가능
+      4. n_max 초과 시 시간순으로 잘라냄
+    """
+    from collections import Counter
+    deg = Counter()
+    for f in flights_window:
+        deg[f["origin"]] += 1
+        deg[f["dest"]] += 1
+    spokes = [a for a, _ in deg.most_common() if a != base_id]
+    chosen = {base_id}
+    out = []
+    for s in spokes:
+        chosen.add(s)
+        candidate = [f for f in flights_window
+                     if f["origin"] in chosen and f["dest"] in chosen]
+        if len(candidate) >= n_max:
+            out = candidate
+            break
+        out = candidate
+    out = sorted(out, key=lambda f: f["dep_time"])[:n_max]
+    for i, f in enumerate(out):
+        f["id"] = i
+    return out
+
+
 def load_flights_rolling(
     path,
     window_days=5,
@@ -117,6 +192,7 @@ def load_flights_rolling(
     base_airport=None,
     n_max=None,
     df=None,
+    use_utc=False,
 ):
     """슬라이딩 윈도우 방식으로 실제 날짜 데이터 로드.
 
@@ -143,7 +219,7 @@ def load_flights_rolling(
     if df is None:
         df = pd.read_csv(path)
         df = df[[
-            "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "FL_DATE"
+            "ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"
         ]].dropna()
         df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
@@ -162,13 +238,13 @@ def load_flights_rolling(
     df = df[df["FL_DATE"].isin(window_dates)].copy()
 
     # 시간 변환 + 윈도우 시작일 기준 day offset
-    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time)
-    df["arr_time"] = df["CRS_ARR_TIME"].apply(convert_time)
-    df.loc[df["arr_time"] < df["dep_time"], "arr_time"] += 24
     base_date = min(window_dates)
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
-    df["dep_time"] += df["day_offset"] * 24
-    df["arr_time"] += df["day_offset"] * 24
+    df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
+    if use_utc:
+        # dep_time을 UTC 절대시간으로 앵커링 — load_flights()와 동일 이유
+        df["dep_time"] -= df["ORIGIN"].map(utc_offset_hours)
+    df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
 
@@ -186,19 +262,8 @@ def load_flights_rolling(
             "arr_time": float(row["arr_time"]),
         })
 
-    # base-first sampling: base 관련 편 우선, 나머지 랜덤 샘플링
+    # connected subnet sampling: star graph 문제 해결 (base-first 랜덤 샘플링 → 공항 집합 기반)
     if n_max is not None and len(flights) > n_max and base_airport is not None:
-        base_fs = [f for f in flights if f["origin"] == base_airport or f["dest"] == base_airport]
-        mid_fs  = [f for f in flights if f["origin"] != base_airport and f["dest"] != base_airport]
-        if len(base_fs) >= n_max:
-            # base 관련 편만으로도 n_max 초과 → base 편에서 랜덤 샘플링
-            random.shuffle(base_fs)
-            flights = sorted(base_fs[:n_max], key=lambda f: f["dep_time"])
-        else:
-            remaining = n_max - len(base_fs)
-            random.shuffle(mid_fs)
-            flights = sorted(base_fs + mid_fs[:remaining], key=lambda f: f["dep_time"])
-        for i, f in enumerate(flights):
-            f["id"] = i
+        flights = sample_connected_subnet(flights, base_airport, n_max)
 
     return flights

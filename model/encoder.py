@@ -52,6 +52,16 @@ class FlightEncoder(nn.Module):
 
         self.skip_transformer = skip_transformer
 
+    def film_params(self):
+        """FiLM 레이어 파라미터만 반환 — optimizer에서 lr 분리 시 사용"""
+        return list(self.film_before.parameters()) + list(self.film_after.parameters())
+
+    def non_film_params(self):
+        """FiLM 제외 나머지 파라미터 반환 — optimizer에서 lr 분리 시 사용"""
+        return (list(self.airport_emb.parameters()) +
+                list(self.flight_mlp.parameters()) +
+                list(self.transformer.parameters()))
+
     def forward(
         self,
         origins: torch.Tensor,

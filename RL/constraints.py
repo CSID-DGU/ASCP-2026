@@ -15,6 +15,7 @@
 from airline_constraints.delta   import DELTA_CONSTRAINTS
 from airline_constraints.alaska  import ALASKA_CONSTRAINTS
 from airline_constraints.jetblue import JETBLUE_CONSTRAINTS
+from airline_constraints.turkish import TURKISH_CONSTRAINTS
 
 
 def get_delta_constraints(base_airport: int):
@@ -43,6 +44,14 @@ def get_jetblue_constraints(base_airport: int):
     base_airport: 에피소드별 base 공항 ID (JFK, BOS, FLL, LAX, MCO 중 하나)
     """
     return {**JETBLUE_CONSTRAINTS, "base_airport": base_airport}
+
+
+def get_turkish_constraints(base_airport: int):
+    """Turkish Airlines (THY) constraint dict 반환
+
+    base_airport: 에피소드별 base 공항 ID (HB1, HB2 중 하나)
+    """
+    return {**TURKISH_CONSTRAINTS, "base_airport": base_airport}
 
 
 # FiLM 입력 constraint 키 순서 — constraint_to_tensor()가 이 순서대로 tensor 변환 → shape (7,)

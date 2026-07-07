@@ -9,6 +9,10 @@ checkpoints/
 *.md
 !README.md
 *.txt
+*.legs
+*.png
+*.csv
+test/
 
 
 

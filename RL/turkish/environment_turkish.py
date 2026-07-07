@@ -42,13 +42,15 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
     # pairing 첫 leg: base-origin 미배정 편이 남아있으면 base 출발 강제
     # base-origin 소진 시 origin 제한 해제 → deadhead loop 방지
+    # HB1/HB2 비대칭 허용: base_ids가 있으면 그 중 아무 base 출발이든 인정
     # base_remaining은 후보 flight f에 의존하지 않으므로(loop-invariant) 루프 밖에서 1회만 계산 —
-    # 루프 안에서 매번 재계산하면 O(N^2)이 되어 저연결 base(예: turkish HB2)에서 episode당
-    # 수십 초까지 느려짐 (log/0704 turkish 스모크 테스트에서 발견)
+    # 루프 안에서 매번 재계산하면 O(N^2)이 되어 저연결 base(HB2)에서 episode당 수십 초까지
+    # 느려짐 (log/0704 turkish 스모크 테스트에서 발견)
     base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+    base_id_set = set(c.get("base_ids") or [base_ap])
     if pairing_start:
         base_remaining = any(
-            not assigned[fl["id"]] and fl["origin"] == base_ap
+            not assigned[fl["id"]] and fl["origin"] in base_id_set
             for fl in flights
         )
 
@@ -60,7 +62,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
         # 1. 공항 연결 검사
         if pairing_start:
-            if base_remaining and f["origin"] != base_ap:
+            if base_remaining and f["origin"] not in base_id_set:
                 valid = False
         elif f["origin"] != state["current_airport"]:
             valid = False
@@ -163,25 +165,30 @@ def step(state, action, flights, assigned, constraint=None):
         base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
         # constraint["base_airport"] 에피소드별 주입
         base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-        
+        # HB1/HB2 비대칭 허용: base_ids가 있으면 그 중 아무 base 복귀든 무패널티
+        base_id_set = set(c.get("base_ids") or [base])
+
         total_legs = state.get("total_legs", 0)
         reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
-        
+
         if total_legs < config.MIN_LEGS_FOR_PAIRING:
             reward += config.MIN_LEGS_PENALTY
-        if state["current_airport"] != base:
+        if state["current_airport"] not in base_id_set:
             reward -= base_penalty
-            
+
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:
             # 모든 flight 커버 완료 → 에피소드 종료
             return state, reward, True
-        # 미배정 flight 남아있음 → 새 pairing 시작 (base 출발 편 중 가장 이른 편 기준)
-        base_unassigned = [f for f in unassigned if f["origin"] == base]
+        # 미배정 flight 남아있음 → 새 pairing 시작
+        # 방금 도착한 위치가 base_ids 중 하나면 그 위치에서, 아니면(base 미복귀) 가장 가까운
+        # base로 재배치해 새 pairing 시작 — base_ids 미지정 시 기존과 동일(단일 base로 텔레포트)
+        restart_base = state["current_airport"] if state["current_airport"] in base_id_set else base
+        base_unassigned = [f for f in unassigned if f["origin"] == restart_base]
         next_time = min(f["dep_time"] for f in base_unassigned) if base_unassigned else min(f["dep_time"] for f in unassigned)
         next_state = {
             **state,
-            "current_airport":    base,
+            "current_airport":    restart_base,
             "current_time":       next_time,
             "duty_time":          0.0,
             "duty_start_time":    next_time,
