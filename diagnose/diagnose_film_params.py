@@ -7,12 +7,15 @@ pairings 수 변화로 간접 추론했음(confound 있음, log/0704/film_학습
 §3 참고). 이 스크립트는 FiLM.mlp(constraint) -> gamma, beta를 항공사별로 직접 계산해서
 identity(gamma=1, beta=0)에서 얼마나 벗어났는지, 항공사 간에 서로 얼마나 다른지를 잰다.
 """
+import os
 import sys
 import argparse
 
 import torch
 
-sys.path.insert(0, "RL")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder
 from constraints import (

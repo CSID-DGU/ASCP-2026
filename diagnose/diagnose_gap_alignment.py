@@ -8,6 +8,7 @@ Step1: duty-내부 연결 선택 시점마다 mask 통과 후보들의 gap 중 "
 Step2: 같은 시점에서 decoder raw score(logit)와 실제 gap의 Spearman 상관을 측정 —
        약하면 모델이 gap을 잘 구분 못한다는 뜻(FTC_근본원인_모델설계_분석.md 가설 B).
 """
+import os
 import sys
 import argparse
 
@@ -15,7 +16,9 @@ import torch
 from torch.distributions import Categorical
 from scipy.stats import spearmanr
 
-sys.path.insert(0, "RL")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder, PointerDecoder
 from loader import build_airport_map, bases_to_ids, load_flights_rolling
