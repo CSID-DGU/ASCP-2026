@@ -6,13 +6,16 @@ solve_set_covering을 반복 실행해 ManDays/DH/avg_legs 트레이드오프를
 (log/0703/avg_legs_종합보고_및_계획.md §5-2)
 """
 
+import os
 import sys
 import math
 import argparse
 
 import torch
 
-sys.path.insert(0, "RL")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 import evaluate_ip as eip
 from set_partition import solve_set_covering
