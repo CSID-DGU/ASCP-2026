@@ -355,15 +355,36 @@ def evaluate_full(
     device="cpu",
     turkish_files=None,
     use_utc=False,
+    use_wandb=False,
+    wandb_project="ASCP-2026-paper",
 ):
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
     소규모 데이터(예: 1주일 sample) 평가 시:
         data_path=<sample.csv>, window_days=1, n_rollouts_per_chunk=3
+
+    use_wandb=True면 wandb에 eval 설정 + 콘솔 로그 + 최종 결과 지표를 기록한다
+    (job_type="eval" — 학습 curve와는 별개 run으로 남는다).
     """
     global DEVICE
     DEVICE = torch.device(device)
     set_environment(airline)
+
+    wandb_run = None
+    if use_wandb:
+        import wandb
+        wandb_run = wandb.init(
+            project=wandb_project,
+            job_type="eval",
+            name=f"eval-{airline}-{os.path.basename(checkpoint_path)}",
+            config=dict(
+                checkpoint=checkpoint_path, airline=airline,
+                subset_size=subset_size, window_days=window_days,
+                n_rollouts_per_chunk=n_rollouts_per_chunk,
+                ip_time_limit=ip_time_limit, lambda_dh=lambda_dh,
+                use_utc=use_utc,
+            ),
+        )
 
     if data_path is None:
         data_path = config.AIRLINE_DATA[airline]
@@ -466,6 +487,26 @@ def evaluate_full(
     print(f"  avg duties/pairing:{avg_duties:.2f}")
     print(f"  IP status:         {result['status']}")
 
+    if wandb_run is not None:
+        import wandb
+        wandb.log({
+            "n_pairings":       result["n_pairings"],
+            "man_days":         man_days,
+            "coverage":         result["coverage"] * 100,
+            "uncoverable":      result["uncoverable"],
+            "deadhead":         result["deadhead_count"],
+            "fly_time":         fly_total,
+            "dead_time":        dead_total,
+            "raw_dead_time":    raw_dead_total,
+            "intra_duty_gap":   intra_gap_total,
+            "inter_duty_excess": inter_excess_total,
+            "ftc":              ftc,
+            "avg_legs":         avg_legs,
+            "avg_duties":       avg_duties,
+            "ip_status":        result["status"],
+        })
+        wandb.finish()
+
     return result
 
 
@@ -496,6 +537,9 @@ if __name__ == "__main__":
     parser.add_argument("--use-utc", action="store_true",
                         help="dep_time을 UTC 절대시간으로 앵커링. --use-utc로 학습한 체크포인트만 "
                              "이 옵션 켠 채로 평가할 것 — 기존 체크포인트에 켜면 OOD")
+    parser.add_argument("--wandb", action="store_true",
+                        help="eval 설정+콘솔 로그+최종 결과 지표를 wandb에 기록 (job_type=eval)")
+    parser.add_argument("--wandb-project", default="ASCP-2026-paper")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -516,4 +560,6 @@ if __name__ == "__main__":
         device=args.device,
         turkish_files=args.turkish_files,
         use_utc=args.use_utc,
+        use_wandb=args.wandb,
+        wandb_project=args.wandb_project,
     )
