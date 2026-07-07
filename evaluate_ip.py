@@ -355,15 +355,36 @@ def evaluate_full(
     device="cpu",
     turkish_files=None,
     use_utc=False,
+    use_wandb=False,
+    wandb_project="ASCP-2026-paper",
 ):
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
     소규모 데이터(예: 1주일 sample) 평가 시:
         data_path=<sample.csv>, window_days=1, n_rollouts_per_chunk=3
+
+    use_wandb=True면 wandb에 eval 설정 + 콘솔 로그 + 최종 결과 지표를 기록한다
+    (job_type="eval" — 학습 curve와는 별개 run으로 남는다).
     """
     global DEVICE
     DEVICE = torch.device(device)
     set_environment(airline)
+
+    wandb_run = None
+    if use_wandb:
+        import wandb
+        wandb_run = wandb.init(
+            project=wandb_project,
+            job_type="eval",
+            name=f"eval-{airline}-{os.path.basename(checkpoint_path)}",
+            config=dict(
+                checkpoint=checkpoint_path, airline=airline,
+                subset_size=subset_size, window_days=window_days,
+                n_rollouts_per_chunk=n_rollouts_per_chunk,
+                ip_time_limit=ip_time_limit, lambda_dh=lambda_dh,
+                use_utc=use_utc,
+            ),
+        )
 
     if data_path is None:
         data_path = config.AIRLINE_DATA[airline]
@@ -431,9 +452,9 @@ def evaluate_full(
     print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
     result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh)
 
-    sel        = result["selected"]
-    fly_total  = sum(p["fly"]                         for p in sel) if sel else 0.0
-    dead_total = sum(p.get("dead_time", p["cost"])    for p in sel) if sel else 0.0
+    sel          = result["selected"]
+    fly_total    = sum(p["fly"]                         for p in sel) if sel else 0.0
+    raw_dead_total = sum(p.get("dead_time", p["cost"])  for p in sel) if sel else 0.0
     legs_total   = sum(p.get("n_legs", len(p["legs"])) for p in sel) if sel else 0
     duties_total = sum(p.get("n_duties", 1)            for p in sel) if sel else 0
     man_days     = sum(math.ceil(p["elapsed"] / 24.0)  for p in sel) if sel else 0
@@ -442,6 +463,9 @@ def evaluate_full(
     # FTC는 duty 내부 gap만 반영(overnight 초과 제외) — cost는 그대로 둠(ManDays 유인 보존)
     intra_gap_total    = sum(p.get("intra_duty_gap", 0.0)    for p in sel) if sel else 0.0
     inter_excess_total = sum(p.get("inter_duty_excess", 0.0) for p in sel) if sel else 0.0
+    # dead time 총합은 FTC와 같은 기준(overnight 초과 제외, duty-내부 gap만)으로 표시 —
+    # raw_dead_total(cost 계산 기준, overnight 초과 포함)은 참고용으로 별도 표시
+    dead_total = intra_gap_total
     ftc = intra_gap_total / fly_total * 100 if fly_total > 0 else 0.0
 
     print()
@@ -454,13 +478,34 @@ def evaluate_full(
     print(f"  uncoverable:       {result['uncoverable']}개 flight")
     print(f"  deadhead:          {result['deadhead_count']}개 flight")
     print(f"  fly time:          {fly_total:.2f}h")
-    print(f"  dead time:         {dead_total:.2f}h")
-    print(f"    - duty 내부 연결 gap:     {intra_gap_total:.2f}h ({intra_gap_total/dead_total*100 if dead_total>0 else 0:.1f}%)")
-    print(f"    - duty 간 초과 대기(>min_rest): {inter_excess_total:.2f}h ({inter_excess_total/dead_total*100 if dead_total>0 else 0:.1f}%)")
+    print(f"  dead time(duty-내부 gap만, overnight 제외): {dead_total:.2f}h")
+    print(f"  (참고) raw dead time(overnight 초과 포함, cost 계산 기준): {raw_dead_total:.2f}h")
+    print(f"    - duty 내부 연결 gap:     {intra_gap_total:.2f}h ({intra_gap_total/raw_dead_total*100 if raw_dead_total>0 else 0:.1f}%)")
+    print(f"    - duty 간 초과 대기(>min_rest): {inter_excess_total:.2f}h ({inter_excess_total/raw_dead_total*100 if raw_dead_total>0 else 0:.1f}%)")
     print(f"  FTC:               {ftc:.2f}%")
     print(f"  avg legs/pairing:  {avg_legs:.2f}")
     print(f"  avg duties/pairing:{avg_duties:.2f}")
     print(f"  IP status:         {result['status']}")
+
+    if wandb_run is not None:
+        import wandb
+        wandb.log({
+            "n_pairings":       result["n_pairings"],
+            "man_days":         man_days,
+            "coverage":         result["coverage"] * 100,
+            "uncoverable":      result["uncoverable"],
+            "deadhead":         result["deadhead_count"],
+            "fly_time":         fly_total,
+            "dead_time":        dead_total,
+            "raw_dead_time":    raw_dead_total,
+            "intra_duty_gap":   intra_gap_total,
+            "inter_duty_excess": inter_excess_total,
+            "ftc":              ftc,
+            "avg_legs":         avg_legs,
+            "avg_duties":       avg_duties,
+            "ip_status":        result["status"],
+        })
+        wandb.finish()
 
     return result
 
@@ -492,6 +537,9 @@ if __name__ == "__main__":
     parser.add_argument("--use-utc", action="store_true",
                         help="dep_time을 UTC 절대시간으로 앵커링. --use-utc로 학습한 체크포인트만 "
                              "이 옵션 켠 채로 평가할 것 — 기존 체크포인트에 켜면 OOD")
+    parser.add_argument("--wandb", action="store_true",
+                        help="eval 설정+콘솔 로그+최종 결과 지표를 wandb에 기록 (job_type=eval)")
+    parser.add_argument("--wandb-project", default="ASCP-2026-paper")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -512,4 +560,6 @@ if __name__ == "__main__":
         device=args.device,
         turkish_files=args.turkish_files,
         use_utc=args.use_utc,
+        use_wandb=args.wandb,
+        wandb_project=args.wandb_project,
     )
