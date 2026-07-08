@@ -13,6 +13,6 @@ checkpoints/
 *.png
 *.csv
 test/
-
+wandb/
 
 
