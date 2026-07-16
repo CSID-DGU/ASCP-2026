@@ -94,6 +94,11 @@ PHASE2_DUAL_WEIGHT   = 0.6   # LP dual reward 가중치 — v9: bonus=3.0 스케
 # Reward shaping
 LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
 LEG_PER_PAIRING_BONUS = 5.0  # v13: 3.0→5.0 — leg 선택 즉시 보상 강화로 avg_legs 3+ 유도
+
+# FiLM soft penalty — constraint 위반 시 부과되는 패널티
+# 단일 스텝 최대 reward(LEG_PER_PAIRING_BONUS + LEG_CONN_BONUS)보다 커야 위반이 reward-negative
+# 여유 계수 1.5 적용 → bonus 값 변경 시 자동으로 따라감
+FILM_SOFT_PENALTY = (LEG_PER_PAIRING_BONUS + LEG_CONN_BONUS) * 1.5  # (5.0 + 1.5) * 1.5 = 9.75
 END_DUTY_BONUS = 6.0          # v15: 3.0→6.0 — overnight 사용률 강제 상승, FiLM 학습 촉진
                                # overnight 10h는 dead_time에서 제외 → legs↑ dead_time↑ 없이 avg_legs 개선 가능
 MIN_LEGS_FOR_DUTY_BONUS = 2    # v16: END_DUTY_BONUS가 무위험 고정보상이라 duty를 짧게 끝내고

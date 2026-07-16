@@ -672,7 +672,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
 
     if multi_airline:
         import os as _os
-        airlines = [a for a in config.AIRLINE_DATA if not _os.path.isdir(config.AIRLINE_DATA[a])]
+        airlines = [a for a in config.AIRLINE_DATA if _os.path.isfile(config.AIRLINE_DATA[a])]
         all_paths = [config.AIRLINE_DATA[a] for a in airlines]
         airport_map = build_airport_map(all_paths)
         all_base_ids = {a: bases_to_ids(config.AIRLINE_BASES[a], airport_map) for a in airlines}
@@ -962,16 +962,18 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                          "max_pairing_days": WINDOW_DAYS}
                 val_enc = encoder(val_origins, val_dests, val_dep_times, val_arr_times,
                                   val_fly_times, constraint_to_tensor(val_c, device=DEVICE))
-                p_list, dh_list, cov_list = [], [], []
+                p_list, dh_list, cov_list, on_list = [], [], [], []
                 for _ in range(N_FILM_ROLLOUTS):
                     _, _, _, m = run_episode(val_flights, val_c, encoder, decoder, val_enc, greedy=False)
                     p_list.append(m["n_pairings"])
                     dh_list.append(m["n_deadheads"])
                     cov_list.append(m["coverage_pct"])
+                    on_list.append(m.get("avg_overnight", 0))
                 print(f"    max_duty_periods={dp} → "
                       f"pairings(avg{N_FILM_ROLLOUTS})={sum(p_list)/len(p_list):.1f}  "
                       f"deadheads={sum(dh_list)/len(dh_list):.1f}  "
-                      f"coverage={sum(cov_list)/len(cov_list):.1f}%")
+                      f"coverage={sum(cov_list)/len(cov_list):.1f}%  "
+                      f"avg_overnight={sum(on_list)/len(on_list):.2f}")
 
             print(f"  [max_legs 변화] (합격: legs=2→8에서 avg_legs 뚜렷이 증가)")
             for ml in [2, 4, 8]:

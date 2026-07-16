@@ -21,6 +21,50 @@ def get_max_duty(legs_count, custom_max_duty=None):
     return config.FAA_DUTY_TABLE.get(min(legs_count, 6), 10.0)
 
 
+def _flight_penalties(state, f, next_state, d_start_time, c):
+    """flight 선택 시 FiLM constraint 위반 패널티 합산.
+    새 constraint 추가 시 여기에만 if 블록 추가 — step() 본문은 수정 불필요.
+    """
+    p = config.FILM_SOFT_PENALTY
+    violations = 0.0
+
+    # max_legs: duty 내 leg 수 초과
+    if next_state["legs"] > c.get("max_legs", config.DEFAULT_CONSTRAINTS["max_legs"]):
+        violations += p
+
+    # min_conn/max_conn: 연결 시간 위반 (pairing 첫 편·rest 직후는 gap 없음)
+    if not state.get("pairing_start", False) and not state.get("is_resting", False):
+        gap = f["dep_time"] - state["current_time"]
+        if gap < c.get("min_conn", config.DEFAULT_CONSTRAINTS["min_conn"]) or \
+           gap > c.get("max_conn", config.DEFAULT_CONSTRAINTS["max_conn"]):
+            violations += p
+
+    # max_duty: duty 경과 시간 초과
+    eff_max_duty = get_max_duty(next_state["legs"], c.get("max_duty"))
+    if f["arr_time"] - d_start_time > eff_max_duty:
+        violations += p
+
+    # max_pairing_days: pairing 기간 초과
+    pairing_elapsed = (f["arr_time"] - next_state["pairing_start_time"]) / 24.0
+    if pairing_elapsed > c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"]):
+        violations += p
+
+    return violations
+
+
+def _end_duty_penalty(state, c):
+    """END_DUTY 선택 시 FiLM constraint 위반 패널티.
+    새 constraint 추가 시 여기에만 if 블록 추가 — step() 본문은 수정 불필요.
+    """
+    violations = 0.0
+
+    # max_duty_periods: overnight 횟수 초과
+    if state.get("duty_period", 0) >= c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"]):
+        violations += config.FILM_SOFT_PENALTY
+
+    return violations
+
+
 def get_mask(state, flights, assigned, constraint=None, stage=3):
     """현재 state에서 선택 가능한 action 마스크 반환
 
@@ -67,43 +111,30 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
         # 2. 시간 연결 검사
         if is_resting:
-            # rest 미종료 시 탑승 불가
+            # rest 미종료 시 탑승 불가 — 물리적 상태 제약, FiLM 학습 불필요 → 하드 마스크 유지
             if f["dep_time"] < rest_end:
                 valid = False
-        else:
-            if not pairing_start:
-                gap = f["dep_time"] - state["current_time"]
-                if gap < c.get("min_conn", config.DEFAULT_CONSTRAINTS["min_conn"]) or \
-                   gap > c.get("max_conn", config.DEFAULT_CONSTRAINTS["max_conn"]):
-                    valid = False
+        elif not pairing_start:
+            # 이미 출발한 편은 물리적으로 탑승 불가 → 하드 마스크 유지
+            # min_conn/max_conn 범위(파라미터)는 FiLM이 학습 → step()에서 soft penalty 처리
+            if f["dep_time"] < state["current_time"]:
+                valid = False
 
-        # 3. Duty 시간 제약 (FAA Part 117)
-        # duty window = duty 시작 ~ 해당 flight 도착까지 전체 경과 시간
-        # pairing 첫 편이거나 rest 직후 새 duty 시작이면 기준점을 해당 편 출발로 리셋
-        legs_after = state.get("legs", 0) + 1
-        effective_max_duty = get_max_duty(legs_after, c.get("max_duty"))
-        current_duty_start = f["dep_time"] if (pairing_start or is_resting) else duty_start_time
-        total_duty_window = f["arr_time"] - current_duty_start
-        if total_duty_window > effective_max_duty:
-            valid = False
-        if legs_after > c.get("max_legs", config.DEFAULT_CONSTRAINTS["max_legs"]):
-            valid = False
+        # 3. Duty / legs 제약: FiLM constraint vector 항목 → hard mask 제거, step()에서 soft penalty 처리
+        # max_duty, max_legs 모두 constraint 값에 따라 FiLM이 행동 조정하도록 학습해야 함
 
-        # 4. Pairing 기간 제약
-        elapsed_days = (f["arr_time"] - pairing_start_time) / 24.0
-        if elapsed_days > c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"]):
-            valid = False
+        # 4. Pairing 기간 제약: FiLM constraint vector 항목 → hard mask 제거, step()에서 soft penalty 처리
 
         if valid:
             mask[i] = 1
 
     # END_DUTY (mask[-2] = mask[N])
+    # max_duty_periods: FiLM constraint vector 항목 → hard mask 제거, step()에서 soft penalty 처리
     can_end_duty = (
         stage_rule["allow_end_duty"]
         and state.get("legs", 0) > 0
         and not is_resting
         and not pairing_start
-        and duty_period < c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])  # overnight 횟수 기준
     )
     if can_end_duty:
         mask[config.END_DUTY] = 1
@@ -155,7 +186,8 @@ def step(state, action, flights, assigned, constraint=None):
         duty_legs = state.get("legs", 0)
         min_legs = config.MIN_LEGS_FOR_DUTY_BONUS
         scale = min(1.0, duty_legs / min_legs) if min_legs > 0 else 1.0
-        return next_state, config.END_DUTY_BONUS * scale, False
+        end_duty_reward = config.END_DUTY_BONUS * scale - _end_duty_penalty(state, c)
+        return next_state, end_duty_reward, False
 
     # END_PAIRING → pairing 비용 부과 후 새 pairing 시작 (또는 에피소드 종료)
     if action == N + 1:
@@ -229,6 +261,7 @@ def step(state, action, flights, assigned, constraint=None):
     else:
         reward = config.LEG_PER_PAIRING_BONUS  # 첫 편 / rest 직후: gap 패널티 없이 bonus만
 
+    reward -= _flight_penalties(state, f, next_state, d_start_time, c)
     return next_state, reward, False
 
 
