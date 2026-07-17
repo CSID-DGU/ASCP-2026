@@ -9,6 +9,18 @@ import torch
 import config
 from constraints import FILM_CONSTRAINT_KEYS
 
+# 2x2 FiLM 인과성 실험(C/D/C'/D', log/0717/FiLM_방향결정_및_계획.md §6)용 —
+# True면 state_to_vec()이 constraint_vec 자리를 0으로 채워 디코더의 constraint
+# 직접 concat 경로를 원천 차단한다(C'/D' 조건). set_skip_decoder_constraint()로
+# 학습/평가 스크립트 시작 시 한 번 설정하면 이 모듈을 쓰는 모든 호출부
+# (train.py, rollout.py, evaluate_ip.py)에 즉시 반영된다.
+_SKIP_DECODER_CONSTRAINT = False
+
+
+def set_skip_decoder_constraint(flag: bool):
+    global _SKIP_DECODER_CONSTRAINT
+    _SKIP_DECODER_CONSTRAINT = flag
+
 
 def constraint_to_tensor(constraint, device=None):
     """constraint dict → FiLM 입력 tensor (constraint_dim,)
@@ -90,11 +102,16 @@ def state_to_vec(state, encoder, constraint, device=None, include_total_legs=Tru
     if include_total_legs:
         scalars.append(state.get("total_legs", 0) / config.CONSTRAINT_NORMS["max_legs"])
 
+    if _SKIP_DECODER_CONSTRAINT:
+        c_vec = torch.zeros(len(FILM_CONSTRAINT_KEYS), dtype=torch.float32).to(dev)
+    else:
+        c_vec = constraint_to_tensor(constraint, device=dev)
+
     return torch.cat([
         current_emb,
         base_emb,
         torch.tensor(scalars, dtype=torch.float32).to(dev),
-        constraint_to_tensor(constraint, device=dev),
+        c_vec,
     ])
 
 

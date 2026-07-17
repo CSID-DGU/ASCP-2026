@@ -40,7 +40,7 @@ _CONSTRAINT_FN = {
     "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용 (base_ids는 train()에서 주입)
 }
 from state import init_state
-from utils import flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias
+from utils import flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias, set_skip_decoder_constraint
 import config
 
 DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
@@ -665,8 +665,14 @@ def run_curriculum_stage(
     return best_avg_pairings
 
 
-def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None, from_stage2=False, turkish_files=None):
+def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_constraint=False,
+          ckpt_dir=None, from_stage2=False, turkish_files=None):
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
+
+    # 2x2 FiLM 인과성 실험(C/D/C'/D') — 디코더의 constraint 직접 concat 경로를
+    # 원천 차단할지 여부. 이 프로세스 안에서 학습·rollout 전체(train.py, rollout.py
+    # 둘 다 동일한 RL/utils.py를 import하므로)에 즉시 반영된다.
+    set_skip_decoder_constraint(skip_decoder_constraint)
 
     _select_environment("multi" if multi_airline else config.AIRLINE)
 
@@ -726,6 +732,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
 
     tag = "multi-airline" if multi_airline else config.AIRLINE
     tag += "-nofilm" if skip_film else ""
+    tag += "-nodecoderc" if skip_decoder_constraint else ""
     run_name = "phase2-only" if phase2_only else tag
     wandb.init(
         project="ASCP-2026-paper",
@@ -740,6 +747,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             "phase2_n_episodes":  config.PHASE2_N_EPISODES,
             "lr":                 1e-4,
             "device":             str(DEVICE),
+            "skip_film":              skip_film,
+            "skip_decoder_constraint": skip_decoder_constraint,
         },
         resume="allow",
     )
@@ -1065,6 +1074,10 @@ if __name__ == "__main__":
                         help="Delta/Alaska/JetBlue 세 항공사 데이터로 동시 학습 (통합 airport_map 사용)")
     parser.add_argument("--skip-film", action="store_true",
                         help="FiLM 비활성화 (use_film_before=False, use_film_after=False) — ablation B/D용")
+    parser.add_argument("--skip-decoder-constraint", action="store_true",
+                        help="디코더가 매 step 직접 보는 constraint_vec(7)을 0으로 고정 — "
+                             "2x2 FiLM 인과성 실험(C'/D')용. state_to_vec 차원은 그대로 유지되어 "
+                             "체크포인트 구조는 C/D와 동일하게 호환된다.")
     parser.add_argument("--airline", default=None,
                         help="단일 항공사 지정 (delta/alaska/jetblue/turkish). 미지정 시 config.AIRLINE 사용")
     parser.add_argument("--turkish-files", default=None,
@@ -1083,4 +1096,5 @@ if __name__ == "__main__":
     print(f"log: {args.log}")
     _turkish_files = [f.strip() for f in args.turkish_files.split(",")] if args.turkish_files else None
     train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,
+          skip_decoder_constraint=args.skip_decoder_constraint,
           ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2, turkish_files=_turkish_files)
