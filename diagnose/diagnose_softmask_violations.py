@@ -222,35 +222,46 @@ def main():
     with torch.no_grad():
         encoded = encoder(origins, dests, dep_norm, arr_norm, fly_norm, c_tensor)
 
-    total_viol = dict(max_legs=0, min_conn=0, max_conn=0, max_duty=0, max_pairing_days=0, max_duty_periods=0)
-    total_excess = dict(max_legs=[], max_conn=[], max_duty=[])
-    total_flight_steps = 0
-    total_end_duty = 0
-    total_pairings = 0
+    def _new_bucket():
+        return dict(
+            viol=dict(max_legs=0, min_conn=0, max_conn=0, max_duty=0, max_pairing_days=0, max_duty_periods=0),
+            excess=dict(max_legs=[], max_conn=[], max_duty=[]),
+            flight_steps=0, end_duty=0, pairings=0, n_rollouts=0,
+        )
+    buckets = {"greedy": _new_bucket(), "stochastic": _new_bucket()}
 
     with torch.no_grad():
         for r in range(args.n_rollouts):
             greedy = (r == args.n_rollouts - 1)
+            mode = "greedy" if greedy else "stochastic"
             viol, exc, nfs, ned, npg = rollout_and_check(subset, constraint, encoder, decoder, encoded, greedy, max_time)
-            for k in total_viol:
-                total_viol[k] += viol[k]
-            for k in total_excess:
-                total_excess[k].extend(exc[k])
-            total_flight_steps += nfs
-            total_end_duty += ned
-            total_pairings += npg
+            b = buckets[mode]
+            for k in b["viol"]:
+                b["viol"][k] += viol[k]
+            for k in b["excess"]:
+                b["excess"][k].extend(exc[k])
+            b["flight_steps"] += nfs
+            b["end_duty"] += ned
+            b["pairings"] += npg
+            b["n_rollouts"] += 1
 
-    print(f"\n=== {args.airline} | {os.path.basename(args.checkpoint)} | subset={len(subset)}편 | rollouts={args.n_rollouts} ===")
+    def _print_bucket(label, b):
+        print(f"\n--- {label} (rollouts={b['n_rollouts']}) ---")
+        print(f"총 flight 선택 스텝: {b['flight_steps']}, 총 END_DUTY: {b['end_duty']}, 총 pairing: {b['pairings']}")
+        for k, v in b["viol"].items():
+            denom = b["end_duty"] if k == "max_duty_periods" else b["flight_steps"]
+            pct = 100.0 * v / denom if denom else 0.0
+            exc = b["excess"].get(k)
+            exc_str = f", 초과분 평균={sum(exc)/len(exc):.2f} 최대={max(exc):.2f}" if exc else ""
+            print(f"  위반[{k}]: {v} / {denom} ({pct:.3f}%){exc_str}")
+
+    print(f"\n=== {args.airline} | {os.path.basename(args.checkpoint)} | subset={len(subset)}편 | rollouts={args.n_rollouts} "
+          f"(greedy 1회 + stochastic {args.n_rollouts - 1}회로 분리 집계) ===")
     print(f"constraint: max_legs={constraint['max_legs']} max_duty={constraint['max_duty']} "
           f"min_conn={constraint['min_conn']} max_conn={constraint['max_conn']} "
           f"max_duty_periods={constraint['max_duty_periods']} max_pairing_days={constraint['max_pairing_days']}")
-    print(f"총 flight 선택 스텝: {total_flight_steps}, 총 END_DUTY: {total_end_duty}, 총 pairing: {total_pairings}")
-    for k, v in total_viol.items():
-        denom = total_end_duty if k == "max_duty_periods" else total_flight_steps
-        pct = 100.0 * v / denom if denom else 0.0
-        exc = total_excess.get(k)
-        exc_str = f", 초과분 평균={sum(exc)/len(exc):.2f} 최대={max(exc):.2f}" if exc else ""
-        print(f"  위반[{k}]: {v} / {denom} ({pct:.3f}%){exc_str}")
+    _print_bucket("GREEDY (실제 배포 시 정책의 결정론적 선택)", buckets["greedy"])
+    _print_bucket("STOCHASTIC (탐색용 샘플링, 참고용)", buckets["stochastic"])
 
 
 if __name__ == "__main__":
