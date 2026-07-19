@@ -443,7 +443,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
-               constraint_sampler=None, init_best=float("inf")):
+               constraint_sampler=None, init_best=float("inf"), dual_weight_override=None):
     from set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
@@ -477,7 +477,8 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 if lp_result is not None:
                     dual_vars = lp_result["dual_vars"]  
 
-        _eff_dw = config.PHASE2_DUAL_WEIGHT * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
+        _base_dw = dual_weight_override if dual_weight_override is not None else config.PHASE2_DUAL_WEIGHT
+        _eff_dw = _base_dw * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
         encoded_train = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
         reward_s, log_probs, entropies, metrics_s = run_episode_with_dual(
             flights, c, encoder, decoder, encoded_train, dual_vars, dual_weight=_eff_dw
@@ -666,7 +667,7 @@ def run_curriculum_stage(
 
 
 def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_constraint=False,
-          ckpt_dir=None, from_stage2=False, turkish_files=None):
+          ckpt_dir=None, from_stage2=False, turkish_files=None, dual_weight=None):
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
 
     # 2x2 FiLM 인과성 실험(C/D/C'/D') — 디코더의 constraint 직접 concat 경로를
@@ -733,6 +734,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
     tag = "multi-airline" if multi_airline else config.AIRLINE
     tag += "-nofilm" if skip_film else ""
     tag += "-nodecoderc" if skip_decoder_constraint else ""
+    tag += "-nodual" if dual_weight == 0 else ""
     run_name = "phase2-only" if phase2_only else tag
     wandb.init(
         project="ASCP-2026-paper",
@@ -743,7 +745,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
             "window_days":        WINDOW_DAYS,
             "phase2_lp_interval": config.PHASE2_LP_INTERVAL,
             "phase2_pool_rollouts": config.PHASE2_POOL_ROLLOUTS,
-            "phase2_dual_weight": config.PHASE2_DUAL_WEIGHT,
+            "phase2_dual_weight": dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT,
             "phase2_n_episodes":  config.PHASE2_N_EPISODES,
             "lr":                 1e-4,
             "device":             str(DEVICE),
@@ -1017,7 +1019,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                save_dir=save_dir,
                flight_sampler=flight_sampler,
                global_step_offset=phase2_offset,
-               constraint_sampler=sample_constraint)
+               constraint_sampler=sample_constraint,
+               dual_weight_override=dual_weight)
 
     # ── FiLM 최종 검증: stage3_best.pt 기준 ───────────────────────────
     # (Phase 2가 FiLM 가중치를 덮어썼을 수 있으므로 검증만 stage3_best로 임시 복원해서 확인)
@@ -1086,6 +1089,9 @@ if __name__ == "__main__":
     parser.add_argument("--use-utc", action="store_true",
                         help="dep_time을 UTC 절대시간으로 앵커링. 새로 이 옵션으로 학습한 모델만 "
                              "이 옵션 켠 채로 평가해야 함 — 기존 체크포인트에 켜면 OOD")
+    parser.add_argument("--dual-weight", type=float, default=None,
+                        help="Phase2 CG dual reward 가중치를 config.PHASE2_DUAL_WEIGHT(기본 0.6) 대신 "
+                             "이 값으로 덮어씀. 0을 주면 CG-dual 완전히 비활성화.")
     args = parser.parse_args()
     if args.airline:
         config.AIRLINE = args.airline
@@ -1097,4 +1103,5 @@ if __name__ == "__main__":
     _turkish_files = [f.strip() for f in args.turkish_files.split(",")] if args.turkish_files else None
     train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,
           skip_decoder_constraint=args.skip_decoder_constraint,
-          ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2, turkish_files=_turkish_files)
+          ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2, turkish_files=_turkish_files,
+          dual_weight=args.dual_weight)
