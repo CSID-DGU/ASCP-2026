@@ -336,7 +336,7 @@ def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
     return list(pool.values())
 
 
-def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False, dual_weight=None):
+def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False, dual_weight=None, dh_dual_vars=None):
     assigned = {f["id"]: False for f in flights}
     state    = init_state(flights, constraint)
 
@@ -424,7 +424,8 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
         flight_id = flights[action]["id"]
         _dw = dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT
         state, r, done = step(state, action, flights, assigned, constraint)
-        total_reward += r + dual_vars.get(flight_id, 0.0) * _dw
+        _dh_pi = dh_dual_vars.get(flight_id, 0.0) if dh_dual_vars else 0.0
+        total_reward += r + (dual_vars.get(flight_id, 0.0) - _dh_pi) * _dw
         if done:
             break
 
@@ -449,7 +450,9 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
     params            = list(encoder.parameters()) + list(decoder.parameters())
     best_avg_pairings = init_best
     greedy_pairings   = []
-    dual_vars         = {}  
+    dual_vars         = {}
+    dh_dual_vars      = {}
+    lp_value          = None
 
     print(f"\n{'='*60}")
     print(f"Phase 2: CG dual feedback  "
@@ -475,13 +478,15 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                                           n_rollouts=config.PHASE2_POOL_ROLLOUTS)
                 lp_result = solve_lp_relaxation(pool)
                 if lp_result is not None:
-                    dual_vars = lp_result["dual_vars"]  
+                    dual_vars    = lp_result["dual_vars"]
+                    dh_dual_vars = lp_result["dh_dual_vars"]
+                    lp_value     = lp_result["lp_value"]
 
         _base_dw = dual_weight_override if dual_weight_override is not None else config.PHASE2_DUAL_WEIGHT
         _eff_dw = _base_dw * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
         encoded_train = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
         reward_s, log_probs, entropies, metrics_s = run_episode_with_dual(
-            flights, c, encoder, decoder, encoded_train, dual_vars, dual_weight=_eff_dw
+            flights, c, encoder, decoder, encoded_train, dual_vars, dual_weight=_eff_dw, dh_dual_vars=dh_dual_vars
         )
         if len(log_probs) == 0:
             continue
@@ -489,7 +494,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         with torch.no_grad():
             encoded_g = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
             reward_g, _, _, metrics_g = run_episode_with_dual(
-                flights, c, encoder, decoder, encoded_g, dual_vars, greedy=True, dual_weight=_eff_dw
+                flights, c, encoder, decoder, encoded_g, dual_vars, greedy=True, dual_weight=_eff_dw, dh_dual_vars=dh_dual_vars
             )
 
         greedy_pairings.append(metrics_g["n_pairings"])
@@ -533,16 +538,20 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             "phase2/entropy_coef":        entropy_coef,
             "phase2/best_avg25":          best_avg_pairings if best_avg_pairings < float("inf") else avg25,
             "phase2/n_dual_keys":         len(dual_vars),
+            "phase2/n_dh_dual_keys":      sum(1 for v in dh_dual_vars.values() if v > 0),
             "phase2/dual_weight":         _eff_dw,
             "phase2/gap_weight":          decoder.gap_weight.item(),
+            "phase2/lp_value":            lp_value if lp_value is not None else float("nan"),
         }, step=global_step_offset + ep)
 
         if ep % 25 == 0:
+            _lp_str = f"{lp_value:.2f}" if lp_value is not None else "n/a"
             print(
                 f"  Ep {ep:4d} | "
                 f"sample: p={metrics_s['n_pairings']:3d} dh={metrics_s['n_deadheads']:3d} | "
                 f"greedy: p={metrics_g['n_pairings']:3d} legs={metrics_g.get('avg_legs', 0):.2f} (avg25={avg25:5.1f}) | "
-                f"adv: {advantage:6.3f} | dw={_eff_dw:.3f} | dual keys: {len(dual_vars)}"
+                f"adv: {advantage:6.3f} | dw={_eff_dw:.3f} | dual keys: {len(dual_vars)} | "
+                f"dh dual keys: {sum(1 for v in dh_dual_vars.values() if v > 0)} | lp_value: {_lp_str}"
             )
 
     print(f"  → best avg pairings: {best_avg_pairings:.1f}  "
