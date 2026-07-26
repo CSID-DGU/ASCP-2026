@@ -47,7 +47,7 @@ _GET_CONSTRAINT = {
     "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용
 }
 from model import FlightEncoder, PointerDecoder
-from set_partition import solve_set_covering
+from set_partition import solve_set_covering, solve_lp_relaxation
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings, set_environment
 import config
@@ -323,6 +323,13 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                 covered_global.update(p["legs"])
             rollout_count += 1
 
+            print(
+                f"    chunk {c_idx + 1}/{len(chunks)} 완료 "
+                f"(누적 rollout={rollout_count}, pool={len(pool)}, "
+                f"window covered={len(window_covered)}/{len(window_all_ids)})",
+                flush=True,
+            )
+
         print(
             f"  총 {rollout_count}회 rollout: "
             f"window {len(window_covered)}/{len(window_all_ids)}편 커버, "
@@ -357,6 +364,8 @@ def evaluate_full(
     use_utc=False,
     use_wandb=False,
     wandb_project="ASCP-2026-paper",
+    compute_gap=False,
+    seed=None,
 ):
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
@@ -365,9 +374,23 @@ def evaluate_full(
 
     use_wandb=True면 wandb에 eval 설정 + 콘솔 로그 + 최종 결과 지표를 기록한다
     (job_type="eval" — 학습 curve와는 별개 run으로 남는다).
+
+    seed 지정 시 random/torch RNG를 고정 — 서로 다른 체크포인트를 같은 윈도우
+    파티셔닝·같은 rollout 확률 샘플로 평가해 paired 비교가 가능해짐(체크포인트
+    간 차이가 평가 자체의 무작위성이 아니라 정책 차이에서만 나오도록 통제).
     """
+    if seed is not None:
+        random.seed(seed)
+        torch.manual_seed(seed)
+
     global DEVICE
     DEVICE = torch.device(device)
+    if device == "cpu":
+        # torch가 기본으로 프로세스당 물리 코어 수만큼 스레드를 잡아서, 여러 체크포인트를
+        # 병렬 평가할 때 서로(그리고 GPU 학습 프로세스와도) CPU를 심하게 경쟁함
+        # (2026-07-25, load average 235/64코어로 확인). OMP_NUM_THREADS 등 env로 이미
+        # 제한했더라도 일부 torch 빌드는 무시할 수 있어 명시적으로 한 번 더 고정.
+        torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", 4)))
     set_environment(airline)
 
     wandb_run = None
@@ -450,7 +473,17 @@ def evaluate_full(
         )
 
     print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
-    result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh)
+    result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh, verbose=True)
+    print("IP 풀이 완료", flush=True)
+
+    gap_pct = None
+    if compute_gap:
+        print(f"\nLP relaxation 풀기 (Gap% 계산용, pool={len(pool)})...", flush=True)
+        lp_result = solve_lp_relaxation(pool, lambda_dh=lambda_dh)
+        if lp_result is not None and lp_result["lp_value"]:
+            gap_pct = (result["mip_obj"] - lp_result["lp_value"]) / lp_result["lp_value"] * 100
+        else:
+            print("  [warn] LP relaxation 풀기 실패 — Gap% 계산 불가")
 
     sel          = result["selected"]
     fly_total    = sum(p["fly"]                         for p in sel) if sel else 0.0
@@ -486,6 +519,8 @@ def evaluate_full(
     print(f"  avg legs/pairing:  {avg_legs:.2f}")
     print(f"  avg duties/pairing:{avg_duties:.2f}")
     print(f"  IP status:         {result['status']}")
+    if gap_pct is not None:
+        print(f"  Gap% (MIP vs LP):  {gap_pct:.3f}%")
 
     if wandb_run is not None:
         import wandb
@@ -504,9 +539,11 @@ def evaluate_full(
             "avg_legs":         avg_legs,
             "avg_duties":       avg_duties,
             "ip_status":        result["status"],
+            "gap_pct":          gap_pct,
         })
         wandb.finish()
 
+    result["gap_pct"] = gap_pct
     return result
 
 
@@ -540,6 +577,13 @@ if __name__ == "__main__":
     parser.add_argument("--wandb", action="store_true",
                         help="eval 설정+콘솔 로그+최종 결과 지표를 wandb에 기록 (job_type=eval)")
     parser.add_argument("--wandb-project", default="ASCP-2026-paper")
+    parser.add_argument("--compute-gap", action="store_true",
+                        help="MIP 풀이 후 같은 pool로 LP relaxation을 추가로 풀어 "
+                             "Gap%%=(MIP_obj-LP_obj)/LP_obj*100을 계산 (Tahir Table 6과 동일 정의). "
+                             "pool이 크면 LP도 추가 시간이 걸리므로 기본은 off")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="random/torch RNG 고정 — 여러 체크포인트를 같은 평가 인스턴스로 "
+                             "paired 비교할 때 지정 (예: ON/OFF 체크포인트 전부 동일 seed)")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -562,4 +606,6 @@ if __name__ == "__main__":
         use_utc=args.use_utc,
         use_wandb=args.wandb,
         wandb_project=args.wandb_project,
+        compute_gap=args.compute_gap,
+        seed=args.seed,
     )
