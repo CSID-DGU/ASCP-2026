@@ -124,15 +124,15 @@ def main():
             status=result["status"],
         )
         print(f"  pairing 수: {result['n_pairings']}  ManDays: {man_days}  "
-              f"deadhead: {result['deadhead_count']}  FTC: {ftc:.2f}%  "
+              f"deadhead: {result['deadhead_count']}  dead_time: {dead_total:.2f}h  FTC: {ftc:.2f}%  "
               f"avg_legs: {results[airline]['avg_legs']:.2f}  status: {result['status']}", flush=True)
 
     print(f"\n\n{'='*60}\n요약 (delta {n_total}편 고정, constraint만 교체)\n{'='*60}")
-    header = f"{'항공사':<10}{'pairings':>10}{'ManDays':>10}{'deadhead':>10}{'FTC':>9}{'avg_legs':>10}{'avg_duties':>11}"
+    header = f"{'항공사':<10}{'pairings':>10}{'ManDays':>10}{'deadhead':>10}{'dead_time':>12}{'FTC':>9}{'avg_legs':>10}{'avg_duties':>11}"
     print(header)
     for airline, r in results.items():
         print(f"{airline:<10}{r['n_pairings']:>10}{r['man_days']:>10}{r['deadhead']:>10}"
-              f"{r['ftc']:>8.2f}%{r['avg_legs']:>10.2f}{r['avg_duties']:>11.2f}")
+              f"{r['intra_gap']:>11.2f}h{r['ftc']:>8.2f}%{r['avg_legs']:>10.2f}{r['avg_duties']:>11.2f}")
 
 
 if __name__ == "__main__":
