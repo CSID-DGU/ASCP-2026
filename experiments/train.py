@@ -424,8 +424,8 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
         flight_id = flights[action]["id"]
         _dw = dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT
         state, r, done = step(state, action, flights, assigned, constraint)
-        _dh_pi = dh_dual_vars.get(flight_id, 0.0) if dh_dual_vars else 0.0
-        total_reward += r + (dual_vars.get(flight_id, 0.0) - _dh_pi) * _dw
+        _nu_exc = dh_dual_vars.get(flight_id, 0.0) if dh_dual_vars else 0.0
+        total_reward += r + (dual_vars.get(flight_id, 0.0) - _nu_exc) * _dw
         if done:
             break
 

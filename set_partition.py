@@ -33,7 +33,7 @@ def solve_lp_relaxation(
     IP와 동일한 목적함수(DH 패널티 포함)로 LP를 구성해 column reduction의
     이론적 근거를 유지한다.
 
-    reduced cost: rc_j = c_j - Σ_{i ∈ legs_j} π_i
+    reduced cost: rc_j = c_j - Σ_{i ∈ legs_j} μ_i^cov
       - rc_j < 0: 이 pairing을 쓰면 비용이 줄어듦 → IP에 포함할 가치 있음
       - rc_j ≥ 0: 최적해에 포함될 가능성 낮음 → column reduction으로 제거
 
@@ -74,25 +74,25 @@ def solve_lp_relaxation(
     if prob.status != 1:
         return None
 
-    pi: Dict[int, float] = {}
-    dh_pi: Dict[int, float] = {}
+    mu_cov: Dict[int, float] = {}
+    nu_exc: Dict[int, float] = {}
     for i in covered_flights:
-        pi[i]    = prob.constraints[f"cover_{i}"].pi or 0.0
+        mu_cov[i] = prob.constraints[f"cover_{i}"].pi or 0.0
         # dh_i 제약(d[i] >= cover_sum-1)의 dual — 이 flight가 지금 pool 기준으로 얼마나
         # 중복 커버(deadhead)되고 있는지의 그림자가격. binding일 때 lambda_dh와 같아짐.
-        # cover_i dual(π, "부족분 채우기" 신호)과 반대 방향으로 RL에 피드백하는 데 사용
-        # (π는 보상에 더하고, dh_pi는 빼서 "이미 넘치는 flight는 그만 채워라"는 신호를 줌).
-        dh_pi[i] = prob.constraints[f"dh_{i}"].pi or 0.0
+        # cover_i dual(μ^cov, "부족분 채우기" 신호)과 반대 방향으로 RL에 피드백하는 데 사용
+        # (μ^cov는 보상에 더하고, ν^exc는 빼서 "이미 넘치는 flight는 그만 채워라"는 신호를 줌).
+        nu_exc[i] = prob.constraints[f"dh_{i}"].pi or 0.0
 
     reduced_costs = [
-        pairings[j]["cost"] - sum(pi.get(i, 0.0) for i in pairings[j]["legs"])
+        pairings[j]["cost"] - sum(mu_cov.get(i, 0.0) for i in pairings[j]["legs"])
         for j in range(M)
     ]
 
     return {
         "lp_value":      pulp.value(prob.objective),
-        "dual_vars":     pi,
-        "dh_dual_vars":  dh_pi,
+        "dual_vars":     mu_cov,
+        "dh_dual_vars":  nu_exc,
         "reduced_costs": reduced_costs,
         "status":        pulp.LpStatus[prob.status],
     }
