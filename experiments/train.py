@@ -3,6 +3,7 @@ import sys
 import random
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "RL"))
+import numpy as np
 import torch
 import torch.optim as optim
 from torch.distributions import Categorical
@@ -1107,7 +1108,15 @@ if __name__ == "__main__":
     parser.add_argument("--use-utc", action="store_true",
                         help="dep_time을 UTC 절대시간으로 앵커링. 새로 이 옵션으로 학습한 모델만 "
                              "이 옵션 켠 채로 평가해야 함 — 기존 체크포인트에 켜면 OOD")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="random/numpy/torch RNG 고정 (재현성용). 미지정 시 기존처럼 비고정.")
     args = parser.parse_args()
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        print(f"seed: {args.seed}")
     if args.airline:
         config.AIRLINE = args.airline
     _set_device(args.device)
