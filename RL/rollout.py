@@ -36,6 +36,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     """
     dev = device or torch.device("cpu")
     assigned = {f["id"]: False for f in flights}
+    flight_by_id = {f["id"]: f for f in flights}
 
     pairings = []
 
@@ -61,6 +62,11 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
                 - config.IP_LEG_BONUS * max(n_legs - 1, 0)
                 + (config.IP_DEADHEAD_PENALTY if is_forced else 0.0)
                 + config.IP_PAIRING_FIXED_COST)
+        # ends_at_base: pairing이 base에서 출발해 base로 복귀했는지(2026-07-28 추가) —
+        # 원래 이 판별 자체가 없어서 IP/eval이 base 미복귀 pairing도 그대로 후보로
+        # 썼던 문제가 있었음. cost 계산식 자체는 안 건드리고 필드만 부가.
+        ends_at_base = (flight_by_id[current_legs[0]]["origin"] == episode_base
+                        and flight_by_id[current_legs[-1]]["dest"] == episode_base)
         pairings.append({
             "legs":        list(current_legs),
             "fly":         fly,
@@ -72,6 +78,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "n_duties":    pairing_n_duties,
             "intra_duty_gap":    pairing_intra_gap,
             "inter_duty_excess": pairing_inter_excess,
+            "ends_at_base":      ends_at_base,
         })
 
     def start_new_pairing(f):
@@ -208,6 +215,7 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
     dev = device or torch.device("cpu")
     n_flights    = len(flights)
     episode_base = constraint.get("base_airport", 0)
+    flight_by_id = {f["id"]: f for f in flights}
 
     assigned    = [{f["id"]: False for f in flights} for _ in range(B)]
     states      = [None] * B
@@ -231,9 +239,12 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                    - config.IP_LEG_BONUS * max(n_legs - 1, 0)
                    + (config.IP_DEADHEAD_PENALTY if forced else 0.0)
                    + config.IP_PAIRING_FIXED_COST)
+        ends_at_base = (flight_by_id[cur_legs[i][0]]["origin"] == episode_base
+                        and flight_by_id[cur_legs[i][-1]]["dest"] == episode_base)
         pairings[i].append({"legs": list(cur_legs[i]), "fly": fly, "elapsed": elapsed,
                              "dead_time": dead, "cost": cost, "is_deadhead": forced,
-                             "n_legs": n_legs, "n_duties": pair_duties[i]})
+                             "n_legs": n_legs, "n_duties": pair_duties[i],
+                             "ends_at_base": ends_at_base})
 
     def start_env(i, f):
         assigned[i][f["id"]] = True
@@ -335,16 +346,24 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
 
 def collect_pool(flights, constraint, encoder, decoder, encoded,
                  n_rollouts=100, device=None):
-    """단일 base n_rollouts번 배치 rollout → 중복 제거한 pairing pool 반환."""
+    """단일 base n_rollouts번 배치 rollout → 중복 제거한 pairing pool 반환.
+
+    base로 복귀 안 한 pairing(ends_at_base=False)은 pool에서 제외(2026-07-28) —
+    IP가 base 미복귀 pairing을 후보로 골라버리는 문제 수정.
+    """
     pool = {}
     for p in [p for ps in rollout_batch(flights, constraint, encoder, decoder, encoded,
                                          B=n_rollouts, device=device)
               for p in ps]:
+        if not p["ends_at_base"]:
+            continue
         key = tuple(sorted(p["legs"]))
         if key not in pool or p["cost"] < pool[key]["cost"]:
             pool[key] = p
     for p in rollout_batch(flights, constraint, encoder, decoder, encoded,
                             B=1, greedy=True, device=device)[0]:
+        if not p["ends_at_base"]:
+            continue
         key = tuple(sorted(p["legs"]))
         if key not in pool or p["cost"] < pool[key]["cost"]:
             pool[key] = p
@@ -353,7 +372,10 @@ def collect_pool(flights, constraint, encoder, decoder, encoded,
 
 def collect_pool_multibase(flights, constraint, encoder, decoder, encoded,
                            bases, n_rollouts_per_base=50, device=None):
-    """각 base에서 n_rollouts_per_base번 배치 rollout → 통합 pool 반환."""
+    """각 base에서 n_rollouts_per_base번 배치 rollout → 통합 pool 반환.
+
+    base로 복귀 안 한 pairing은 제외(2026-07-28, collect_pool과 동일).
+    """
     pool = {}
     for b_idx, base in enumerate(bases):
         c_b = {**constraint, "base_airport": base}
@@ -361,12 +383,16 @@ def collect_pool_multibase(flights, constraint, encoder, decoder, encoded,
         for p in [p for ps in rollout_batch(flights, c_b, encoder, decoder, encoded,
                                              B=n_rollouts_per_base, device=device)
                   for p in ps]:
+            if not p["ends_at_base"]:
+                continue
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
         print(f"  [{b_idx+1}/{len(bases)}] base={base}: greedy 1개...", flush=True)
         for p in rollout_batch(flights, c_b, encoder, decoder, encoded,
                                 B=1, greedy=True, device=device)[0]:
+            if not p["ends_at_base"]:
+                continue
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p

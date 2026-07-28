@@ -303,6 +303,11 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                     print(f"  [warn] stochastic rollout 실패 (chunk={c_idx}): {e}", flush=True)
                     continue
                 for p in pairings:
+                    # base 미복귀 pairing은 pool/coverage 집계 둘 다에서 제외(2026-07-28) —
+                    # coverage 집계에도 넣으면 "커버는 됐는데 실제로 IP가 못 고르는" 유령
+                    # coverage가 생겨서 window_covered/covered_global도 같이 걸러야 함.
+                    if not p["ends_at_base"]:
+                        continue
                     key = tuple(sorted(p["legs"]))
                     if key not in pool or p["cost"] < pool[key]["cost"]:
                         pool[key] = p
@@ -316,6 +321,8 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                 print(f"  [warn] greedy rollout 실패 (chunk={c_idx}): {e}", flush=True)
                 continue
             for p in pairings:
+                if not p["ends_at_base"]:
+                    continue
                 key = tuple(sorted(p["legs"]))
                 if key not in pool or p["cost"] < pool[key]["cost"]:
                     pool[key] = p

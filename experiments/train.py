@@ -185,6 +185,7 @@ _PAIRING_FIXED_COST  = config.IP_PAIRING_FIXED_COST
 
 def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
     assigned = {f["id"]: False for f in flights}
+    flight_by_id = {f["id"]: f for f in flights}
     pairings = []
 
     current_legs     = []
@@ -202,8 +203,13 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
                      - _LEG_BONUS_IP * max(len(current_legs) - 1, 0)
                      + (_DEADHEAD_PENALTY_IP if is_forced else 0.0)
                      + _PAIRING_FIXED_COST)
+        # ends_at_base(2026-07-28): Phase2 CG-dual pool도 base 미복귀 pairing을
+        # 그대로 썼던 문제 수정 — RL/rollout.py와 동일 판별.
+        ends_at_base = (flight_by_id[current_legs[0]]["origin"] == episode_base
+                        and flight_by_id[current_legs[-1]]["dest"] == episode_base)
         pairings.append({"legs": list(current_legs), "fly": pairing_fly,
-                         "elapsed": elapsed, "cost": cost})
+                         "elapsed": elapsed, "cost": cost,
+                         "ends_at_base": ends_at_base})
 
     def start_new(f):
         nonlocal pairing_dep, pairing_fly, pairing_last_arr, pairing_rest
@@ -323,13 +329,19 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
 
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
+    # base 미복귀 pairing 제외(2026-07-28) — LP dual(μ^cov/ν^exc)이 base 무시하고
+    # 계산되던 문제 수정.
     pool = {}
     for _ in range(n_rollouts):
         for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded):
+            if not p["ends_at_base"]:
+                continue
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
     for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True):
+        if not p["ends_at_base"]:
+            continue
         key = tuple(sorted(p["legs"]))
         if key not in pool or p["cost"] < pool[key]["cost"]:
             pool[key] = p
