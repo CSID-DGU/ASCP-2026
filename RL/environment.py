@@ -1,5 +1,6 @@
 import numpy as np
 import config
+from base_reach import can_reach_base
 
 # flight dict 키: "origin", "dest", "dep_time", "arr_time", "id" 
 
@@ -46,6 +47,17 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # 루프 안에서 매번 재계산하면 O(N^2)이 되어 저연결 base(예: turkish HB2)에서 episode당
     # 수십 초까지 느려짐 (log/0704 turkish 스모크 테스트에서 발견)
     base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+
+    # base 복귀 hard 강제 (decode-time feasibility masking).
+    # require_base_return=True면 (1) base 복귀 여지를 없애는 leg를 마스킹하고
+    # (2) base가 아닌 곳에서의 END_PAIRING을 금지한다 → base-to-base가 구조적으로 보장됨
+    # (SPPRC baseline의 dest_i == base 종료 조건과 동일한 보장).
+    # _base_reach는 rollout이 (flights, base)당 1회 계산해 constraint에 실어 보낸다.
+    require_return = c.get("require_base_return", False)
+    base_reach     = c.get("_base_reach") if require_return else None
+    max_pd         = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
+    within_duty    = require_return and c.get("base_return_within_duty", True)
+
     if pairing_start:
         base_remaining = any(
             not assigned[fl["id"]] and fl["origin"] == base_ap
@@ -91,8 +103,19 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
         # 4. Pairing 기간 제약
         elapsed_days = (f["arr_time"] - pairing_start_time) / 24.0
-        if elapsed_days > c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"]):
+        if elapsed_days > max_pd:
             valid = False
+
+        # 5. base 복귀 가능성 (require_base_return 시에만)
+        if valid and base_reach is not None:
+            ps_time = f["dep_time"] if pairing_start else pairing_start_time
+            if not can_reach_base(
+                base_reach, f, ps_time, max_pd,
+                legs_after=legs_after if within_duty else None,
+                max_legs=(c.get("_target_legs")
+                          or c.get("max_legs", config.DEFAULT_CONSTRAINTS["max_legs"])) if within_duty else None,
+            ):
+                valid = False
 
         if valid:
             mask[i] = 1
@@ -116,7 +139,10 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         state.get("total_legs", 0) >= min_pairing_legs
         and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
-    # base 미복귀 시 BASE_PENALTY는 step()에서 reward로 처리 (hard mask 제거 → soft penalty)
+    # base 미복귀 시 BASE_PENALTY는 step()에서 reward로 처리 (hard mask 제거 → soft penalty).
+    # 단 require_base_return이면 hard mask로 되돌린다 — base가 아닌 곳에서는 종료 불가.
+    if require_return and state["current_airport"] != base_ap:
+        can_end_pairing = False
     if can_end_pairing:
         mask[config.END_PAIRING] = 1
 

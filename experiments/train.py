@@ -1107,9 +1107,16 @@ if __name__ == "__main__":
     parser.add_argument("--use-utc", action="store_true",
                         help="dep_time을 UTC 절대시간으로 앵커링. 새로 이 옵션으로 학습한 모델만 "
                              "이 옵션 켠 채로 평가해야 함 — 기존 체크포인트에 켜면 OOD")
+    parser.add_argument("--data-path", default=None,
+                        help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
+                             "delta-small 등 대체 데이터셋으로 학습/이어받기할 때 지정")
     args = parser.parse_args()
     if args.airline:
         config.AIRLINE = args.airline
+    if args.data_path:
+        # config.AIRLINE_DATA를 덮어써야 train() 안의 DATA_PATH/airport_map이 이 경로를 따라감
+        config.AIRLINE_DATA[config.AIRLINE] = args.data_path
+        print(f"data_path 지정: {config.AIRLINE} → {args.data_path}")
     _set_device(args.device)
     USE_UTC = args.use_utc
     print(f"device: {DEVICE}")

@@ -14,5 +14,6 @@ checkpoints/
 *.csv
 test/
 wandb/
+log/
 
 
