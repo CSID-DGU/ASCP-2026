@@ -185,6 +185,7 @@ _PAIRING_FIXED_COST  = config.IP_PAIRING_FIXED_COST
 
 def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
     assigned = {f["id"]: False for f in flights}
+    flight_by_id = {f["id"]: f for f in flights}
     pairings = []
 
     current_legs     = []
@@ -202,8 +203,13 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
                      - _LEG_BONUS_IP * max(len(current_legs) - 1, 0)
                      + (_DEADHEAD_PENALTY_IP if is_forced else 0.0)
                      + _PAIRING_FIXED_COST)
+        # ends_at_base(2026-07-28): Phase2 CG-dual pool도 base 미복귀 pairing을
+        # 그대로 썼던 문제 수정 — RL/rollout.py와 동일 판별.
+        ends_at_base = (flight_by_id[current_legs[0]]["origin"] == episode_base
+                        and flight_by_id[current_legs[-1]]["dest"] == episode_base)
         pairings.append({"legs": list(current_legs), "fly": pairing_fly,
-                         "elapsed": elapsed, "cost": cost})
+                         "elapsed": elapsed, "cost": cost,
+                         "ends_at_base": ends_at_base})
 
     def start_new(f):
         nonlocal pairing_dep, pairing_fly, pairing_last_arr, pairing_rest
@@ -323,13 +329,19 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
 
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
+    # base 미복귀 pairing 제외(2026-07-28) — LP dual(μ^cov/ν^exc)이 base 무시하고
+    # 계산되던 문제 수정.
     pool = {}
     for _ in range(n_rollouts):
         for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded):
+            if not p["ends_at_base"]:
+                continue
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
     for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True):
+        if not p["ends_at_base"]:
+            continue
         key = tuple(sorted(p["legs"]))
         if key not in pool or p["cost"] < pool[key]["cost"]:
             pool[key] = p
@@ -1095,9 +1107,16 @@ if __name__ == "__main__":
     parser.add_argument("--use-utc", action="store_true",
                         help="dep_time을 UTC 절대시간으로 앵커링. 새로 이 옵션으로 학습한 모델만 "
                              "이 옵션 켠 채로 평가해야 함 — 기존 체크포인트에 켜면 OOD")
+    parser.add_argument("--data-path", default=None,
+                        help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
+                             "delta-small 등 대체 데이터셋으로 학습/이어받기할 때 지정")
     args = parser.parse_args()
     if args.airline:
         config.AIRLINE = args.airline
+    if args.data_path:
+        # config.AIRLINE_DATA를 덮어써야 train() 안의 DATA_PATH/airport_map이 이 경로를 따라감
+        config.AIRLINE_DATA[config.AIRLINE] = args.data_path
+        print(f"data_path 지정: {config.AIRLINE} → {args.data_path}")
     _set_device(args.device)
     USE_UTC = args.use_utc
     print(f"device: {DEVICE}")
