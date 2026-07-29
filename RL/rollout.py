@@ -148,7 +148,10 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "n_duties":    n_rest + 1,
             "intra_duty_gap":    intra,
             "inter_duty_excess": inter,
-            "ends_at_base":      True,
+            # 하드코딩된 True 대신 실제로 검증 — salvage_doomed()가 넘기는 end_ap은
+            # "이 prefix가 도착해야 하는 base"이고, recs[-1]이 정말 거기 도착하는지
+            # 확인해야 end_ap 인자가 죽은 파라미터가 아니라 실제 안전장치로 쓰인다.
+            "ends_at_base":      recs[-1]["dest"] == end_ap,
             "true_start_airport": start_ap,
             "is_truncated":      True,
         })
