@@ -53,10 +53,10 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # rollout.py의 constraint_for()가 _base_reach를 episode_base(=base_ap) 기준으로
     # 계산하므로, 여기서도 base_ap(그 pairing이 실제로 출발한 base) 기준 단일 복귀만
     # 강제한다 — HB1↔HB2 교차 복귀는 hard mask 하에서는 지원하지 않음(더 엄격한 부분집합).
-    require_return = c.get("require_base_return", False)
-    base_reach     = c.get("_base_reach") if require_return else None
-    max_pd         = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
-    within_duty    = require_return and c.get("base_return_within_duty", True)
+    require_return   = c.get("require_base_return", False)
+    base_reach       = c.get("_base_reach") if require_return else None
+    max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
+    max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
     if pairing_start:
         base_remaining = any(
             not assigned[fl["id"]] and fl["origin"] in base_id_set
@@ -110,9 +110,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
             ps_time = f["dep_time"] if pairing_start else pairing_start_time
             if not can_reach_base(
                 base_reach, f, ps_time, max_pd,
-                legs_after=legs_after if within_duty else None,
-                max_legs=(c.get("_target_legs")
-                          or c.get("max_legs", config.DEFAULT_CONSTRAINTS["max_legs"])) if within_duty else None,
+                duty_period=duty_period, max_duty_periods=max_duty_periods,
             ):
                 valid = False
 
