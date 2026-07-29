@@ -319,7 +319,19 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 
 def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                   greedy=False, device=None):
-    """B개 rollout을 매 step 배치 decoder call로 동시 실행."""
+    """B개 rollout을 매 step 배치 decoder call로 동시 실행.
+
+    require_base_return은 여기서 지원하지 않는다 — base 회전/salvage_doomed 같은
+    hard-mask 안전장치가 rollout_with_pairings()에만 있고 이 배치 경로엔 없어서,
+    그냥 통과시키면 base 미복귀 pairing이 조용히 섞여 나온다(2026-07-29). 지금은
+    아무 호출부도 이 조합을 안 쓰지만, 나중에 실수로 쓰면 바로 터지게 막아둔다.
+    """
+    if constraint.get("require_base_return"):
+        raise NotImplementedError(
+            "rollout_batch()/collect_pool()/collect_pool_multibase()는 "
+            "require_base_return을 지원하지 않습니다 — hard mask가 필요하면 "
+            "rollout_with_pairings() 기반 경로(예: evaluate_ip.py의 collect_pool_full)를 쓰세요."
+        )
     dev = device or torch.device("cpu")
     n_flights    = len(flights)
     episode_base = constraint.get("base_airport", 0)
