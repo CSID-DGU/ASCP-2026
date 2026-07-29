@@ -49,6 +49,9 @@ def main():
     parser.add_argument("--ip-time-limit", type=int, default=1800)
     parser.add_argument("--lambda-dh", type=float, default=1.0)
     parser.add_argument("--use-utc", action="store_true")
+    parser.add_argument("--require-base-return", action="store_true",
+                        help="decode-time hard mask 활성화 — rollout 중 base 복귀가 불가능해지는 "
+                             "leg를 마스킹하고, base 아닌 곳에서 END_PAIRING을 금지한다.")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -100,6 +103,8 @@ def main():
                 n_rollouts_per_chunk=args.n_rollouts_per_chunk,
                 subset_size=args.subset_size,
                 connected_sampler=sample_connected_subnet_std,
+                airline=airline,
+                require_base_return=args.require_base_return,
             )
 
         result = solve_set_covering(pool, n_flights=n_total, time_limit=args.ip_time_limit, lambda_dh=args.lambda_dh)

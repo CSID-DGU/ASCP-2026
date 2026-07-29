@@ -53,10 +53,10 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # (2) base가 아닌 곳에서의 END_PAIRING을 금지한다 → base-to-base가 구조적으로 보장됨
     # (SPPRC baseline의 dest_i == base 종료 조건과 동일한 보장).
     # _base_reach는 rollout이 (flights, base)당 1회 계산해 constraint에 실어 보낸다.
-    require_return = c.get("require_base_return", False)
-    base_reach     = c.get("_base_reach") if require_return else None
-    max_pd         = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
-    within_duty    = require_return and c.get("base_return_within_duty", True)
+    require_return   = c.get("require_base_return", False)
+    base_reach       = c.get("_base_reach") if require_return else None
+    max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
+    max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
 
     if pairing_start:
         base_remaining = any(
@@ -107,13 +107,14 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
             valid = False
 
         # 5. base 복귀 가능성 (require_base_return 시에만)
+        # duty_period/max_duty_periods로 검사한다 — max_legs는 여기서 안 쓴다.
+        # END_DUTY로 언제든 leg 예산을 새로 받을 수 있어서 duty당 leg 수 자체는
+        # base 도달을 막는 진짜 자원이 아니고, 실제 자원은 남은 rest(overnight) 횟수다.
         if valid and base_reach is not None:
             ps_time = f["dep_time"] if pairing_start else pairing_start_time
             if not can_reach_base(
                 base_reach, f, ps_time, max_pd,
-                legs_after=legs_after if within_duty else None,
-                max_legs=(c.get("_target_legs")
-                          or c.get("max_legs", config.DEFAULT_CONSTRAINTS["max_legs"])) if within_duty else None,
+                duty_period=duty_period, max_duty_periods=max_duty_periods,
             ):
                 valid = False
 
