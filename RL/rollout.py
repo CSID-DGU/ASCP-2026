@@ -55,6 +55,11 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     min_pairing_legs = constraint.get("min_pairing_legs", 2)
 
     _reach_cache = {}
+    # 호출부(evaluate_ip.py 등)가 base_airport에 대한 _base_reach를 이미 계산해서
+    # constraint에 실어 보낸 경우 재사용한다 — 매 rollout(chunk당 n_rollouts_per_chunk+1번)마다
+    # 같은 base를 또 계산하던 중복을 없앤다(2026-07-29). 회전으로 처음 보는 base는 그대로 새로 계산.
+    if require_return and constraint.get("_base_reach") is not None:
+        _reach_cache[constraint.get("base_airport", 0)] = constraint["_base_reach"]
 
     def constraint_for(base):
         c = {**constraint, "base_airport": base}
