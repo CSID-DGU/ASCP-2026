@@ -20,7 +20,9 @@ DEFAULT_CONSTRAINTS = {
     "min_pairing_legs":    2,   # END_PAIRING 허용 최소 leg 수 (항공사별 override)
     "pairing_cost":      5.0,   # END_PAIRING reward 패널티
     "uncovered_penalty": 10.0,  # 미배정 flight 1개당 패널티
-    "base_penalty":      5.0,   # END_PAIRING 시 base 미복귀 패널티
+    "base_penalty":     500.0,   # END_PAIRING 시 base 미복귀 패널티 (2026-07-28: 5.0→50.0,
+                                 # 기존 값이 pairing_cost와 같아서 사실상 무시됨 — 실측
+                                 # base-to-base 비율 10.63%(yvaa65ph)로 확인 후 상향)
 }
 
 # 항공사 설정 — 항공사 바꿀 때 AIRLINE만 수정하면 됨
@@ -58,15 +60,31 @@ CONSTRAINT_NORMS = {
 #   - 실제 항공사 값(12.5~13.0h)만 쓰면 FiLM 입력 변동폭이 3~7%에 불과 → gradient 미미
 #   - CONSTRAINT_NORMS 분모 대비 최소 20% 이상 변동폭 확보해야 FiLM MLP가 의미있는 gamma/beta 학습 가능
 #   - 검증 범위(12.0~14.0h)가 훈련 범위를 벗어나면 extrapolation → 항상 identity 출력
+#
+# 항공사 실제값이 범위 경계에 딱 붙어 여유가 없던 4개 차원(max_conn/max_legs/
+# max_duty_periods/max_pairing_days) 재검토. max_conn은 하한을 turkish 실제값(4.0)
+# 밑으로 더 내리지 않음 — 과거 그 부근에서 연결 가능한 flight이 없어 rollout이
+# 0-leg로 붕괴한 전례가 있어(그 원인이던 flight subset 샘플링은 이후 개선됐지만
+# Stage3 flight_sampler()는 다른 경로라 재현 여부 미확인이라 하한만 최소 여유),
+# 상한만 완만히 확장. max_legs/max_pairing_days는 값을 낮춘다고 connectivity가
+# 막히는 구조가 아니라(단지 duty/pairing이 일찍 끝날 뿐) 안전하게 여유를 더 줌.
+# max_duty_periods 하한 2는 건드리지 않음 — 1로 내리면 overnight 자체가 불가능해져
+# 별개의 구조적 붕괴(1-leg 정책으로 후퇴)가 나는 게 이미 알려져 있음(v14).
 STAGE3_CONSTRAINT_RANGES = {
     "max_duty":         (10.5, 14.0),   # NORM=14.0 → 0.75~1.0 (25% 변동)
     "min_rest":         (9.5,  12.0),   # NORM=12.0 → 0.79~1.0 (21% 변동)
     "min_conn":         (0.5,  1.0),    # NORM=1.0  → 0.5~1.0  (50% 변동)
-    "max_conn":         (9.0,  12.0),   # 하한 9.0(v14: 연결 불가 방지) + 상한 12.0(Delta 실제값 기준)
-    "max_legs":         (4,    10),     # NORM=10.0 → 0.4~1.0  (60% 변동)
+    "max_conn":         (3.5,  13.0),   # 하한 3.5(turkish 4.0 + 최소 여유) + 상한 13.0(Delta 12.0 + 여유)
+    "max_legs":         (3,    10),     # 하한 3(turkish 4 밑으로 여유, 안전)
     "max_duty_periods": (2,    4),      # v14: 1→2 — min=1이면 overnight 불가 → 1-leg 정책으로 retreat
-    "max_pairing_days": (3,    7),      # NORM=8.0  → 0.375~0.875 (50% 변동)
+    "max_pairing_days": (2,    8),      # 하한 2/상한 8(turkish 3·jetblue 7 밑위로 여유, 안전)
 }
+
+# 매 에피소드 이 확률로 STAGE3_CONSTRAINT_RANGES 랜덤 샘플링 대신 현재 선택된 항공사의
+# 진짜 constraint(airline_base)를 그대로 주입한다. 나머지는 연속 랜덤 샘플링 유지 —
+# FiLM이 항공사 몇 개를 그냥 암기하지 않고 연속 함수를 배우게 하면서도, 평가 시점에
+# 실제로 받을 값을 학습 중 직접 보게 하기 위한 절충.
+STAGE3_REAL_CONSTRAINT_INJECT_PROB = 0.2
 
 # 슬라이딩 윈도우 크기 — max_pairing_days + 1 (마지막 날 시작 pairing도 완성 가능하게)
 # Stage 2/3, Phase 2 모두 max_pairing_days = WINDOW_DAYS - 1로 설정

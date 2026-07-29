@@ -50,6 +50,7 @@ from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering, solve_lp_relaxation
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings, set_environment
+from base_reach import build_base_reach
 import config
 
 
@@ -250,13 +251,21 @@ def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_s
 def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       n_rollouts_per_chunk=5,
                       subset_size=config.EPISODE_MAX_FLIGHTS,
-                      connected_sampler=sample_connected_subnet_std):
+                      connected_sampler=sample_connected_subnet_std,
+                      airline="delta",
+                      require_base_return=False):
     """모든 윈도우에서 rollout → 전역 ID 기반 pairing pool 생성.
 
     window를 connected_sampler(학습과 동일한 sample_connected_subnet)로 connectivity 기반
     chunk로 분할한 뒤, 각 chunk에 n_rollouts_per_chunk번 stochastic + 1번 greedy rollout을
     수행한다. remaining이 빌 때까지 반복 파티셔닝하므로 모든 flight이 최소 1번 rollout에
     포함되어 coverage 100%를 보장하면서, 동시에 학습 때와 같은 연결 밀도를 유지한다.
+
+    airline="turkish"는 HB1/HB2 두 base가 상호 대체 가능하도록 설계됨
+    (environment_turkish.py) — pairing의 p["ends_at_base"]는 rollout.py에서
+    "그 rollout에 배정된 단일 base"로만 same-base 여부를 판별하므로 HB1→HB2 같은
+    교차 복귀를 잘못 걸러낸다. turkish에 한해 실제 첫/마지막 leg의 origin/dest가
+    base_id_set(HB1, HB2 전체) 안에 있는지로 재판별한다.
     """
     pool = {}
     covered_global = set()
@@ -292,9 +301,33 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         for c_idx, chunk in enumerate(chunks):
             for local_id, f in enumerate(chunk):
                 f["local_id"] = local_id
+            chunk_by_gid = {f["global_id"]: f for f in chunk}
+
+            def _pairing_valid(p, _chunk_by_gid=chunk_by_gid):
+                if airline != "turkish":
+                    return p["ends_at_base"]
+                # turkish: HB1→HB2, HB2→HB1도 유효 — rollout.py의 ends_at_base(단일
+                # episode_base 기준 same-base)는 이 교차 복귀를 걸러내므로 실제
+                # 첫/마지막 leg origin/dest를 base_id_set 전체와 비교해 재판별한다.
+                first = _chunk_by_gid.get(p["legs"][0])
+                last  = _chunk_by_gid.get(p["legs"][-1])
+                return (first is not None and last is not None
+                        and first["origin"] in base_id_set and last["dest"] in base_id_set)
 
             base_id = random.choice(base_ids)
             c_b = {**constraint, "base_airport": base_id}
+            if require_base_return:
+                # rollout.py가 base 회전(현재 base 출발편 소진 시 다른 base로 전환) +
+                # salvage(막다른 길이면 base로 끝나는 prefix만 살리고 나머지는 반납)를
+                # 지원하므로, base_ids/strict_base_start를 넘겨 그 경로를 활성화한다.
+                c_b["base_ids"] = base_ids
+                c_b["strict_base_start"] = True
+                c_b["require_base_return"] = True
+                # rollout_subset_global이 flight["id"]를 local_id로 다시 매핑해서 rollout을
+                # 돌리므로(전역 ID로 돌리면 mask/step의 인덱싱이 깨짐), reachability도 그
+                # local_id 기준으로 계산해야 실제 rollout 중 조회하는 id와 맞아떨어진다.
+                _local_flights = [{**f, "id": f["local_id"]} for f in chunk]
+                c_b["_base_reach"] = build_base_reach(_local_flights, base_id, c_b)
 
             for _ in range(n_rollouts_per_chunk):
                 try:
@@ -303,6 +336,11 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                     print(f"  [warn] stochastic rollout 실패 (chunk={c_idx}): {e}", flush=True)
                     continue
                 for p in pairings:
+                    # base 미복귀 pairing은 pool/coverage 집계 둘 다에서 제외(2026-07-28) —
+                    # coverage 집계에도 넣으면 "커버는 됐는데 실제로 IP가 못 고르는" 유령
+                    # coverage가 생겨서 window_covered/covered_global도 같이 걸러야 함.
+                    if not _pairing_valid(p):
+                        continue
                     key = tuple(sorted(p["legs"]))
                     if key not in pool or p["cost"] < pool[key]["cost"]:
                         pool[key] = p
@@ -316,6 +354,8 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                 print(f"  [warn] greedy rollout 실패 (chunk={c_idx}): {e}", flush=True)
                 continue
             for p in pairings:
+                if not _pairing_valid(p):
+                    continue
                 key = tuple(sorted(p["legs"]))
                 if key not in pool or p["cost"] < pool[key]["cost"]:
                     pool[key] = p
@@ -366,6 +406,7 @@ def evaluate_full(
     wandb_project="ASCP-2026-paper",
     compute_gap=False,
     seed=None,
+    require_base_return=False,
 ):
     """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
 
@@ -463,6 +504,14 @@ def evaluate_full(
 
     connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
 
+    _hard_mask = require_base_return
+    if _hard_mask and airline == "turkish":
+        print("  [warn] turkish는 environment_turkish.py가 별도 get_mask 구현을 쓰므로 "
+              "hard mask가 적용되지 않습니다 — ends_at_base 사후 필터링만 동작합니다.", flush=True)
+        _hard_mask = False
+    if _hard_mask:
+        print("\n[base-return] decode-time hard mask ON (reachability pruning 포함)", flush=True)
+
     print(f"\nPool 수집 중 (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
     with torch.no_grad():
         pool, covered = collect_pool_full(
@@ -470,6 +519,8 @@ def evaluate_full(
             n_rollouts_per_chunk=n_rollouts_per_chunk,
             subset_size=subset_size,
             connected_sampler=connected_sampler,
+            airline=airline,
+            require_base_return=_hard_mask,
         )
 
     print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
@@ -584,6 +635,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=None,
                         help="random/torch RNG 고정 — 여러 체크포인트를 같은 평가 인스턴스로 "
                              "paired 비교할 때 지정 (예: ON/OFF 체크포인트 전부 동일 seed)")
+    parser.add_argument("--require-base-return", action="store_true",
+                        help="decode-time hard mask 활성화 — rollout 중 base 복귀가 불가능해지는 "
+                             "leg를 마스킹하고, base 아닌 곳에서 END_PAIRING을 금지한다.")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -608,4 +662,5 @@ if __name__ == "__main__":
         wandb_project=args.wandb_project,
         compute_gap=args.compute_gap,
         seed=args.seed,
+        require_base_return=args.require_base_return,
     )

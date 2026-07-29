@@ -185,6 +185,7 @@ _PAIRING_FIXED_COST  = config.IP_PAIRING_FIXED_COST
 
 def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
     assigned = {f["id"]: False for f in flights}
+    flight_by_id = {f["id"]: f for f in flights}
     pairings = []
 
     current_legs     = []
@@ -202,8 +203,13 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
                      - _LEG_BONUS_IP * max(len(current_legs) - 1, 0)
                      + (_DEADHEAD_PENALTY_IP if is_forced else 0.0)
                      + _PAIRING_FIXED_COST)
+        # ends_at_base(2026-07-28): Phase2 CG-dual pool도 base 미복귀 pairing을
+        # 그대로 썼던 문제 수정 — RL/rollout.py와 동일 판별.
+        ends_at_base = (flight_by_id[current_legs[0]]["origin"] == episode_base
+                        and flight_by_id[current_legs[-1]]["dest"] == episode_base)
         pairings.append({"legs": list(current_legs), "fly": pairing_fly,
-                         "elapsed": elapsed, "cost": cost})
+                         "elapsed": elapsed, "cost": cost,
+                         "ends_at_base": ends_at_base})
 
     def start_new(f):
         nonlocal pairing_dep, pairing_fly, pairing_last_arr, pairing_rest
@@ -323,13 +329,19 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
 
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
+    # base 미복귀 pairing 제외(2026-07-28) — LP dual(μ^cov/ν^exc)이 base 무시하고
+    # 계산되던 문제 수정.
     pool = {}
     for _ in range(n_rollouts):
         for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded):
+            if not p["ends_at_base"]:
+                continue
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
     for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True):
+        if not p["ends_at_base"]:
+            continue
         key = tuple(sorted(p["legs"]))
         if key not in pool or p["cost"] < pool[key]["cost"]:
             pool[key] = p
@@ -782,23 +794,27 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
         _selected_airline = ["delta"]
 
         def flight_sampler():
+            # airline 선택은 여기서 한 번만 확정하고, (base, offset) 조합이 빈 윈도우로
+            # 실패하면 같은 airline으로 재시도한다 — 항공사별로 데이터량 차이가 커서
+            # (delta 73,836편 vs alaska/jetblue 20,744~24,443편) base/offset을 airline과
+            # 함께 다시 뽑으면 데이터가 적은 항공사일수록 실패→스킵이 잦아져 실제 학습에
+            # 쓰이는 에피소드 비율이 delta 쪽으로 쏠린다.
             airline      = random.choice(airlines)
             _selected_airline[0] = airline
-            base_airport = random.choice(all_base_ids[airline])
-            offset_days  = random.randint(0, _max_offsets[airline])
-            flights = load_flights_rolling(
-                config.AIRLINE_DATA[airline], WINDOW_DAYS, offset_days, airport_map,
-                base_airport=base_airport,
-                n_max=config.EPISODE_MAX_FLIGHTS,
-                df=_df_caches[airline],
-                use_utc=USE_UTC,
-            )
-            if not flights:
-                return None
-            if not any(f["origin"] == base_airport for f in flights):
-                return None
-            origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
-            return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
+            for _ in range(20):
+                base_airport = random.choice(all_base_ids[airline])
+                offset_days  = random.randint(0, _max_offsets[airline])
+                flights = load_flights_rolling(
+                    config.AIRLINE_DATA[airline], WINDOW_DAYS, offset_days, airport_map,
+                    base_airport=base_airport,
+                    n_max=config.EPISODE_MAX_FLIGHTS,
+                    df=_df_caches[airline],
+                    use_utc=USE_UTC,
+                )
+                if flights and any(f["origin"] == base_airport for f in flights):
+                    origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
+                    return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
+            return None
 
         _first_base = all_base_ids["delta"][0]
         base_constraint = _CONSTRAINT_FN["delta"](_first_base)
@@ -853,10 +869,19 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
     def sample_constraint():
         r = config.STAGE3_CONSTRAINT_RANGES
         if multi_airline:
-            airline_base = _CONSTRAINT_FN[_selected_airline[0]](0) # 혹은 기존 찬주님 코드 방식대로 매칭
-            base = {**airline_base, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+            base = {**_CONSTRAINT_FN[_selected_airline[0]](0),
+                    "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
         else:
             base = _stage3_base
+        if random.random() < config.STAGE3_REAL_CONSTRAINT_INJECT_PROB:
+            # 주입할 constraint의 항공사는 이 episode의 flight 데이터 항공사(_selected_airline)와
+            # 무관하게 4개(turkish 포함) 중에서 고른다 — turkish는 flight_sampler()의 airlines
+            # 풀에 애초에 없어서(로더가 달라 별도 취급) _selected_airline로만 묶으면 turkish
+            # 실제값이 학습 중 한 번도 주입되지 않는다. Table3 ③/④'에서 이미 검증된 대로
+            # "다른 항공사 flight + turkish constraint" 조합은 정상 동작한다.
+            inject_airline = random.choice(list(_CONSTRAINT_FN.keys())) if multi_airline else config.AIRLINE
+            real = _CONSTRAINT_FN[inject_airline](0)
+            return {**base, **{k: real[k] for k in FILM_CONSTRAINT_KEYS}}
         return {
             **base,
             "max_duty":         random.uniform(*r["max_duty"]),
@@ -1101,9 +1126,16 @@ if __name__ == "__main__":
     parser.add_argument("--dual-weight", type=float, default=None,
                         help="Phase2 CG dual reward 가중치를 config.PHASE2_DUAL_WEIGHT(기본 0.6) 대신 "
                              "이 값으로 덮어씀. 0을 주면 CG-dual 완전히 비활성화.")
+    parser.add_argument("--data-path", default=None,
+                        help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
+                             "delta-small 등 대체 데이터셋으로 학습/이어받기할 때 지정")
     args = parser.parse_args()
     if args.airline:
         config.AIRLINE = args.airline
+    if args.data_path:
+        # config.AIRLINE_DATA를 덮어써야 train() 안의 DATA_PATH/airport_map이 이 경로를 따라감
+        config.AIRLINE_DATA[config.AIRLINE] = args.data_path
+        print(f"data_path 지정: {config.AIRLINE} → {args.data_path}")
     _set_device(args.device)
     USE_UTC = args.use_utc
     print(f"device: {DEVICE}")
