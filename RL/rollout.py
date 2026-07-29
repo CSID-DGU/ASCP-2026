@@ -132,8 +132,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "dead_time":   dead_time,
             "cost":        (dead_time
                             - config.IP_LEG_BONUS * max(n_legs - 1, 0)
+                            + config.IP_DEADHEAD_PENALTY
                             + config.IP_PAIRING_FIXED_COST),
-            "is_deadhead": False,
+            # salvage로 잘려나온 prefix는 policy가 의도적으로 여기서 끝낸 게 아니라
+            # (뒤가 막혀서 사후에 잘라낸 파편이라) flush_pairing의 is_forced=True와
+            # 동일하게 취급한다 — 안 그러면 IP가 이 파편을 deadhead penalty 없는
+            # "깨끗한" pairing으로 착각해 부당하게 선호할 수 있다(2026-07-29).
+            "is_deadhead": True,
             "n_legs":      n_legs,
             "n_duties":    n_rest + 1,
             "intra_duty_gap":    intra,

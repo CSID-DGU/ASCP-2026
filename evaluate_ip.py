@@ -505,12 +505,12 @@ def evaluate_full(
     connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
 
     _hard_mask = require_base_return
-    if _hard_mask and airline == "turkish":
-        print("  [warn] turkish는 environment_turkish.py가 별도 get_mask 구현을 쓰므로 "
-              "hard mask가 적용되지 않습니다 — ends_at_base 사후 필터링만 동작합니다.", flush=True)
-        _hard_mask = False
     if _hard_mask:
         print("\n[base-return] decode-time hard mask ON (reachability pruning 포함)", flush=True)
+        if airline == "turkish":
+            print("  [note] turkish는 HB1↔HB2 교차 복귀는 강제하지 않고, 그 pairing이 "
+                  "실제로 출발한 base로의 단일 복귀만 hard mask로 강제한다(더 엄격한 부분집합).",
+                  flush=True)
 
     print(f"\nPool 수집 중 (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
     with torch.no_grad():
