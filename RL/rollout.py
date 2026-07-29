@@ -214,7 +214,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             return None, None
         if not startable:
             return None, None
-        return episode_base, min(startable, key=lambda f: f["dep_time"])
+        # base 아닌 곳에서 강제 시작(legacy deadhead-start) — 반환하는 base는
+        # episode_base가 아니라 실제로 고른 flight의 origin이어야 한다. episode_base를
+        # 그대로 반환하면 pairing_start_ap(실제 origin)과 어긋나서, begin_pairing()이
+        # 진짜 base 전환으로 인식 못 하고 cur_c/_base_reach를 안 갱신하게 된다
+        # (require_base_return=False일 땐 무해하지만, 정합성을 항상 보장해둔다).
+        f = min(startable, key=lambda f: f["dep_time"])
+        return f["origin"], f
 
     def begin_pairing():
         nonlocal state, episode_base, cur_c
