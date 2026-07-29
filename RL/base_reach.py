@@ -55,6 +55,7 @@ def build_base_reach(flights, base_ap, constraint):
     """
     min_conn = constraint.get("min_conn", 0.65)
     max_conn = constraint.get("max_conn", 9.0)
+    min_rest = constraint.get("min_rest", 10.0)
 
     by_origin = {}
     for f in flights:
@@ -71,6 +72,11 @@ def build_base_reach(flights, base_ap, constraint):
         for g in by_origin.get(f["dest"], ()):
             gap = g["dep_time"] - arr
             if gap < min_conn:
+                continue
+            # gap이 max_conn을 넘는데 min_rest에도 못 미치면 같은 duty로도, rest로도
+            # legal하게 못 쓰는 gap이다 — 이 연결 자체를 하한 계산에서 제외해야
+            # duty_crossings가 실제로 불가능한 경로를 "가능하다"고 낙관하지 않는다(2026-07-29).
+            if gap > max_conn and gap < min_rest:
                 continue
             d_next = D.get(g["id"])
             if d_next is None or d_next == INF:
