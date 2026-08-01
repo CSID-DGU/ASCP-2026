@@ -1,9 +1,11 @@
-# utils.py — train.py, evaluate_ip.py, evaluate_ip_full.py 공용 유틸
+# utils.py -- shared utilities for train.py, evaluate_ip.py, evaluate_ip_full.py
 #
-# 중복 제거 대상:
-#   - constraint_to_tensor: constraint dict → FiLM 입력 tensor
-#   - flights_to_tensors: flight dict 리스트 → 모델 입력 tensor
-#   - state_to_vec: environment state dict → decoder 입력 tensor
+# Shared conversions:
+#   - constraint_to_tensor: constraint dict -> FiLM input tensor c~ (Eq. 1, 5)
+#   - flights_to_tensors: list of flight dicts -> model input tensors
+#   - state_to_vec: environment state dict -> decoder query input tensor
+#   - flight_gap_bias: per-candidate connection gap g_t(j) used in the
+#     pointer logit's w_gap * g_t(j) term (Eq. 7)
 
 import torch
 import config
@@ -11,9 +13,9 @@ from constraints import FILM_CONSTRAINT_KEYS
 
 
 def constraint_to_tensor(constraint, device=None):
-    """constraint dict → FiLM 입력 tensor (constraint_dim,)
+    """Convert a constraint dict to the FiLM input tensor c~ of shape (constraint_dim,) (Eq. 5).
 
-    CONSTRAINT_NORMS로 정규화 → [0, 1] 범위.
+    Normalized by CONSTRAINT_NORMS into [0, 1].
     """
     t = torch.tensor(
         [constraint[k] / config.CONSTRAINT_NORMS[k] for k in FILM_CONSTRAINT_KEYS],
@@ -25,9 +27,10 @@ def constraint_to_tensor(constraint, device=None):
 
 
 def flights_to_tensors(flights, max_time, device=None):
-    """flight dict 리스트 → (origins, dests, dep_times, arr_times, fly_times) tensor.
+    """Convert a list of flight dicts into (origins, dests, dep_times, arr_times, fly_times) tensors.
 
-    max_time: 시간 정규화 분모. train에서는 window_days*24, eval에서는 ckpt["max_time"].
+    max_time: time-normalization denominator. window_days*24 during training,
+    ckpt["max_time"] during evaluation.
     """
     origins  = torch.tensor([f["origin"]   for f in flights], dtype=torch.long)
     dests    = torch.tensor([f["dest"]     for f in flights], dtype=torch.long)
@@ -46,19 +49,23 @@ def flights_to_tensors(flights, max_time, device=None):
 
 
 def state_to_vec(state, encoder, constraint, device=None, include_total_legs=True):
-    """environment state dict → decoder 입력 tensor (79,)
+    """Convert an environment state dict into the decoder query input tensor state_vec (79,).
 
     state_vec = current_airport_emb(32) + base_airport_emb(32) + scalars(8) + constraint_vec(7)
 
-    scalars 8개:
+    8 scalars:
       time_of_day, day_norm, duty_elapsed/NORM, legs/NORM,
       duty_period/NORM, is_resting, rest_remaining, total_legs/NORM
 
-    constraint_vec: FILM_CONSTRAINT_KEYS 정규화값 — decoder가 constraint를 직접 볼 수 있게 함.
+    constraint_vec: normalized FILM_CONSTRAINT_KEYS values (Eq. 5 c~) --
+    concatenated so the decoder query q_t can see the rule profile directly,
+    in addition to conditioning the encoder via FiLM.
 
-    고정 분모(CONSTRAINT_NORMS) 사용 이유:
-      constraint 값으로 직접 나누면 constraint 정보가 state_vec에 인코딩되어 FiLM gradient가 약해짐.
-      CONSTRAINT_NORMS는 훈련 범위 최대값으로 고정 → FiLM이 constraint 정보의 유일한 경로가 됨.
+    Fixed denominators (CONSTRAINT_NORMS) are used rather than dividing by the
+    constraint's own value, because doing the latter would encode constraint
+    information into state_vec itself and weaken the FiLM gradient.
+    CONSTRAINT_NORMS is fixed at the training-range maximum, so FiLM remains
+    the sole pathway through which rule-profile information reaches the model.
     """
     dev = device or torch.device("cpu")
     current_emb = encoder.airport_emb(torch.tensor(state["current_airport"]).to(dev))
@@ -99,10 +106,11 @@ def state_to_vec(state, encoder, constraint, device=None, include_total_legs=Tru
 
 
 def flight_gap_bias(state, flights, constraint, device=None):
-    """decoder gap_bias 입력 — (N+2,), 마지막 2개(END_DUTY/END_PAIRING)는 항상 0.
+    """Compute the decoder gap_bias input g_t(j) of Eq. (7): shape (N+2,), last 2 entries (EndDuty/EndPairing) always 0.
 
-    duty-내부 연결 시점(pairing_start/is_resting 아닐 때)에만 실제 gap을 채우고,
-    그 외에는 전부 0(gap_weight가 안 걸림).
+    Only filled with the actual normalized gap at within-duty connection
+    points (i.e. not pairing_start/is_resting); zero everywhere else, so
+    gap_weight has no effect at those steps.
     """
     dev = device or torch.device("cpu")
     n = len(flights)
@@ -115,6 +123,6 @@ def flight_gap_bias(state, flights, constraint, device=None):
 
 
 def flight_gap_bias_batch(states, flights, constraint, device=None):
-    """flight_gap_bias의 배치 버전 — states: state dict 리스트. 반환: (B, N+2)"""
+    """Batched version of flight_gap_bias -- states: list of state dicts. Returns: (B, N+2)"""
     dev = device or torch.device("cpu")
     return torch.stack([flight_gap_bias(s, flights, constraint, device=dev) for s in states])

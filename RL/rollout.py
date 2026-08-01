@@ -1,9 +1,10 @@
-# rollout.py — RL rollout → pairing 구조체 수집 (evaluate_ip.py, train.py Phase2 공용)
+# rollout.py -- run RL rollouts and collect pairing structs (shared by
+# evaluate_ip.py and train.py's Phase 2)
 #
-# rollout_with_pairings: 단건 rollout → pairing 리스트 반환
-# rollout_batch: B개 rollout 배치 실행
-# collect_pool: 단일 base rollout pool 수집
-# collect_pool_multibase: 여러 base rollout pool 수집
+# rollout_with_pairings: run one rollout -> return a list of pairings
+# rollout_batch: run B rollouts in a batch
+# collect_pool: collect a rollout pool from a single base
+# collect_pool_multibase: collect a rollout pool from multiple bases
 
 import random
 
@@ -20,9 +21,10 @@ get_mask, step = _env_default.get_mask, _env_default.step
 
 
 def set_environment(airline):
-    """airline에 맞는 get_mask/step 구현으로 전환 (turkish는 HB1/HB2 비대칭 종료 허용).
-    collect_pool_full/rollout_subset_global 등 이 모듈의 get_mask/step을
-    참조하는 모든 호출부에 즉시 반영됨 (모듈 전역 rebind)."""
+    """Switch to the get_mask/step implementation for the given airline
+    (turkish allows asymmetric HB1/HB2 termination). Rebinds this module's
+    get_mask/step globals, so all callers that reference them (e.g.
+    collect_pool_full, rollout_subset_global) pick up the change immediately."""
     global get_mask, step
     if airline == "turkish":
         get_mask, step = _get_mask_turkish, _step_turkish
@@ -32,10 +34,10 @@ def set_environment(airline):
 
 def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
                           greedy=False, device=None):
-    """RL rollout 1번 실행 → pairing 구조체 리스트 반환.
+    """Run one RL rollout and return a list of pairing structs.
 
-    각 pairing: {legs, fly, elapsed, dead_time, cost, is_deadhead, n_legs}
-    cost = dead_time - IP_LEG_BONUS*(n_legs-1) + IP_DEADHEAD_PENALTY*(강제종료) + IP_PAIRING_FIXED_COST
+    Each pairing: {legs, fly, elapsed, dead_time, cost, is_deadhead, n_legs}
+    cost = dead_time - IP_LEG_BONUS*(n_legs-1) + IP_DEADHEAD_PENALTY*(if forced) + IP_PAIRING_FIXED_COST
     """
     dev = device or torch.device("cpu")
     assigned = {f["id"]: False for f in flights}
@@ -43,11 +45,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 
     pairings = []
 
-    # ── base 처리 옵션 ────────────────────────────────────────────────────────
-    # base_ids            : base 목록. 현재 base의 미배정 출발편이 소진되면 다른 base로 회전.
-    # strict_base_start   : base 출발편이 전부 소진되면 임의 공항에서 새 pairing을 시작하지
-    #                       않고 rollout을 종료 (base 없는 pairing 생성 원천 차단).
-    # require_base_return : base 복귀를 hard mask로 강제 (environment.get_mask에서 처리).
+    # ── Base-handling options ────────────────────────────────────────────────
+    # base_ids            : list of bases. Rotates to another base once the
+    #                        current base's unassigned departing legs are exhausted.
+    # strict_base_start   : once base-departing legs are all exhausted, end
+    #                        the rollout instead of starting a new pairing
+    #                        from an arbitrary airport (blocks pairings with no base at all).
+    # require_base_return : hard-mask base return (handled in environment.get_mask, Eq. 6).
     all_bases      = list(constraint.get("base_ids") or [constraint.get("base_airport", 0)])
     strict_start   = bool(constraint.get("strict_base_start", False))
     require_return = bool(constraint.get("require_base_return", False))
@@ -73,9 +77,10 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     pairing_fly      = 0.0
     pairing_last_arr = 0.0
     pairing_rest     = 0.0
-    pairing_n_duties = 1   # 현재 pairing의 duty 수 (overnight 발생 시 증가)
-    # [진단용] dead_time을 duty 내부 연결 gap과 duty 간 초과 대기(실제 휴식 - min_rest)로
-    # 분리 계측. dead_time 계산식/cost 자체는 손대지 않음 — 순수 부가 필드.
+    pairing_n_duties = 1   # number of duties in the current pairing (increments on each overnight)
+    # [diagnostic] Split dead_time into within-duty connection gaps and
+    # inter-duty excess wait (actual rest - min_rest) for measurement only.
+    # Does not affect the dead_time/cost calculation itself -- purely additive fields.
     pairing_intra_gap    = 0.0
     pairing_inter_excess = 0.0
 
@@ -90,9 +95,11 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
                 - config.IP_LEG_BONUS * max(n_legs - 1, 0)
                 + (config.IP_DEADHEAD_PENALTY if is_forced else 0.0)
                 + config.IP_PAIRING_FIXED_COST)
-        # ends_at_base: 이 pairing이 실제로 출발한 base(pairing_start_ap, base 회전 시
-        # episode_base와 다를 수 있음)로 정확히 복귀했는지. episode_base 고정값과 비교하면
-        # 회전 후 pairing을 전부 오판정하므로 반드시 pairing_start_ap을 써야 한다.
+        # ends_at_base: whether this pairing actually returned to the base it
+        # departed from (pairing_start_ap, which can differ from episode_base
+        # after base rotation). Comparing against the fixed episode_base
+        # would misjudge every pairing after a rotation, so pairing_start_ap
+        # must be used instead.
         ends_at_base = (pairing_start_ap == flight_by_id[current_legs[-1]]["dest"])
         pairings.append({
             "legs":        list(current_legs),
@@ -110,7 +117,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         })
 
     def emit_prefix(recs, end_ap, start_ap):
-        """salvage_doomed 전용: recs(leg 기록 prefix)로 base에서 끝나는 pairing을 만든다."""
+        """salvage_doomed only: build a pairing ending at base from a prefix of leg records (recs)."""
         if len(recs) < 1:
             return
         fly     = sum(r["arr"] - r["dep"] for r in recs)
@@ -134,10 +141,11 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
                             - config.IP_LEG_BONUS * max(n_legs - 1, 0)
                             + config.IP_DEADHEAD_PENALTY
                             + config.IP_PAIRING_FIXED_COST),
-            # salvage로 잘려나온 prefix는 policy가 의도적으로 여기서 끝낸 게 아니라
-            # (뒤가 막혀서 사후에 잘라낸 파편이라) flush_pairing의 is_forced=True와
-            # 동일하게 취급한다 — 안 그러면 IP가 이 파편을 deadhead penalty 없는
-            # "깨끗한" pairing으로 착각해 부당하게 선호할 수 있다(2026-07-29).
+            # A prefix cut off by salvage was not intentionally ended by the
+            # policy here (it's a fragment truncated after hitting a dead
+            # end), so it is treated the same as flush_pairing's
+            # is_forced=True -- otherwise the IP could mistake this fragment
+            # for a "clean" pairing with no deadhead penalty and unfairly prefer it.
             "is_deadhead": True,
             "n_legs":      n_legs,
             "n_duties":    n_rest + 1,
@@ -149,8 +157,9 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         })
 
     def salvage_doomed():
-        """base 복귀가 불가능해진 pairing 처리 — base로 끝나는 최장 prefix만 유효 pairing으로
-        확정하고, 남은 tail leg는 미배정으로 되돌려 다른 pairing이 재사용하게 한다."""
+        """Handle a pairing that can no longer return to base -- finalize
+        only the longest prefix ending at base as a valid pairing, and
+        return the remaining tail legs to unassigned so other pairings can reuse them."""
         k = 0
         for i, r in enumerate(leg_recs):
             if r["dest"] == episode_base:
@@ -183,9 +192,10 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         pairing_inter_excess = 0.0
 
     def pick_start():
-        """다음 pairing의 (base, 첫 flight) 선택. 현재 base에 미배정 출발편이 남아있으면
-        그대로, 없으면 다른 base로 회전. 어디에도 없으면 strict_start 여부에 따라 종료
-        또는(기존 동작) 임의 공항에서 시작."""
+        """Choose the (base, first flight) for the next pairing. Stays on the
+        current base if it still has unassigned departing legs; otherwise
+        rotates to another base. If none have any, either ends the rollout
+        (strict_start) or starts from an arbitrary airport (default)."""
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:
             return None, None
@@ -267,13 +277,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         else:
             action = Categorical(probs).sample().item()
 
-        if action == len(flights):             # END_DUTY
+        if action == len(flights):             # EndDuty
             pairing_rest     += min_rest
             pairing_n_duties += 1
             state, _, _ = step(state, action, flights, assigned, cur_c)
             continue
 
-        if action == len(flights) + 1:         # END_PAIRING
+        if action == len(flights) + 1:         # EndPairing
             flush_pairing(is_forced=False)
             if not begin_pairing():
                 break
@@ -287,7 +297,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         pairing_fly      += f["arr_time"] - f["dep_time"]
         pairing_last_arr  = f["arr_time"]
 
-        # [진단용, 실험 A] 선택 직전 state 기준으로 gap 종류 분리 집계
+        # [diagnostic, experiment A] classify the gap type based on state just before this selection
         if not state.get("pairing_start", False) and not state.get("is_resting", False):
             pairing_intra_gap += f["dep_time"] - state["current_time"]
         elif state.get("is_resting", False):
@@ -305,7 +315,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 
 def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                   greedy=False, device=None):
-    """B개 rollout을 매 step 배치 decoder call로 동시 실행."""
+    """Run B rollouts concurrently, using one batched decoder call per step."""
     dev = device or torch.device("cpu")
     n_flights    = len(flights)
     episode_base = constraint.get("base_airport", 0)
@@ -318,7 +328,7 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
     pair_fly    = [0.0] * B
     pair_arr    = [0.0] * B
     pair_rest   = [0.0] * B
-    pair_duties = [1] * B   # 현재 pairing의 duty 수
+    pair_duties = [1] * B   # number of duties in the current pairing
     pairings    = [[] for _ in range(B)]
     done        = [False] * B
 
@@ -411,12 +421,12 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
             actions = Categorical(probs).sample().cpu().tolist()
 
         for action, i in zip(actions, idxs):
-            if action == n_flights:            # END_DUTY
+            if action == n_flights:            # EndDuty
                 pair_rest[i]   += constraint.get("min_rest", 10.0)
                 pair_duties[i] += 1
                 states[i], _, _ = step(states[i], action, flights, assigned[i], constraint)
 
-            elif action == n_flights + 1:      # END_PAIRING
+            elif action == n_flights + 1:      # EndPairing
                 flush_env(i)
                 unassigned = [f for f in flights if not assigned[i][f["id"]]]
                 if not unassigned:
@@ -425,7 +435,7 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                 bf = [f for f in unassigned if f["origin"] == episode_base]
                 start_env(i, sorted(bf or unassigned, key=lambda f: f["dep_time"])[0])
 
-            else:                              # flight 선택
+            else:                              # select a flight leg
                 f = flights[action]
                 cur_legs[i].append(f["id"])
                 pair_fly[i] += f["arr_time"] - f["dep_time"]
@@ -440,10 +450,11 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
 
 def collect_pool(flights, constraint, encoder, decoder, encoded,
                  n_rollouts=100, device=None):
-    """단일 base n_rollouts번 배치 rollout → 중복 제거한 pairing pool 반환.
+    """Run n_rollouts batched rollouts from a single base and return a deduplicated pairing pool.
 
-    base로 복귀 안 한 pairing(ends_at_base=False)은 pool에서 제외(2026-07-28) —
-    IP가 base 미복귀 pairing을 후보로 골라버리는 문제 수정.
+    Pairings that don't return to base (ends_at_base=False) are excluded from
+    the pool, since the IP should never be offered a candidate that fails
+    the base-return requirement of Omega(c).
     """
     pool = {}
     for p in [p for ps in rollout_batch(flights, constraint, encoder, decoder, encoded,
@@ -466,14 +477,14 @@ def collect_pool(flights, constraint, encoder, decoder, encoded,
 
 def collect_pool_multibase(flights, constraint, encoder, decoder, encoded,
                            bases, n_rollouts_per_base=50, device=None):
-    """각 base에서 n_rollouts_per_base번 배치 rollout → 통합 pool 반환.
+    """Run n_rollouts_per_base batched rollouts from each base and return the merged pool.
 
-    base로 복귀 안 한 pairing은 제외(2026-07-28, collect_pool과 동일).
+    Pairings that don't return to base are excluded, same as collect_pool.
     """
     pool = {}
     for b_idx, base in enumerate(bases):
         c_b = {**constraint, "base_airport": base}
-        print(f"  [{b_idx+1}/{len(bases)}] base={base}: stochastic {n_rollouts_per_base}개...", flush=True)
+        print(f"  [{b_idx+1}/{len(bases)}] base={base}: {n_rollouts_per_base} stochastic rollouts...", flush=True)
         for p in [p for ps in rollout_batch(flights, c_b, encoder, decoder, encoded,
                                              B=n_rollouts_per_base, device=device)
                   for p in ps]:
@@ -482,7 +493,7 @@ def collect_pool_multibase(flights, constraint, encoder, decoder, encoded,
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
-        print(f"  [{b_idx+1}/{len(bases)}] base={base}: greedy 1개...", flush=True)
+        print(f"  [{b_idx+1}/{len(bases)}] base={base}: 1 greedy rollout...", flush=True)
         for p in rollout_batch(flights, c_b, encoder, decoder, encoded,
                                 B=1, greedy=True, device=device)[0]:
             if not p["ends_at_base"]:
@@ -490,5 +501,5 @@ def collect_pool_multibase(flights, constraint, encoder, decoder, encoded,
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
-        print(f"  → pool 누계: {len(pool)}개", flush=True)
+        print(f"  -> cumulative pool: {len(pool)}", flush=True)
     return list(pool.values())

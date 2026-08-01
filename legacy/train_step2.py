@@ -1,6 +1,6 @@
 """
-Curriculum Step 2: 300 flights + constraint 고정 (max_duty=10h)
-목표: 스케일업해도 수렴하는지 확인
+Curriculum Step 2: 300 flights + fixed constraint (max_duty=10h)
+Goal: check whether it still converges after scaling up
 """
 
 import sys
@@ -9,7 +9,7 @@ import torch
 import torch.optim as optim
 from torch.distributions import Categorical
 
-# 시드 고정 — 매번 같은 결과 나오도록
+# fix seed -- so the same result comes out every time
 SEED = 42
 random.seed(SEED)
 torch.manual_seed(SEED)
@@ -111,7 +111,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
 
 def train():
-    # ★ 300 flights로 스케일업
+    # scale up to 300 flights
     flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=300)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
@@ -119,8 +119,8 @@ def train():
     c_tensor = torch.tensor([CONSTRAINT["max_duty"]], dtype=torch.float32)
 
     print(f"=== Curriculum Step 2 ===")
-    print(f"flights: {len(flights)}개, airports: {n_airports}개")
-    print(f"constraint: max_duty={CONSTRAINT['max_duty']}h (고정)")
+    print(f"flights: {len(flights)}, airports: {n_airports}")
+    print(f"constraint: max_duty={CONSTRAINT['max_duty']}h (fixed)")
     print()
 
     encoder = FlightEncoder(n_airports=n_airports)
@@ -178,16 +178,16 @@ def train():
 
     print()
     print("=" * 60)
-    print("Step 2 결과")
+    print("Step 2 Results")
     print("=" * 60)
 
     first50 = greedy_pairings[:50]
     last50 = greedy_pairings[-50:]
-    print(f"  처음 50ep 평균 pairings: {sum(first50)/len(first50):.1f}")
-    print(f"  마지막 50ep 평균 pairings: {sum(last50)/len(last50):.1f}")
+    print(f"  First 50 ep avg pairings: {sum(first50)/len(first50):.1f}")
+    print(f"  Last 50 ep avg pairings: {sum(last50)/len(last50):.1f}")
 
     improved = sum(first50)/len(first50) > sum(last50)/len(last50)
-    print(f"  수렴 여부: {'줄어듦 (수렴 중)' if improved else '안 줄어듦 (수렴 안 함)'}")
+    print(f"  Converged: {'decreasing (converging)' if improved else 'not decreasing (not converging)'}")
 
 
 if __name__ == "__main__":

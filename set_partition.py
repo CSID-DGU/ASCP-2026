@@ -1,17 +1,28 @@
 """
 Set Covering for Crew Pairing
 
-전체 흐름 (3단계):
-  [1] solve_lp_relaxation : x_j ∈ [0,1]로 LP 풀기 → dual variable 추출
-  [2] column_reduction     : reduced cost ≤ 0인 pairing만 유지 (+ 안전장치)
-  [3] solve_set_covering   : 남은 pairing으로 IP 풀기 (x_j ∈ {0,1})
+Paper Sec. "Problem Setting and Overview", Eq. (2) -- the restricted
+set-covering formulation solved here (with d_i playing the role of the
+excess-coverage variable z_i, and lambda_dh playing the role of lambda_exc):
 
-  min  Σ_j  c_j * x_j  +  λ_DH * Σ_i d_i
-  s.t. Σ_{j: i ∈ j} x_j  ≥  1   ∀ flight i   (Set Covering)
-       d_i = Σ_{j: i ∈ j} x_j - 1             (deadhead 횟수)
-       x_j ∈ {0, 1},  d_i ≥ 0
+  min  sum_j  c_j * x_j  +  lambda_dh * sum_i d_i
+  s.t. sum_{j: i in j} x_j  >=  1   for all flight i   (coverage constraint)
+       d_i = sum_{j: i in j} x_j - 1                    (excess coverage / deadhead count)
+       x_j in {0, 1},  d_i >= 0
 
-Set Covering(≥1)이므로 같은 flight를 여러 pairing이 커버 가능 → Deadhead 허용.
+Because coverage is >=1 rather than ==1, the same flight may be covered by
+multiple selected pairings -> deadheading is allowed rather than forbidden.
+
+3-stage pipeline:
+  [1] solve_lp_relaxation : solve the LP relaxation (x_j in [0,1]) -> extract
+      the coverage/excess-coverage duals mu_i^cov, nu_i^exc used by Phase II
+      LP-dual refinement (Eq. 9-10, Algorithm 1)
+  [2] column_reduction     : keep only pairings with reduced cost <= 0 (+ a
+      coverage safeguard)
+  [3] solve_set_covering   : solve the restricted MIP (x_j in {0,1}) over the
+      remaining pairings -- this is the "final mixed-integer program" that
+      selects the operational pairing set (Sec. "Scalable Inference and
+      Global Selection")
 
 solver: PuLP + CBC (default) | Gurobi (use_gurobi=True)
 """
@@ -27,18 +38,20 @@ def solve_lp_relaxation(
     verbose: bool = False,
 ) -> Optional[Dict]:
     """
-    Set Covering LP relaxation
-    x_j ∈ [0,1] (continuous) → dual variable 추출 → reduced cost 계산
+    Set-covering LP relaxation of Eq. (2): x_j in [0,1] (continuous) -> extract
+    dual variables mu_i^cov (coverage) and nu_i^exc (excess coverage) -> reduced costs.
 
-    IP와 동일한 목적함수(DH 패널티 포함)로 LP를 구성해 column reduction의
-    이론적 근거를 유지한다.
+    The LP is built with the same objective as the IP (including the DH
+    penalty) so that column reduction has a valid theoretical justification.
 
-    reduced cost: rc_j = c_j - Σ_{i ∈ legs_j} μ_i^cov
-      - rc_j < 0: 이 pairing을 쓰면 비용이 줄어듦 → IP에 포함할 가치 있음
-      - rc_j ≥ 0: 최적해에 포함될 가능성 낮음 → column reduction으로 제거
+    reduced cost: rc_j = c_j - sum_{i in legs_j} mu_i^cov
+      - rc_j < 0: including this pairing would lower the objective -> worth
+        keeping for the IP
+      - rc_j >= 0: unlikely to be in the optimal solution -> eligible for
+        removal by column_reduction
 
     Returns: { lp_value, dual_vars, reduced_costs, status }
-    None: LP 풀기 실패 시
+    None: if the LP fails to solve
     """
     if not pairings:
         return None
@@ -78,10 +91,12 @@ def solve_lp_relaxation(
     nu_exc: Dict[int, float] = {}
     for i in covered_flights:
         mu_cov[i] = prob.constraints[f"cover_{i}"].pi or 0.0
-        # dh_i 제약(d[i] >= cover_sum-1)의 dual — 이 flight가 지금 pool 기준으로 얼마나
-        # 중복 커버(deadhead)되고 있는지의 그림자가격. binding일 때 lambda_dh와 같아짐.
-        # cover_i dual(μ^cov, "부족분 채우기" 신호)과 반대 방향으로 RL에 피드백하는 데 사용
-        # (μ^cov는 보상에 더하고, ν^exc는 빼서 "이미 넘치는 flight는 그만 채워라"는 신호를 줌).
+        # Dual of the dh_i constraint (d[i] >= cover_sum - 1) -- the shadow
+        # price of how much this flight is currently over-covered
+        # (deadheaded) by the pool; equals lambda_dh when binding. Paper
+        # Eq. (9): delta_i = mu_i^cov - nu_i^exc. mu_cov pushes the policy
+        # toward under-covered flights and nu_exc is subtracted to suppress
+        # redundant coverage of already-saturated flights.
         nu_exc[i] = prob.constraints[f"dh_{i}"].pi or 0.0
 
     reduced_costs = [
@@ -104,13 +119,13 @@ def column_reduction(
     threshold: float = 1e-6,
 ) -> List[Dict]:
     """
-    reduced cost 기반 column reduction
+    Reduced-cost-based column reduction.
 
-    rc_j ≤ threshold인 pairing만 유지.
-    단, 각 flight를 커버하는 pairing이 최소 1개는 남도록 보장.
+    Keep only pairings with rc_j <= threshold, while guaranteeing that at
+    least one pairing covering each flight remains.
 
     Args:
-        threshold: 기본값 1e-6 ≈ 0 (수치 오차 허용)
+        threshold: default 1e-6 ~= 0 (numerical-error tolerance)
     """
     kept_set = {j for j, rc in enumerate(reduced_costs) if rc <= threshold}
 
@@ -136,18 +151,22 @@ def solve_set_covering(
     verbose: bool    = False,
 ) -> Dict:
     """
-    Set Covering IP를 풀어 최적 pairing subset 선택
+    Solve the set-covering MIP (Eq. 2, x_j in {0,1}) to select the final
+    pairing subset -- this is the restricted mixed-integer program described
+    in Sec. "Scalable Inference and Global Selection" that performs the
+    final selection over the generated candidate pool.
 
-    Set Covering(≥1): 같은 flight를 여러 pairing이 커버 가능 → Deadhead 허용.
-    lambda_dh로 DH 패널티를 조절한다 (0이면 DH 억제 없음).
+    Coverage is >=1 rather than ==1, so the same flight may be covered by
+    multiple pairings -> deadheading is allowed. lambda_dh controls the DH
+    penalty weight (0 disables DH suppression).
 
     Args:
-        pairings:   pairing dict 리스트 (legs, cost 필드 필요)
-        n_flights:  전체 flight 수 (flight ID: 0 ~ n_flights-1)
-        lambda_dh:  DH 패널티 가중치
-        time_limit: solver 제한 시간 (초)
-        use_gurobi: True면 Gurobi 사용, 실패 시 CBC로 fallback
-        verbose:    solver 로그 출력 여부
+        pairings:   list of pairing dicts (requires "legs", "cost" fields)
+        n_flights:  total number of flights (flight IDs: 0 .. n_flights-1)
+        lambda_dh:  DH penalty weight
+        time_limit: solver time limit (seconds)
+        use_gurobi: if True, use Gurobi, falling back to CBC on failure
+        verbose:    whether to print solver logs
 
     Returns:
         selected, n_pairings, total_cost, coverage, status,
@@ -188,7 +207,7 @@ def solve_set_covering(
         try:
             solver = pulp.GUROBI(timeLimit=time_limit, msg=int(verbose))
         except Exception:
-            print("[warn] Gurobi 사용 불가 → CBC로 대체")
+            print("[warn] Gurobi unavailable -> falling back to CBC")
             solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=int(verbose))
     else:
         solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=int(verbose))

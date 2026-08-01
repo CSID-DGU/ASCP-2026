@@ -2,20 +2,18 @@ import numpy as np
 import config
 from base_reach import can_reach_base
 
-# flight dict 키: "origin", "dest", "dep_time", "arr_time", "id" 
+# flight dict keys: "origin", "dest", "dep_time", "arr_time", "id"
 
 
 def get_max_duty(legs_count, custom_max_duty=None):
-    """constraint["max_duty"]를 duty 한도로 사용. None이면 FAA_DUTY_TABLE 기본값 적용.
+    """Duty-time limit: use constraint["max_duty"] if given, else the FAA_DUTY_TABLE default.
 
-    legs_count: 해당 duty에 추가될 leg 수 (현재 legs + 1)
-    custom_max_duty: constraint["max_duty"] 값. None이면 DEFAULT_CONSTRAINTS 사용
+    legs_count: number of legs this duty would have after adding the candidate (current legs + 1)
+    custom_max_duty: constraint["max_duty"] value. None falls back to DEFAULT_CONSTRAINTS.
 
-    [수정] 기존: min(faa_limit, custom_max_duty) — FAA legs 기반 한도와 constraint를 동시에 적용.
-           문제: Stage 3에서 max_duty=14h 샘플링 시 legs=3이면 실제 마스킹이 min(12,14)=12h로
-                 적용되어 FiLM 입력(14h 기준)과 environment 마스킹 불일치 → 학습 신호 오염.
-           수정: custom_max_duty를 그대로 사용. constraint 값이 유일한 기준.
-                 FAA 규정 준수는 constraint 설정 단계(config.py)에서 보장.
+    The rule-profile value (custom_max_duty) is used as-is, with no FAA-table
+    min() applied on top -- it is the sole source of truth for masking, so it
+    stays consistent with the same value used as FiLM input.
     """
     if custom_max_duty is not None:
         return custom_max_duty
@@ -23,10 +21,18 @@ def get_max_duty(legs_count, custom_max_duty=None):
 
 
 def get_mask(state, flights, assigned, constraint=None, stage=3):
-    """현재 state에서 선택 가능한 action 마스크 반환
+    """Dynamic feasibility mask: return the selectable-action mask A_feas_t(c) for the current state.
 
-    반환: 크기 [N + 2]의 list (0: 불가, 1: 가능)
-         index 0..N-1 = flight, N = END_DUTY, N+1 = END_PAIRING
+    Paper Sec. "Constraint-Conditioned Pairing Generator": the dynamic
+    feasibility mechanism builds A_feas_t(c) subset of A_t by removing
+    actions that violate airport continuity, connection-time limits,
+    duty-time limits, max legs per duty, rest requirements, overnight
+    limits, or pairing-duration constraints, plus backward-reachability
+    pruning to the base. This mask becomes the additive mask b_mask_t(j; c)
+    of Eq. (6), applied in model/decoder.py.
+
+    Returns: a list of size [N + 2] (0: infeasible, 1: feasible)
+             index 0..N-1 = flight legs, N = EndDuty, N+1 = EndPairing
     """
     c = constraint if constraint else config.DEFAULT_CONSTRAINTS
     stage_rule = config.CURRICULUM_CONFIG.get(stage, config.CURRICULUM_CONFIG[3])
@@ -41,18 +47,21 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     duty_start_time  = state.get("duty_start_time", state["current_time"])
     pairing_start_time = state.get("pairing_start_time", state["current_time"])
 
-    # pairing 첫 leg: base-origin 미배정 편이 남아있으면 base 출발 강제
-    # base-origin 소진 시 origin 제한 해제 → deadhead loop 방지
-    # base_remaining은 후보 flight f에 의존하지 않으므로(loop-invariant) 루프 밖에서 1회만 계산 —
-    # 루프 안에서 매번 재계산하면 O(N^2)이 되어 저연결 base(예: turkish HB2)에서 episode당
-    # 수십 초까지 느려짐 (log/0704 turkish 스모크 테스트에서 발견)
+    # First leg of a pairing: if unassigned base-origin legs remain, force
+    # departure from the base; once base-origin legs are exhausted, lift the
+    # origin restriction to avoid a deadhead loop.
+    # base_remaining does not depend on the candidate flight f (loop-invariant),
+    # so it is computed once outside the loop rather than recomputed per
+    # candidate (which would be O(N^2)).
     base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
 
-    # base 복귀 hard 강제 (decode-time feasibility masking).
-    # require_base_return=True면 (1) base 복귀 여지를 없애는 leg를 마스킹하고
-    # (2) base가 아닌 곳에서의 END_PAIRING을 금지한다 → base-to-base가 구조적으로 보장됨
-    # (SPPRC baseline의 dest_i == base 종료 조건과 동일한 보장).
-    # _base_reach는 rollout이 (flights, base)당 1회 계산해 constraint에 실어 보낸다.
+    # Hard base-return enforcement (decode-time feasibility masking, Eq. 6).
+    # require_base_return=True (1) masks any leg that would make base return
+    # infeasible and (2) forbids EndPairing away from the base -- so every
+    # completed pairing is structurally guaranteed to start and end at the
+    # base, matching the backward-reachability-from-base mechanism described
+    # in the paper. _base_reach is precomputed once per (flights, base) by
+    # the caller in rollout.py and passed through the constraint dict.
     require_return   = c.get("require_base_return", False)
     base_reach       = c.get("_base_reach") if require_return else None
     max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
@@ -70,16 +79,16 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
         valid = True
 
-        # 1. 공항 연결 검사
+        # 1. Airport-continuity check
         if pairing_start:
             if base_remaining and f["origin"] != base_ap:
                 valid = False
         elif f["origin"] != state["current_airport"]:
             valid = False
 
-        # 2. 시간 연결 검사
+        # 2. Connection-time check
         if is_resting:
-            # rest 미종료 시 탑승 불가
+            # Cannot board before rest ends
             if f["dep_time"] < rest_end:
                 valid = False
         else:
@@ -89,9 +98,10 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
                    gap > c.get("max_conn", config.DEFAULT_CONSTRAINTS["max_conn"]):
                     valid = False
 
-        # 3. Duty 시간 제약 (FAA Part 117)
-        # duty window = duty 시작 ~ 해당 flight 도착까지 전체 경과 시간
-        # pairing 첫 편이거나 rest 직후 새 duty 시작이면 기준점을 해당 편 출발로 리셋
+        # 3. Duty-time constraint (FAA Part 117)
+        # duty window = elapsed time from duty start to this flight's arrival.
+        # If this is the pairing's first leg or the first leg of a new duty
+        # after rest, reset the reference point to this flight's departure.
         legs_after = state.get("legs", 0) + 1
         effective_max_duty = get_max_duty(legs_after, c.get("max_duty"))
         current_duty_start = f["dep_time"] if (pairing_start or is_resting) else duty_start_time
@@ -101,15 +111,16 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         if legs_after > c.get("max_legs", config.DEFAULT_CONSTRAINTS["max_legs"]):
             valid = False
 
-        # 4. Pairing 기간 제약
+        # 4. Pairing-duration constraint (P_max)
         elapsed_days = (f["arr_time"] - pairing_start_time) / 24.0
         if elapsed_days > max_pd:
             valid = False
 
-        # 5. base 복귀 가능성 (require_base_return 시에만)
-        # duty_period/max_duty_periods로 검사한다 — max_legs는 여기서 안 쓴다.
-        # END_DUTY로 언제든 leg 예산을 새로 받을 수 있어서 duty당 leg 수 자체는
-        # base 도달을 막는 진짜 자원이 아니고, 실제 자원은 남은 rest(overnight) 횟수다.
+        # 5. Base-reachability (only when require_base_return is set)
+        # Checked via duty_period/max_duty_periods, not max_legs -- EndDuty can
+        # always grant a fresh leg budget, so per-duty leg count is not the
+        # binding resource for reaching the base; remaining overnight/rest
+        # opportunities are.
         if valid and base_reach is not None:
             ps_time = f["dep_time"] if pairing_start else pairing_start_time
             if not can_reach_base(
@@ -121,27 +132,28 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         if valid:
             mask[i] = 1
 
-    # END_DUTY (mask[-2] = mask[N])
+    # EndDuty (mask[-2] = mask[N])
     can_end_duty = (
         stage_rule["allow_end_duty"]
         and state.get("legs", 0) > 0
         and not is_resting
         and not pairing_start
-        and duty_period < c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])  # overnight 횟수 기준
+        and duty_period < c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])  # overnight count limit
     )
     if can_end_duty:
         mask[config.END_DUTY] = 1
 
-    # END_PAIRING (mask[-1] = mask[N+1])
-    # min_pairing_legs: 항공사별 설정 (Delta/Alaska/JetBlue=3, Turkish=2)
+    # EndPairing (mask[-1] = mask[N+1])
+    # min_pairing_legs: airline-specific (Delta/Alaska/JetBlue=3, Turkish=2)
     pairing_elapsed_days = (state["current_time"] - pairing_start_time) / 24.0
     min_pairing_legs = c.get("min_pairing_legs", 2)
     can_end_pairing = (
         state.get("total_legs", 0) >= min_pairing_legs
         and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
-    # base 미복귀 시 BASE_PENALTY는 step()에서 reward로 처리 (hard mask 제거 → soft penalty).
-    # 단 require_base_return이면 hard mask로 되돌린다 — base가 아닌 곳에서는 종료 불가.
+    # Failing to return to base is otherwise a soft penalty applied as reward
+    # in step(), not a hard mask. When require_base_return is set, EndPairing
+    # away from the base is masked out (hard constraint).
     if require_return and state["current_airport"] != base_ap:
         can_end_pairing = False
     if can_end_pairing:
@@ -151,18 +163,24 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
 
 def step(state, action, flights, assigned, constraint=None):
-    """action을 받아 next_state, reward, done 반환
+    """Apply an action and return (next_state, reward, done).
 
-    action 범위:
-      0 .. N-1  : flight 선택
-      N         : END_DUTY
-      N+1       : END_PAIRING
-    done=True 조건: END_PAIRING 선택 시 모든 flight가 커버된 경우
+    The returned reward is the local reward r^loc_t of Eq. (10) (Phase I
+    curriculum reward: rewards coverage and efficient connections while
+    penalizing wait time, overly short pairings, and unnecessary return
+    movements). Phase II adds the net-dual term w_dual(e)*delta_i on top of
+    this value (see experiments/train.py::run_episode_with_dual).
+
+    action range:
+      0 .. N-1  : select flight leg
+      N         : EndDuty
+      N+1       : EndPairing
+    done=True when EndPairing is selected and all flights are covered.
     """
     c = constraint if constraint else config.DEFAULT_CONSTRAINTS
     N = len(flights)
 
-    # END_DUTY → rest 진입, pairing 계속
+    # EndDuty -> enter rest, pairing continues
     if action == N:
         min_rest = c.get("min_rest", config.DEFAULT_CONSTRAINTS["min_rest"])
         next_state = {
@@ -175,35 +193,37 @@ def step(state, action, flights, assigned, constraint=None):
             "duty_period":     state.get("duty_period", 0) + 1,
             "pairing_start":   False,
         }
-        # v8: overnight rest 직접 장려 — multi-day pairing 유도
-        # overnight 10h는 dead_time에서 제외되므로 legs↑ dead_time 증가 없이 avg_legs 개선 가능
-        # v16: duty당 leg 수가 MIN_LEGS_FOR_DUTY_BONUS 미만이면 보너스를 비례 축소 —
-        # END_DUTY가 무위험 고정보상이라 duty를 짧게 끝내고 반복 수령하는 유인을 제거
+        # Directly reward overnight rest to encourage multi-day pairings.
+        # Overnight time is excluded from dead_time, so this raises avg_legs
+        # without increasing dead_time. The bonus is scaled down when the duty
+        # has fewer than MIN_LEGS_FOR_DUTY_BONUS legs, removing the incentive
+        # to end duties early just to collect the flat EndDuty bonus repeatedly.
         duty_legs = state.get("legs", 0)
         min_legs = config.MIN_LEGS_FOR_DUTY_BONUS
         scale = min(1.0, duty_legs / min_legs) if min_legs > 0 else 1.0
         return next_state, config.END_DUTY_BONUS * scale, False
 
-    # END_PAIRING → pairing 비용 부과 후 새 pairing 시작 (또는 에피소드 종료)
+    # EndPairing -> charge pairing cost, then start a new pairing (or end the episode)
     if action == N + 1:
         p_cost = c.get("pairing_cost", config.DEFAULT_CONSTRAINTS["pairing_cost"])
         base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
-        # constraint["base_airport"] 에피소드별 주입
+        # constraint["base_airport"] is injected per episode
         base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-        
+
         total_legs = state.get("total_legs", 0)
         reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
-        
+
         if total_legs < config.MIN_LEGS_FOR_PAIRING:
             reward += config.MIN_LEGS_PENALTY
         if state["current_airport"] != base:
             reward -= base_penalty
-            
+
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:
-            # 모든 flight 커버 완료 → 에피소드 종료
+            # All flights covered -> end episode
             return state, reward, True
-        # 미배정 flight 남아있음 → 새 pairing 시작 (base 출발 편 중 가장 이른 편 기준)
+        # Flights remain unassigned -> start a new pairing (anchored on the
+        # earliest base-departing leg)
         base_unassigned = [f for f in unassigned if f["origin"] == base]
         next_time = min(f["dep_time"] for f in base_unassigned) if base_unassigned else min(f["dep_time"] for f in unassigned)
         next_state = {
@@ -213,7 +233,7 @@ def step(state, action, flights, assigned, constraint=None):
             "duty_time":          0.0,
             "duty_start_time":    next_time,
             "legs":               0,
-            "total_legs":         0,    # 새 pairing 시작 시 리셋
+            "total_legs":         0,    # reset at the start of a new pairing
             "duty_period":        0,
             "is_resting":         False,
             "rest_end_time":      None,
@@ -222,12 +242,13 @@ def step(state, action, flights, assigned, constraint=None):
         }
         return next_state, reward, False
 
-    # Flight 선택
+    # Select a flight leg
     f = flights[action]
     assigned[f["id"]] = True
     flight_time = f["arr_time"] - f["dep_time"]
 
-    # pairing 첫 편이면 pairing_start_time 리셋, rest 직후 새 duty면 duty_start_time 리셋
+    # Reset pairing_start_time on the pairing's first leg; reset duty_start_time
+    # on the first leg of a new duty right after rest
     p_start_time = f["dep_time"] if state.get("pairing_start", False) else state["pairing_start_time"]
     d_start_time = f["dep_time"] if (state.get("pairing_start", False) or state.get("is_resting", False)) \
                    else state["duty_start_time"]
@@ -238,7 +259,7 @@ def step(state, action, flights, assigned, constraint=None):
         "duty_time":          (0.0 if state.get("is_resting", False) else state["duty_time"]) + flight_time,
         "duty_start_time":    d_start_time,
         "legs":               state.get("legs", 0) + 1,
-        "total_legs":         state.get("total_legs", 0) + 1,  # pairing 전체 누적 (END_DUTY에서 리셋 안 함)
+        "total_legs":         state.get("total_legs", 0) + 1,  # cumulative over the whole pairing (not reset by EndDuty)
         "remaining":          state["remaining"] - 1,
         "pairing_start":      False,
         "duty_period":        state.get("duty_period", 0),
@@ -247,20 +268,22 @@ def step(state, action, flights, assigned, constraint=None):
         "rest_end_time":      None,
     }
 
-    # dead time reward: duty 중간 flight 간 대기 시간 패널티 + 연결 보너스
-    # pairing 첫 편이거나 rest 직후 첫 편은 gap 패널티 없음
-    # LEG_PER_PAIRING_BONUS: 모든 flight 선택 시 즉시 지급 (END_PAIRING 지연 지급 제거)
-    # → credit assignment 문제 해결: agent가 multi-leg 가치를 즉각 인식
+    # Dead-time reward: penalizes wait time between flights within a duty and
+    # rewards efficient connections (part of the local reward r^loc_t, Eq. 10).
+    # No gap penalty on the pairing's first leg or the first leg after rest.
+    # LEG_PER_PAIRING_BONUS is paid immediately on every leg selection (not
+    # deferred to EndPairing) so the credit-assignment signal for multi-leg
+    # value is immediate.
     if not state.get("pairing_start", False) and not state.get("is_resting", False):
         reward = -(f["dep_time"] - state["current_time"]) + config.LEG_CONN_BONUS + config.LEG_PER_PAIRING_BONUS
     else:
-        reward = config.LEG_PER_PAIRING_BONUS  # 첫 편 / rest 직후: gap 패널티 없이 bonus만
+        reward = config.LEG_PER_PAIRING_BONUS  # first leg / right after rest: bonus only, no gap penalty
 
     return next_state, reward, False
 
 
 def final_reward(assigned, custom_penalty=None):
-    """에피소드 종료 시 미배정 flight에 대한 패널티 반환"""
+    """Return the end-of-episode penalty for flights left unassigned."""
     penalty = custom_penalty if custom_penalty is not None else config.DEFAULT_CONSTRAINTS["uncovered_penalty"]
     remaining = sum(1 for v in assigned.values() if not v)
     return -penalty * remaining

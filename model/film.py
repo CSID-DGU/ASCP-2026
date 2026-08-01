@@ -3,10 +3,14 @@ import torch.nn as nn
 
 
 class FiLM(nn.Module):
-    """Feature-wise Linear Modulation
+    """Feature-wise Linear Modulation (FiLM), Perez et al. 2018.
 
-    constraint 벡터 → gamma, beta 생성 → flight 벡터를 변조.
-    constraint가 달라지면 같은 flight도 다르게 해석된다.
+    Paper Sec. "Constraint-Conditioned Pairing Generator", Eq. (5):
+    H^enc = Transformer(FiLM_pre(H^(0); c~)), H = FiLM_post(H^enc; c~).
+    This module implements one FiLM_pre / FiLM_post instance: it maps the
+    normalized rule-profile vector c~ to (gamma, beta) and modulates the
+    flight embeddings so that the same flight is represented differently
+    under different airline rule profiles.
     """
 
     def __init__(self, constraint_dim: int, hidden_dim: int, use_skip: bool = False):
@@ -19,11 +23,11 @@ class FiLM(nn.Module):
         nn.init.zeros_(self.mlp[2].weight)
         if use_skip:
             # use_skip=True: out = gamma*x + beta + x
-            # identity를 위해 gamma=0, beta=0 → out = x
+            # Identity init: gamma=0, beta=0 -> out = x
             nn.init.zeros_(self.mlp[2].bias)
         else:
             # use_skip=False: out = gamma*x + beta
-            # identity를 위해 gamma=1, beta=0 → out = x
+            # Identity init: gamma=1, beta=0 -> out = x
             nn.init.ones_(self.mlp[2].bias[:hidden_dim])   # gamma = 1
             nn.init.zeros_(self.mlp[2].bias[hidden_dim:])  # beta = 0
 
@@ -33,7 +37,7 @@ class FiLM(nn.Module):
         """
         Args:
             flight_vecs: (N, hidden_dim)
-            constraint:  (constraint_dim,) — 정규화된 값 [0, 1]
+            constraint:  (constraint_dim,) -- normalized rule-profile vector c~, values in [0, 1]
         Returns:
             (N, hidden_dim)
         """

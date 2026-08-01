@@ -20,7 +20,7 @@ DEFAULT_CONSTRAINTS = {
     "min_pairing_legs":    2,   # END_PAIRING 허용 최소 leg 수 (항공사별 override)
     "pairing_cost":      5.0,   # END_PAIRING reward 패널티
     "uncovered_penalty": 10.0,  # 미배정 flight 1개당 패널티
-    "base_penalty":     500.0,   # END_PAIRING 시 base 미복귀 패널티 (2026-07-28: 5.0→50.0,
+    "base_penalty":     500.0,   
                                  # 기존 값이 pairing_cost와 같아서 사실상 무시됨 — 실측
                                  # base-to-base 비율 10.63%(yvaa65ph)로 확인 후 상향)
 }
@@ -42,7 +42,6 @@ AIRLINE_BASES = {
 
 # FiLM 입력 정규화 기준값 — constraint 값을 [0, 1]로 정규화하기 위한 분모
 # 각 항목별 실제 상한값 (항공사 중 최대 or 여유값)
-# evaluate_ip.py도 동일한 값을 써야 checkpoint 호환 — 수정 시 혜린 확인 필요
 CONSTRAINT_NORMS = {
     "max_duty":         14.0,   # 항공사 최대(13.0)보다 여유
     "min_conn":          1.0,   # Stage3 범위 상한
@@ -61,23 +60,14 @@ CONSTRAINT_NORMS = {
 #   - CONSTRAINT_NORMS 분모 대비 최소 20% 이상 변동폭 확보해야 FiLM MLP가 의미있는 gamma/beta 학습 가능
 #   - 검증 범위(12.0~14.0h)가 훈련 범위를 벗어나면 extrapolation → 항상 identity 출력
 #
-# 항공사 실제값이 범위 경계에 딱 붙어 여유가 없던 4개 차원(max_conn/max_legs/
-# max_duty_periods/max_pairing_days) 재검토. max_conn은 하한을 turkish 실제값(4.0)
-# 밑으로 더 내리지 않음 — 과거 그 부근에서 연결 가능한 flight이 없어 rollout이
-# 0-leg로 붕괴한 전례가 있어(그 원인이던 flight subset 샘플링은 이후 개선됐지만
-# Stage3 flight_sampler()는 다른 경로라 재현 여부 미확인이라 하한만 최소 여유),
-# 상한만 완만히 확장. max_legs/max_pairing_days는 값을 낮춘다고 connectivity가
-# 막히는 구조가 아니라(단지 duty/pairing이 일찍 끝날 뿐) 안전하게 여유를 더 줌.
-# max_duty_periods 하한 2는 건드리지 않음 — 1로 내리면 overnight 자체가 불가능해져
-# 별개의 구조적 붕괴(1-leg 정책으로 후퇴)가 나는 게 이미 알려져 있음(v14).
 STAGE3_CONSTRAINT_RANGES = {
-    "max_duty":         (10.5, 14.0),   # NORM=14.0 → 0.75~1.0 (25% 변동)
-    "min_rest":         (9.5,  12.0),   # NORM=12.0 → 0.79~1.0 (21% 변동)
-    "min_conn":         (0.5,  1.0),    # NORM=1.0  → 0.5~1.0  (50% 변동)
-    "max_conn":         (3.5,  13.0),   # 하한 3.5(turkish 4.0 + 최소 여유) + 상한 13.0(Delta 12.0 + 여유)
-    "max_legs":         (3,    10),     # 하한 3(turkish 4 밑으로 여유, 안전)
-    "max_duty_periods": (2,    4),      # v14: 1→2 — min=1이면 overnight 불가 → 1-leg 정책으로 retreat
-    "max_pairing_days": (2,    8),      # 하한 2/상한 8(turkish 3·jetblue 7 밑위로 여유, 안전)
+    "max_duty":         (10.5, 14.0),   
+    "min_rest":         (9.5,  12.0),   
+    "min_conn":         (0.5,  1.0),    
+    "max_conn":         (3.5,  13.0),   
+    "max_legs":         (3,    10),     
+    "max_duty_periods": (2,    4),      
+    "max_pairing_days": (2,    8),      
 }
 
 # 매 에피소드 이 확률로 STAGE3_CONSTRAINT_RANGES 랜덤 샘플링 대신 현재 선택된 항공사의
@@ -94,20 +84,23 @@ WINDOW_DAYS = 5
 # star graph 버그 수정으로 base-first → connected subnet 방식으로 변경
 EPISODE_MAX_FLIGHTS = 600
 
-# Phase 2 CG dual feedback 하이퍼파라미터
-# pool rollout 수: pool이 너무 작으면 LP가 의미없고, 너무 많으면 느림 → 30번이 균형점
-# LP interval: 매 에피소드 LP를 풀면 CBC solver가 병목 → 10 에피소드마다 재풀기
-# (dual_vars는 interval 사이에 캐싱되어 재사용됨)
-PHASE2_POOL_ROLLOUTS = 50    # pool 수집 rollout 수 (stochastic × 50 + greedy × 1)
-PHASE2_LP_INTERVAL   = 5     # LP re-solve 주기 (에피소드) — 간격 줄여 dual_vars 신선도 향상
-PHASE2_N_EPISODES    = 1000  # Phase 2 학습 에피소드 수
-PHASE2_DUAL_WARMUP   = 100   # dual_weight warm-up 기간 (에피소드) — 처음 100ep은 0→full로 점진 증가
+# Phase 2 LP-dual refinement hyperparameters (Algorithm 1).
+# PHASE2_POOL_ROLLOUTS: rollouts used to build the candidate pool before each
+#   LP solve -- too small makes the LP duals meaningless, too large is slow.
+# PHASE2_LP_INTERVAL: H_LP in Algorithm 1 / Eq. (10) -- the restricted master
+#   LP is re-solved every H_LP episodes rather than every episode (solving
+#   every episode would bottleneck on the CBC solver); mu^cov/nu^exc are
+#   cached and reused between refreshes.
+PHASE2_POOL_ROLLOUTS = 50    # pool-collection rollouts (stochastic x 50 + greedy x 1)
+PHASE2_LP_INTERVAL   = 5     # H_LP: LP re-solve interval, in episodes
+PHASE2_N_EPISODES    = 1000  # number of Phase 2 training episodes
+PHASE2_DUAL_WARMUP   = 100   # w_dual(e) warm-up length in episodes -- ramps 0 -> full over the first 100 episodes
 
 # Reward shaping
 
-MIN_LEGS_FOR_PAIRING = 3      # pairing당 목표 최소 leg 수
-MIN_LEGS_PENALTY = -3.0       # total_legs < MIN_LEGS_FOR_PAIRING 시 END_PAIRING 추가 패널티
-PHASE2_DUAL_WEIGHT   = 0.6   # LP dual reward 가중치 — v9: bonus=3.0 스케일에 맞게 0.1→0.6 (비율 0.2 유지)
+MIN_LEGS_FOR_PAIRING = 3      # target minimum legs per pairing
+MIN_LEGS_PENALTY = -3.0       # extra EndPairing penalty when total_legs < MIN_LEGS_FOR_PAIRING
+PHASE2_DUAL_WEIGHT   = 0.6   # w_dual(e) target weight (Eq. 10) for the net-dual reward term
 
 # Reward shaping
 LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)

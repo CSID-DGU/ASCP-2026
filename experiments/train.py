@@ -54,8 +54,6 @@ def _set_device(device_str: str):
 
 def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     """
-    혜린 environment + 찬주 model로 에피소드 진행
-
     Returns:
         total_reward, log_probs, entropies, metrics dict
         metrics: {n_pairings, n_deadheads, n_uncovered, coverage_pct}
@@ -77,7 +75,6 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         step_count += 1
         if step_count > max_steps:
             break
-        # 혜린 mask
         mask_list = get_mask(state, flights, assigned, constraint)
         mask = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
@@ -121,7 +118,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
             }
             continue
 
-        # 찬주 decoder
+        # decoder
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         gap_bias  = flight_gap_bias(state, flights, constraint, device=DEVICE)
         probs = decoder(encoded, state_vec, mask, gap_bias=gap_bias)
@@ -203,8 +200,9 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
                      - _LEG_BONUS_IP * max(len(current_legs) - 1, 0)
                      + (_DEADHEAD_PENALTY_IP if is_forced else 0.0)
                      + _PAIRING_FIXED_COST)
-        # ends_at_base(2026-07-28): Phase2 CG-dual pool도 base 미복귀 pairing을
-        # 그대로 썼던 문제 수정 — RL/rollout.py와 동일 판별.
+        # A pairing must start and end at the base to be a valid column for
+        # the LP-dual pool (Eq. 2 requires x_p in Omega(c), which excludes
+        # pairings that never return to base); same check as RL/rollout.py.
         ends_at_base = (flight_by_id[current_legs[0]]["origin"] == episode_base
                         and flight_by_id[current_legs[-1]]["dest"] == episode_base)
         pairings.append({"legs": list(current_legs), "fly": pairing_fly,
@@ -222,7 +220,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
     episode_base = constraint.get("base_airport", 0)
 
-    # 첫 flight 수동 시작 — base 출발 편 우선
+    # Manually start the first flight -- prefer a base-departing leg
     unassigned   = [f for f in flights if not assigned[f["id"]]]
     base_flights = [f for f in unassigned if f["origin"] == episode_base]
     first        = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
@@ -291,7 +289,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             state, _, _ = step(state, action, flights, assigned, constraint)
             continue
 
-        if action == len(flights) + 1:      # END_PAIRING → 새 pairing 시작
+        if action == len(flights) + 1:      # EndPairing -> start a new pairing
             flush_pairing(is_forced=False)
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
@@ -329,8 +327,9 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
 
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
-    # base 미복귀 pairing 제외(2026-07-28) — LP dual(μ^cov/ν^exc)이 base 무시하고
-    # 계산되던 문제 수정.
+    # Exclude pairings that do not return to base -- the restricted LP of
+    # Eq. (2) is defined over Omega(c), and its duals mu^cov/nu^exc (Eq. 9)
+    # should not be computed from infeasible columns.
     pool = {}
     for _ in range(n_rollouts):
         for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded):
@@ -349,6 +348,15 @@ def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
 
 
 def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False, dual_weight=None, dh_dual_vars=None):
+    """Phase II rollout: same environment as Phase I, but the per-step reward
+    is augmented with the net-dual signal of Eq. (9)-(10):
+
+        delta_i = mu_i^cov - nu_i^exc,   r~_t = r^loc_t + w_dual(e) * delta_i
+
+    dual_vars/dh_dual_vars are the cached mu^cov/nu^exc from the most recent
+    restricted-master LP solve (Algorithm 1, line 6); dual_weight is
+    w_dual(e), ramped up externally by run_phase2() (Algorithm 1, line 8-9).
+    """
     assigned = {f["id"]: False for f in flights}
     state    = init_state(flights, constraint)
 
@@ -382,7 +390,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             base_unassigned = [f for f in unassigned if f["origin"] == base]
             earliest = sorted(base_unassigned or unassigned, key=lambda x: x["dep_time"])[0]
             if not state.get("pairing_start", False):
-                total_legs_sum += state.get("total_legs", 0)  # 측정 버그 수정: deadhead 시 legs 분자에 포함
+                total_legs_sum += state.get("total_legs", 0)  # include this pairing's legs in avg_legs numerator even on a forced deadhead flush
                 n_pairings  += 1
                 n_deadheads += 1
                 total_reward -= config.DEFAULT_CONSTRAINTS["pairing_cost"]
@@ -434,9 +442,10 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             continue
 
         flight_id = flights[action]["id"]
-        _dw = dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT
+        _dw = dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT  # w_dual(e)
         state, r, done = step(state, action, flights, assigned, constraint)
         _nu_exc = dh_dual_vars.get(flight_id, 0.0) if dh_dual_vars else 0.0
+        # r~_t = r^loc_t + w_dual(e) * (mu_i^cov - nu_i^exc), Eq. (9)-(10)
         total_reward += r + (dual_vars.get(flight_id, 0.0) - _nu_exc) * _dw
         if done:
             break
@@ -457,6 +466,16 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
                constraint_sampler=None, init_best=float("inf")):
+    """Phase II: LP-dual-guided policy refinement (Algorithm 1).
+
+    Every config.PHASE2_LP_INTERVAL (H_LP) episodes: generate and deduplicate
+    a candidate pool with the current policy (Algorithm 1 lines 3-4), solve
+    the restricted master LP over that pool (Eq. 2, line 5), and cache the
+    coverage/excess-coverage duals mu^cov, nu^exc (line 6). Every episode:
+    compute delta_i = mu_i^cov - nu_i^exc (line 8), roll out with the
+    net-dual-augmented reward of Eq. (10) (line 9), and update the policy
+    with self-critical REINFORCE (line 10).
+    """
     from set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())

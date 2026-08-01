@@ -1,6 +1,6 @@
 """
-수렴 테스트: seed 고정 + constraint 고정 + 처음 vs 마지막 비교
-→ 월요일 회의에서 "수렴한다/안 한다" 확인하기 위해 !! 
+Convergence test: fixed seed + fixed constraint + compare first vs last
+-- to confirm "does it converge or not" for the Monday meeting.
 """
 
 import sys
@@ -9,7 +9,7 @@ import torch
 import torch.optim as optim
 from torch.distributions import Categorical
 
-# seed 고정
+# fix seed
 SEED = 42
 random.seed(SEED)
 torch.manual_seed(SEED)
@@ -129,14 +129,14 @@ def test_convergence():
     flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=50)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
-    # constraint 고정 (max_duty=10h)
+    # fix constraint (max_duty=10h)
     constraint = get_delta_constraints()
     constraint["max_duty"] = 10.0
     c_tensor = torch.tensor([constraint["max_duty"]], dtype=torch.float32)
 
-    print("=== 수렴 테스트 ===")
-    print(f"flights: {len(flights)}개, airports: {n_airports}개")
-    print(f"constraint: max_duty={constraint['max_duty']}h (고정)")
+    print("=== Convergence Test ===")
+    print(f"flights: {len(flights)}, airports: {n_airports}")
+    print(f"constraint: max_duty={constraint['max_duty']}h (fixed)")
     print(f"seed: {SEED}")
     print()
 
@@ -189,10 +189,10 @@ def test_convergence():
                 f"sample: {pairings_s:2d}"
             )
 
-    # 수렴 판정
+    # Convergence verdict
     print()
     print("=" * 60)
-    print("수렴 판정")
+    print("Convergence Verdict")
     print("=" * 60)
 
     first100 = greedy_pairings[:100]
@@ -204,22 +204,22 @@ def test_convergence():
     avg_last = sum(last100) / len(last100)
     best = min(greedy_pairings)
 
-    print(f"  처음 100ep 평균: {avg_first:.1f}")
-    print(f"  중간 100ep 평균: {avg_mid:.1f}")
-    print(f"  마지막 100ep 평균: {avg_last:.1f}")
-    print(f"  전체 최저: {best}")
+    print(f"  First 100 ep avg: {avg_first:.1f}")
+    print(f"  Mid 100 ep avg: {avg_mid:.1f}")
+    print(f"  Last 100 ep avg: {avg_last:.1f}")
+    print(f"  Overall min: {best}")
     print()
 
     if avg_last < avg_first:
-        print("  → 수렴 중 (마지막 < 처음)")
+        print("  → Converging (last < first)")
     elif avg_last > avg_first * 1.1:
-        print("  → 발산 (마지막이 처음보다 10% 이상 나쁨)")
+        print("  → Diverging (last is more than 10% worse than first)")
     else:
-        print("  → 정체 (줄어들지 않음)")
+        print("  → Stalled (not decreasing)")
 
-    # FiLM 검증도 같이
+    # Also verify FiLM
     print()
-    print("FiLM 검증:")
+    print("FiLM verification:")
     for duty in [6.0, 8.0, 10.0, 12.0, 14.0]:
         c = torch.tensor([duty], dtype=torch.float32)
         with torch.no_grad():
