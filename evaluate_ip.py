@@ -1,17 +1,22 @@
 """
-evaluate_ip.py — 전체 1개월 데이터 커버 평가
+evaluate_ip.py -- full monthly-schedule coverage evaluation.
 
-evaluate_ip.py는 에피소드당 최대 600편 subset만 커버 (n_max=600).
-이 스크립트는 전체 1개월을 window_days 단위 비겹침 윈도우로 나눠 모든 편을 커버한다.
+Paper Sec. "Scalable Inference and Global Selection": a monthly timetable is
+partitioned into temporal windows and each window is further divided into
+connectivity-preserving chunks of at most n_max flight legs (subset_size /
+config.EPISODE_MAX_FLIGHTS below), since a single rollout only covers a
+bounded subset per episode. This script implements that full pipeline:
 
-흐름:
-  1. 전체 CSV를 5일 단위 비겹침 윈도우로 분할 → 전역 flight ID 부여
-  2. 윈도우별로 subset(600편) rollout 반복 → pairing pool 누적 (전역 ID 기반)
-  3. 모든 윈도우 처리 후 IP → 전체 flight 커버
+  1. Split the full CSV into window_days-sized non-overlapping windows -> assign global flight IDs
+  2. Per window: partition into connectivity-preserving chunks -> stochastic
+     + greedy policy rollouts per chunk -> accumulate the legal candidate
+     pool Cθ (keyed by global ID)
+  3. After all windows are processed, solve the restricted set-covering MIP
+     over Cθ (final selection) to cover the whole schedule
 
-주의사항:
-  - 윈도우 경계를 걸치는 pairing은 생성 불가 (window boundary 한계)
-  - IP 규모: ~73,836편 × pool pairings → CBC 수 시간 소요 가능 (ip_time_limit 조정)
+Notes:
+  - A pairing cannot be generated across a window boundary (a window-boundary limitation)
+  - IP scale: ~73,836 flights x pool pairings -> CBC can take hours (tune ip_time_limit)
 """
 
 import sys
@@ -44,7 +49,7 @@ _GET_CONSTRAINT = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용
+    "turkish": get_turkish_constraints_hb,  # allows asymmetric HB1/HB2 termination
 }
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering, solve_lp_relaxation
@@ -54,10 +59,10 @@ from base_reach import build_base_reach
 import config
 
 
-# ── 0. Turkish 윈도우 로더 ────────────────────────────────────────────────────
+# ── 0. Turkish window loader ─────────────────────────────────────────────────
 
 def load_windows_turkish(turkish_df, airport_map, window_days=5):
-    """Turkish .legs 데이터를 window_days 단위 비겹침 윈도우로 분할, 전역 ID 부여."""
+    """Split Turkish .legs data into window_days-sized non-overlapping windows and assign global IDs."""
     dates = sorted(turkish_df["dep_date_utc"].unique())
     n_days = len(dates)
     windows = []
@@ -75,7 +80,7 @@ def load_windows_turkish(turkish_df, airport_map, window_days=5):
         global_offset += len(wf)
         windows.append(wf)
         print(
-            f"  window offset={offset:2d}: {len(wf):5d}편 "
+            f"  window offset={offset:2d}: {len(wf):5d}legs "
             f"(global {global_offset - len(wf)} ~ {global_offset - 1})",
             flush=True,
         )
@@ -83,17 +88,18 @@ def load_windows_turkish(turkish_df, airport_map, window_days=5):
     return windows, global_offset
 
 
-# ── 1. 전체 데이터를 윈도우별로 로드, 전역 ID 부여 ─────────────────────────────
+# ── 1. Load the full dataset window by window, assigning global IDs ─────────
 
 def load_windows_with_global_ids(data_path, airport_map, window_days=5, use_utc=False):
-    """전체 CSV를 window_days 단위 비겹침 윈도우로 분할, 전역 ID 부여.
+    """Split the full CSV into window_days-sized non-overlapping windows and assign global IDs.
 
-    use_utc: True면 dep_time을 UTC로 앵커링(RL/loader.py 참고) — 이 옵션으로 학습한
-        체크포인트를 평가할 때만 켤 것. 기존 체크포인트에 켜면 OOD.
+    use_utc: if True, anchor dep_time to UTC (see RL/loader.py) -- only enable
+        this when evaluating a checkpoint trained with the same option; using
+        it with an existing checkpoint puts the model out-of-distribution.
 
     Returns:
-        windows    : list of flight lists. 각 flight에 'global_id' 필드 추가됨.
-        n_total    : 전체 flight 수 (= 전역 ID 상한)
+        windows    : list of flight lists. Each flight gets a 'global_id' field.
+        n_total    : total number of flights (= upper bound on global IDs)
     """
     df = pd.read_csv(data_path)
     df = df[["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"]].dropna()
@@ -120,7 +126,7 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5, use_utc=
         global_offset += len(wf)
         windows.append(wf)
         print(
-            f"  window offset={offset:2d}: {len(wf):5d}편 "
+            f"  window offset={offset:2d}: {len(wf):5d}legs "
             f"(global {global_offset - len(wf)} ~ {global_offset - 1})",
             flush=True,
         )
@@ -128,30 +134,33 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5, use_utc=
     return windows, global_offset
 
 
-# ── 2. 윈도우 내 subset 샘플링 ────────────────────────────────────────────────
+# ── 2. Subset sampling within a window ───────────────────────────────────────
 
 def sample_connected_subset(window_flights, subset_size, base_id, constraint):
     """Connectivity-aware subset sampling with random coverage guarantee.
 
-    BFS로 base 출발편에서 시작해 연결 가능한 편을 우선 선택하되,
-    subset의 BFS_RATIO만큼만 BFS로 채우고 나머지는 window 전체에서 pure random 선택.
+    Starts BFS from base-departing legs to preferentially select connectable
+    legs, but only fills BFS_RATIO of the subset via BFS; the rest is chosen
+    pure-random from the whole window.
 
-    이유: BFS가 hub-and-spoke 밀집 구간을 빠르게 채우면 연결이 없는 고립 항공편은
-         어떤 rollout에도 포함되지 않아 pool coverage가 ~85%에 그침
-         15% random 보장 → 300 rollouts 기준 항공편당 기대 포함 횟수 ≈5회 → 누락 확률 <1%
+    Rationale: if BFS alone quickly fills the hub-and-spoke-dense region,
+    isolated flights with no connections are never included in any rollout,
+    capping pool coverage at ~85%. Guaranteeing 15% random inclusion gives
+    each flight an expected ~5 inclusions over 300 rollouts, keeping the
+    omission probability under 1%.
 
     Args:
-        window_flights: 윈도우 내 전체 flight 리스트
-        subset_size:    선택할 편 수 (config.EPISODE_MAX_FLIGHTS)
-        base_id:        crew base 공항 정수 ID
-        constraint:     제약 dict (min_conn, max_conn 단위: hours)
+        window_flights: list of all flights in the window
+        subset_size:    number of legs to select (config.EPISODE_MAX_FLIGHTS)
+        base_id:        crew base airport integer ID
+        constraint:     constraint dict (min_conn, max_conn in hours)
     """
-    BFS_RATIO = 0.85  # subset의 85%는 BFS-connected (RL multi-leg 밀도 유지)
+    BFS_RATIO = 0.85  # 85% of the subset is BFS-connected (preserves RL multi-leg density)
 
     min_conn = constraint.get("min_conn", 0.65)   # hours
     max_conn = constraint.get("max_conn", 9.0)     # hours
 
-    # 출발 공항별 인덱스
+    # Index by origin airport
     by_origin = {}
     for f in window_flights:
         by_origin.setdefault(f["origin"], []).append(f)
@@ -159,7 +168,7 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
     selected_ids = set()
     selected = []
 
-    # BFS phase: subset의 BFS_RATIO까지만 채움
+    # BFS phase: fill only up to BFS_RATIO of the subset
     bfs_quota = max(1, int(subset_size * BFS_RATIO))
     base_departs = [f for f in window_flights if f["origin"] == base_id]
     random.shuffle(base_departs)
@@ -172,7 +181,7 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
         selected_ids.add(f["id"])
         selected.append(f)
 
-        # 이 편 도착 후 연결 가능한 다음 편을 queue에 추가
+        # Add legs connectable after this arrival to the queue
         nexts = [
             g for g in by_origin.get(f["dest"], [])
             if g["id"] not in selected_ids
@@ -181,8 +190,8 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
         random.shuffle(nexts)
         queue.extend(nexts)
 
-    # Random phase: 나머지 슬롯을 window 전체에서 pure random 선택
-    # → 고립 항공편이 매 rollout마다 일정 확률로 포함되어 pool coverage 보장
+    # Random phase: fill remaining slots pure-random from the whole window
+    # -> guarantees isolated flights get included with some probability every rollout
     remaining = [f for f in window_flights if f["id"] not in selected_ids]
     random.shuffle(remaining)
     for f in remaining[:subset_size - len(selected)]:
@@ -196,10 +205,10 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
     return selected
 
 
-# ── 3. subset rollout → global_id 기반 pairings ──────────────────────────────
+# ── 3. Subset rollout -> global_id-keyed pairings ────────────────────────────
 
 def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy=False):
-    """subset(600편, global_id 포함)으로 rollout → global_id 기반 pairings 반환."""
+    """Roll out over a subset (n_max legs, with global_id) and return global_id-keyed pairings."""
     local_flights = [{**f, "id": f["local_id"]} for f in subset]
 
     origins, dests, dep_norm, arr_norm, fly_norm = flights_to_tensors(
@@ -221,15 +230,17 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
     return raw_pairings
 
 
-# ── 3-1. 윈도우 전체를 connectivity 기반 chunk로 파티셔닝 ─────────────────────
+# ── 3-1. Partition a full window into connectivity-preserving chunks ────────
 
 def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_sampler):
-    """윈도우 전체를 connected-subnet 기반 chunk로 파티셔닝 (완전 소진할 때까지 반복).
+    """Partition the whole window into connected-subnet chunks (Sec. "Scalable
+    Inference and Global Selection": divide each window into
+    connectivity-preserving chunks containing at most n_max flight legs).
 
-    학습(RL/loader.py, RL/turkish/loader_turkish.py)의 sample_connected_subnet과 동일한 로직으로
-    각 chunk를 만들되, remaining이 빌 때까지 반복해 모든 flight이 정확히 1개 chunk에
-    속하도록 해 coverage 100%를 유지한다 (star graph 버그 수정 후 eval도 학습과 같은
-    연결 밀도 분포를 보도록 맞춤).
+    Builds each chunk with the same sample_connected_subnet logic used during
+    training (RL/loader.py, RL/turkish/loader_turkish.py), repeating until
+    `remaining` is empty so every flight belongs to exactly one chunk
+    (100% coverage), keeping the same connectivity-density distribution seen at training time.
     """
     remaining = list(window_flights)
     chunks = []
@@ -246,7 +257,7 @@ def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_s
     return chunks
 
 
-# ── 4. 전체 윈도우 pool 수집 ──────────────────────────────────────────────────
+# ── 4. Collect the pool across all windows ───────────────────────────────────
 
 def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       n_rollouts_per_chunk=5,
@@ -254,18 +265,24 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       connected_sampler=sample_connected_subnet_std,
                       airline="delta",
                       require_base_return=False):
-    """모든 윈도우에서 rollout → 전역 ID 기반 pairing pool 생성.
+    """Roll out over all windows to build the global-ID-keyed candidate pool Cθ.
 
-    window를 connected_sampler(학습과 동일한 sample_connected_subnet)로 connectivity 기반
-    chunk로 분할한 뒤, 각 chunk에 n_rollouts_per_chunk번 stochastic + 1번 greedy rollout을
-    수행한다. remaining이 빌 때까지 반복 파티셔닝하므로 모든 flight이 최소 1번 rollout에
-    포함되어 coverage 100%를 보장하면서, 동시에 학습 때와 같은 연결 밀도를 유지한다.
+    Paper Sec. "Scalable Inference and Global Selection": "For each chunk, we
+    perform multiple stochastic rollouts and one greedy rollout... Candidates
+    from all chunks are merged into a global pool Cθ." Each window is split
+    into connectivity-preserving chunks via connected_sampler (the same
+    sample_connected_subnet used during training); each chunk gets
+    n_rollouts_per_chunk stochastic rollouts plus 1 greedy rollout.
+    Partitioning repeats until `remaining` is empty, so every flight is
+    included in at least one rollout (guaranteeing 100% coverage
+    opportunity) while preserving the same connectivity density seen during training.
 
-    airline="turkish"는 HB1/HB2 두 base가 상호 대체 가능하도록 설계됨
-    (environment_turkish.py) — pairing의 p["ends_at_base"]는 rollout.py에서
-    "그 rollout에 배정된 단일 base"로만 same-base 여부를 판별하므로 HB1→HB2 같은
-    교차 복귀를 잘못 걸러낸다. turkish에 한해 실제 첫/마지막 leg의 origin/dest가
-    base_id_set(HB1, HB2 전체) 안에 있는지로 재판별한다.
+    airline="turkish" allows the two bases HB1/HB2 to substitute for each
+    other (environment_turkish.py) -- rollout.py's p["ends_at_base"] only
+    checks same-base return against the single base assigned to that
+    rollout, so it would incorrectly reject a valid HB1->HB2 cross-return.
+    For turkish only, validity is instead determined by checking whether the
+    actual first/last leg's origin/dest lie in base_id_set (all of HB1, HB2).
     """
     pool = {}
     covered_global = set()
@@ -281,8 +298,10 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
 
         chunks = partition_connected_chunks(window_flights, base_ids, subset_size, connected_sampler)
 
-        # chunk 내 base 출발편 보장: 없으면 window에서 가장 가까운 base 편을 복사해 주입
-        # (connected-subnet 파티셔닝은 대부분 base 출발편을 포함하지만 tail chunk 등 예외 대비)
+        # Guarantee a base-departing leg in each chunk: if missing, inject a
+        # copy of the nearest base-departing leg from the window
+        # (connected-subnet partitioning usually includes one, but tail
+        # chunks etc. can be an exception).
         for c_idx, chunk in enumerate(chunks):
             if not any(f["origin"] in base_id_set for f in chunk):
                 chunk_gids = {f["global_id"] for f in chunk}
@@ -295,7 +314,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                                        key=lambda f: f["dep_time"])
                     chunks[c_idx] = new_chunk
 
-        print(f"\n[Window {w_idx + 1}/{len(windows)}] {len(window_flights)}편 → {len(chunks)}개 chunk", flush=True)
+        print(f"\n[Window {w_idx + 1}/{len(windows)}] {len(window_flights)} legs -> {len(chunks)} chunks", flush=True)
 
         rollout_count = 0
         for c_idx, chunk in enumerate(chunks):
@@ -306,9 +325,11 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
             def _pairing_valid(p, _chunk_by_gid=chunk_by_gid):
                 if airline != "turkish":
                     return p["ends_at_base"]
-                # turkish: HB1→HB2, HB2→HB1도 유효 — rollout.py의 ends_at_base(단일
-                # episode_base 기준 same-base)는 이 교차 복귀를 걸러내므로 실제
-                # 첫/마지막 leg origin/dest를 base_id_set 전체와 비교해 재판별한다.
+                # turkish: HB1->HB2 and HB2->HB1 are also valid -- rollout.py's
+                # ends_at_base (single-episode_base same-base check) would
+                # reject this cross-return, so re-derive validity by
+                # comparing the actual first/last leg origin/dest against the
+                # full base_id_set.
                 first = _chunk_by_gid.get(p["legs"][0])
                 last  = _chunk_by_gid.get(p["legs"][-1])
                 return (first is not None and last is not None
@@ -317,15 +338,18 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
             base_id = random.choice(base_ids)
             c_b = {**constraint, "base_airport": base_id}
             if require_base_return:
-                # rollout.py가 base 회전(현재 base 출발편 소진 시 다른 base로 전환) +
-                # salvage(막다른 길이면 base로 끝나는 prefix만 살리고 나머지는 반납)를
-                # 지원하므로, base_ids/strict_base_start를 넘겨 그 경로를 활성화한다.
+                # rollout.py supports base rotation (switch to another base
+                # once the current base's departing legs are exhausted) and
+                # salvage (on a dead end, keep only the prefix that ends at
+                # base and return the rest); pass base_ids/strict_base_start
+                # to activate that path.
                 c_b["base_ids"] = base_ids
                 c_b["strict_base_start"] = True
                 c_b["require_base_return"] = True
-                # rollout_subset_global이 flight["id"]를 local_id로 다시 매핑해서 rollout을
-                # 돌리므로(전역 ID로 돌리면 mask/step의 인덱싱이 깨짐), reachability도 그
-                # local_id 기준으로 계산해야 실제 rollout 중 조회하는 id와 맞아떨어진다.
+                # rollout_subset_global remaps flight["id"] to local_id before
+                # rolling out (mask/step indexing breaks under global IDs), so
+                # reachability must also be computed against local_id to match
+                # the IDs actually looked up during rollout.
                 _local_flights = [{**f, "id": f["local_id"]} for f in chunk]
                 c_b["_base_reach"] = build_base_reach(_local_flights, base_id, c_b)
 
@@ -333,12 +357,14 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                 try:
                     pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=False)
                 except Exception as e:
-                    print(f"  [warn] stochastic rollout 실패 (chunk={c_idx}): {e}", flush=True)
+                    print(f"  [warn] stochastic rollout failed (chunk={c_idx}): {e}", flush=True)
                     continue
                 for p in pairings:
-                    # base 미복귀 pairing은 pool/coverage 집계 둘 다에서 제외(2026-07-28) —
-                    # coverage 집계에도 넣으면 "커버는 됐는데 실제로 IP가 못 고르는" 유령
-                    # coverage가 생겨서 window_covered/covered_global도 같이 걸러야 함.
+                    # Exclude pairings that don't return to base from both the
+                    # pool and coverage counts -- including them in coverage
+                    # would create "phantom" coverage that the IP can never
+                    # actually select, so window_covered/covered_global must
+                    # be filtered the same way.
                     if not _pairing_valid(p):
                         continue
                     key = tuple(sorted(p["legs"]))
@@ -351,7 +377,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
             try:
                 pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=True)
             except Exception as e:
-                print(f"  [warn] greedy rollout 실패 (chunk={c_idx}): {e}", flush=True)
+                print(f"  [warn] greedy rollout failed (chunk={c_idx}): {e}", flush=True)
                 continue
             for p in pairings:
                 if not _pairing_valid(p):
@@ -364,30 +390,30 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
             rollout_count += 1
 
             print(
-                f"    chunk {c_idx + 1}/{len(chunks)} 완료 "
-                f"(누적 rollout={rollout_count}, pool={len(pool)}, "
+                f"    chunk {c_idx + 1}/{len(chunks)} done "
+                f"(cumulative rollouts={rollout_count}, pool={len(pool)}, "
                 f"window covered={len(window_covered)}/{len(window_all_ids)})",
                 flush=True,
             )
 
         print(
-            f"  총 {rollout_count}회 rollout: "
-            f"window {len(window_covered)}/{len(window_all_ids)}편 커버, "
+            f"  {rollout_count} total rollouts: "
+            f"window covered {len(window_covered)}/{len(window_all_ids)} legs, "
             f"pool={len(pool)}",
             flush=True,
         )
 
         uncov = len(window_all_ids - window_covered)
         if uncov > 0:
-            print(f"  미커버: {uncov}편 (IP에서 uncoverable로 처리됨)", flush=True)
+            print(f"  uncovered: {uncov} legs (reported as uncoverable by the IP)", flush=True)
 
     total_flights = sum(len(w) for w in windows)
-    print(f"\n총 pool: {len(pool)}개 pairing")
-    print(f"전체 커버: {len(covered_global)}/{total_flights}편")
+    print(f"\ntotal pool: {len(pool)} pairings")
+    print(f"total coverage: {len(covered_global)}/{total_flights} legs")
     return list(pool.values()), covered_global
 
 
-# ── 5. 메인 평가 함수 ──────────────────────────────────────────────────────────
+# ── 5. Main evaluation function ──────────────────────────────────────────────
 
 def evaluate_full(
     checkpoint_path,
@@ -408,17 +434,18 @@ def evaluate_full(
     seed=None,
     require_base_return=False,
 ):
-    """flight 커버 평가. data_path 미지정 시 config.AIRLINE_DATA[airline] 사용.
+    """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
 
-    소규모 데이터(예: 1주일 sample) 평가 시:
+    For small-scale data (e.g. a one-week sample):
         data_path=<sample.csv>, window_days=1, n_rollouts_per_chunk=3
 
-    use_wandb=True면 wandb에 eval 설정 + 콘솔 로그 + 최종 결과 지표를 기록한다
-    (job_type="eval" — 학습 curve와는 별개 run으로 남는다).
+    If use_wandb=True, logs the eval config + console output + final result
+    metrics to wandb (job_type="eval" -- kept as a separate run from training curves).
 
-    seed 지정 시 random/torch RNG를 고정 — 서로 다른 체크포인트를 같은 윈도우
-    파티셔닝·같은 rollout 확률 샘플로 평가해 paired 비교가 가능해짐(체크포인트
-    간 차이가 평가 자체의 무작위성이 아니라 정책 차이에서만 나오도록 통제).
+    If seed is given, fixes the random/torch RNG so different checkpoints are
+    evaluated on the same window partitioning and the same rollout sampling,
+    enabling paired comparison (differences between checkpoints then come
+    only from policy differences, not evaluation randomness).
     """
     if seed is not None:
         random.seed(seed)
@@ -427,10 +454,11 @@ def evaluate_full(
     global DEVICE
     DEVICE = torch.device(device)
     if device == "cpu":
-        # torch가 기본으로 프로세스당 물리 코어 수만큼 스레드를 잡아서, 여러 체크포인트를
-        # 병렬 평가할 때 서로(그리고 GPU 학습 프로세스와도) CPU를 심하게 경쟁함
-        # (2026-07-25, load average 235/64코어로 확인). OMP_NUM_THREADS 등 env로 이미
-        # 제한했더라도 일부 torch 빌드는 무시할 수 있어 명시적으로 한 번 더 고정.
+        # By default torch claims as many threads per process as there are
+        # physical cores, which causes heavy CPU contention when evaluating
+        # multiple checkpoints in parallel (and with concurrent GPU training
+        # processes). Some torch builds ignore env-level limits like
+        # OMP_NUM_THREADS, so pin it explicitly here as well.
         torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", 4)))
     set_environment(airline)
 
@@ -455,16 +483,17 @@ def evaluate_full(
     if bases is None:
         bases = config.AIRLINE_BASES[airline]
 
-    # checkpoint를 먼저 로드해 vocab 크기 확인 — multi-airline 모델(n_airports=168)은
-    # 통합 공항 맵이 필요. 단일 항공사 맵으로 빌드하면 ID 불일치로 임베딩 오류 발생.
+    # Load the checkpoint first to check its vocab size -- a multi-airline
+    # model (n_airports=168) needs the merged airport map; building it from a
+    # single-airline map would cause an embedding-index mismatch.
     ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
     n_airports = ckpt.get("n_airports",
                           ckpt["encoder"]["airport_emb.weight"].shape[0])
 
     _turkish_df = None
     if airline == "turkish":
-        # turkish_files 미지정 시 Zeren Feb 벤치마크 윈도우(15,742편, 목표 15,738 대비
-        # 오차 0.03%)를 기본값으로 사용
+        # If turkish_files is unset, default to the Zeren Feb benchmark
+        # window (15,742 legs, 0.03% off the target 15,738)
         if turkish_files is None:
             _turkish_df = parse_legs_dir(data_path, files=[ZEREN_FEB_FILE], date_range=ZEREN_FEB_WINDOW)
         else:
@@ -472,7 +501,7 @@ def evaluate_full(
         airport_map = build_airport_map_turkish(df=_turkish_df)
     else:
         if n_airports > 145:
-            # Turkish(.legs 디렉토리)는 BTS CSV 로더로 처리 불가 → 제외
+            # Turkish (.legs directory) can't be processed by the BTS CSV loader -> exclude
             map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
         else:
             map_paths = data_path
@@ -480,7 +509,8 @@ def evaluate_full(
     base_ids = bases_to_ids(list(bases), airport_map)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
-    # 체크포인트 state_vec 차원 자동 감지 (v8=78dim/7scalars, v13+=79dim/8scalars)
+    # Auto-detect the checkpoint's state_vec dimension (older checkpoints used
+    # fewer scalars than the current state_to_vec)
     airport_emb_dim = encoder.airport_emb.embedding_dim
     ckpt_state_dim  = ckpt["decoder"]["state_mlp.0.weight"].shape[1]
     n_scalars = ckpt_state_dim - airport_emb_dim * 2 - len(FILM_CONSTRAINT_KEYS)
@@ -495,24 +525,25 @@ def evaluate_full(
     else:
         constraint = _GET_CONSTRAINT[airline](base_ids[0])
 
-    print(f"\n전체 데이터 로드 중 ({airline}, window_days={window_days})...", flush=True)
+    print(f"\nLoading full dataset ({airline}, window_days={window_days})...", flush=True)
     if airline == "turkish":
         windows, n_total = load_windows_turkish(_turkish_df, airport_map, window_days)
     else:
         windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days, use_utc=use_utc)
-    print(f"총 {n_total}편, {len(windows)}개 윈도우", flush=True)
+    print(f"total {n_total} legs, {len(windows)} windows", flush=True)
 
     connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
 
     _hard_mask = require_base_return
     if _hard_mask:
-        print("\n[base-return] decode-time hard mask ON (reachability pruning 포함)", flush=True)
+        print("\n[base-return] decode-time hard mask ON (includes reachability pruning)", flush=True)
         if airline == "turkish":
-            print("  [note] turkish는 HB1↔HB2 교차 복귀는 강제하지 않고, 그 pairing이 "
-                  "실제로 출발한 base로의 단일 복귀만 hard mask로 강제한다(더 엄격한 부분집합).",
+            print("  [note] For turkish, HB1<->HB2 cross-return is not enforced; the hard "
+                  "mask only enforces single-base return to whichever base the pairing "
+                  "actually departed from (a stricter subset).",
                   flush=True)
 
-    print(f"\nPool 수집 중 (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
+    print(f"\nCollecting pool (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
     with torch.no_grad():
         pool, covered = collect_pool_full(
             windows, base_ids, constraint, encoder, decoder,
@@ -523,18 +554,18 @@ def evaluate_full(
             require_base_return=_hard_mask,
         )
 
-    print(f"\nIP 풀기 (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
+    print(f"\nSolving IP (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
     result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh, verbose=True)
-    print("IP 풀이 완료", flush=True)
+    print("IP solve complete", flush=True)
 
     gap_pct = None
     if compute_gap:
-        print(f"\nLP relaxation 풀기 (Gap% 계산용, pool={len(pool)})...", flush=True)
+        print(f"\nSolving LP relaxation (for Gap%, pool={len(pool)})...", flush=True)
         lp_result = solve_lp_relaxation(pool, lambda_dh=lambda_dh)
         if lp_result is not None and lp_result["lp_value"]:
             gap_pct = (result["mip_obj"] - lp_result["lp_value"]) / lp_result["lp_value"] * 100
         else:
-            print("  [warn] LP relaxation 풀기 실패 — Gap% 계산 불가")
+            print("  [warn] LP relaxation failed to solve -- cannot compute Gap%")
 
     sel          = result["selected"]
     fly_total    = sum(p["fly"]                         for p in sel) if sel else 0.0
@@ -544,28 +575,30 @@ def evaluate_full(
     man_days     = sum(math.ceil(p["elapsed"] / 24.0)  for p in sel) if sel else 0
     avg_legs     = legs_total   / len(sel) if sel else 0.0
     avg_duties   = duties_total / len(sel) if sel else 0.0
-    # FTC는 duty 내부 gap만 반영(overnight 초과 제외) — cost는 그대로 둠(ManDays 유인 보존)
+    # FTC reflects only within-duty gaps (excludes overnight excess); cost is
+    # left as-is (preserves the ManDays incentive)
     intra_gap_total    = sum(p.get("intra_duty_gap", 0.0)    for p in sel) if sel else 0.0
     inter_excess_total = sum(p.get("inter_duty_excess", 0.0) for p in sel) if sel else 0.0
-    # dead time 총합은 FTC와 같은 기준(overnight 초과 제외, duty-내부 gap만)으로 표시 —
-    # raw_dead_total(cost 계산 기준, overnight 초과 포함)은 참고용으로 별도 표시
+    # Total dead time is reported on the same basis as FTC (within-duty gaps
+    # only, excludes overnight excess) -- raw_dead_total (the cost-computation
+    # basis, includes overnight excess) is shown separately for reference
     dead_total = intra_gap_total
     ftc = intra_gap_total / fly_total * 100 if fly_total > 0 else 0.0
 
     print()
     print("=" * 60)
-    print(f"결과 (전체 {n_total}편 커버)")
+    print(f"Results (covering all {n_total} legs)")
     print("=" * 60)
-    print(f"  pairing 수:        {result['n_pairings']}")
+    print(f"  n pairings:        {result['n_pairings']}")
     print(f"  ManDays:           {man_days}")
     print(f"  coverage:          {result['coverage'] * 100:.1f}%")
-    print(f"  uncoverable:       {result['uncoverable']}개 flight")
-    print(f"  deadhead:          {result['deadhead_count']}개 flight")
+    print(f"  uncoverable:       {result['uncoverable']} legs")
+    print(f"  deadhead:          {result['deadhead_count']} legs")
     print(f"  fly time:          {fly_total:.2f}h")
-    print(f"  dead time(duty-내부 gap만, overnight 제외): {dead_total:.2f}h")
-    print(f"  (참고) raw dead time(overnight 초과 포함, cost 계산 기준): {raw_dead_total:.2f}h")
-    print(f"    - duty 내부 연결 gap:     {intra_gap_total:.2f}h ({intra_gap_total/raw_dead_total*100 if raw_dead_total>0 else 0:.1f}%)")
-    print(f"    - duty 간 초과 대기(>min_rest): {inter_excess_total:.2f}h ({inter_excess_total/raw_dead_total*100 if raw_dead_total>0 else 0:.1f}%)")
+    print(f"  dead time (within-duty gaps only, excl. overnight): {dead_total:.2f}h")
+    print(f"  (ref) raw dead time (incl. overnight excess, cost-computation basis): {raw_dead_total:.2f}h")
+    print(f"    - within-duty connection gap:     {intra_gap_total:.2f}h ({intra_gap_total/raw_dead_total*100 if raw_dead_total>0 else 0:.1f}%)")
+    print(f"    - inter-duty excess wait (>min_rest): {inter_excess_total:.2f}h ({inter_excess_total/raw_dead_total*100 if raw_dead_total>0 else 0:.1f}%)")
     print(f"  FTC:               {ftc:.2f}%")
     print(f"  avg legs/pairing:  {avg_legs:.2f}")
     print(f"  avg duties/pairing:{avg_duties:.2f}")
@@ -601,43 +634,45 @@ def evaluate_full(
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="전체 1개월 flight 커버 평가")
-    parser.add_argument("checkpoint", help="체크포인트 파일 경로 (예: checkpoints/jbkwcdk3/phase2_best.pt)")
+    parser = argparse.ArgumentParser(description="Full monthly-schedule flight-coverage evaluation")
+    parser.add_argument("checkpoint", help="Checkpoint file path (e.g. checkpoints/jbkwcdk3/phase2_best.pt)")
     parser.add_argument("--airline",   default="delta", choices=["delta", "alaska", "jetblue", "turkish"])
     parser.add_argument("--data-path", default=None,
-                        help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
-                             "소규모 sample 평가 시 지정 (예: RL/data/sample_DL_*.csv)")
+                        help="CSV path. Uses config.AIRLINE_DATA[airline] if unset. "
+                             "Set this for small-scale sample evaluation (e.g. RL/data/sample_DL_*.csv)")
     parser.add_argument("--n-rollouts-per-chunk", type=int, default=5,
-                        help="chunk당 stochastic rollout 수. window를 subset_size 단위 순차 chunk로 분할 (기본: 5)")
+                        help="Stochastic rollouts per chunk. Each window is split into sequential subset_size-sized chunks (default: 5)")
     parser.add_argument("--window-days", type=int, default=5,
-                        help="윈도우 크기(일). 소규모(1주) 데이터는 1 권장 (기본: 5)")
+                        help="Window size in days. 1 is recommended for small-scale (1-week) data (default: 5)")
     parser.add_argument("--subset-size", type=int, default=config.EPISODE_MAX_FLIGHTS,
-                        help=f"rollout당 flight 수 (기본: {config.EPISODE_MAX_FLIGHTS})")
+                        help=f"Flights per rollout (default: {config.EPISODE_MAX_FLIGHTS})")
     parser.add_argument("--ip-time-limit", type=int, default=3600,
-                        help="CBC solver 제한 시간 초 (기본: 3600)")
+                        help="CBC solver time limit in seconds (default: 3600)")
     parser.add_argument("--lambda-dh", type=float, default=1.0,
-                        help="DH 패널티 가중치 (기본: 1.0)")
+                        help="DH penalty weight (default: 1.0)")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--turkish-files", nargs="+", default=None,
-                        help="Turkish 전용. 사용할 .legs 파일 이름 목록. 미지정 시 Zeren Feb "
-                             "벤치마크 윈도우(tt201402.legs, 2/1~3/8, 15,742편) 기본 사용. "
-                             "명시 지정 시 날짜 필터 없이 해당 파일 전체 사용.")
+                        help="Turkish only. List of .legs file names to use. Defaults to the "
+                             "Zeren Feb benchmark window (tt201402.legs, 2/1-3/8, 15,742 legs) "
+                             "if unset. If given explicitly, uses those files in full with no date filter.")
     parser.add_argument("--use-utc", action="store_true",
-                        help="dep_time을 UTC 절대시간으로 앵커링. --use-utc로 학습한 체크포인트만 "
-                             "이 옵션 켠 채로 평가할 것 — 기존 체크포인트에 켜면 OOD")
+                        help="Anchor dep_time as absolute UTC time. Only evaluate with this flag "
+                             "for checkpoints trained with --use-utc -- enabling it for an existing "
+                             "checkpoint puts the model out-of-distribution")
     parser.add_argument("--wandb", action="store_true",
-                        help="eval 설정+콘솔 로그+최종 결과 지표를 wandb에 기록 (job_type=eval)")
+                        help="Log the eval config + console output + final result metrics to wandb (job_type=eval)")
     parser.add_argument("--wandb-project", default="ASCP-2026-paper")
     parser.add_argument("--compute-gap", action="store_true",
-                        help="MIP 풀이 후 같은 pool로 LP relaxation을 추가로 풀어 "
-                             "Gap%%=(MIP_obj-LP_obj)/LP_obj*100을 계산 (Tahir Table 6과 동일 정의). "
-                             "pool이 크면 LP도 추가 시간이 걸리므로 기본은 off")
+                        help="After solving the MIP, also solve the LP relaxation over the same "
+                             "pool to compute Gap%%=(MIP_obj-LP_obj)/LP_obj*100 (same definition as "
+                             "Tahir et al. Table 6). Off by default since the LP adds extra time on large pools")
     parser.add_argument("--seed", type=int, default=None,
-                        help="random/torch RNG 고정 — 여러 체크포인트를 같은 평가 인스턴스로 "
-                             "paired 비교할 때 지정 (예: ON/OFF 체크포인트 전부 동일 seed)")
+                        help="Fix the random/torch RNG -- set this to run a paired comparison of "
+                             "multiple checkpoints against the same evaluation instance (e.g. the "
+                             "same seed for every ON/OFF checkpoint)")
     parser.add_argument("--require-base-return", action="store_true",
-                        help="decode-time hard mask 활성화 — rollout 중 base 복귀가 불가능해지는 "
-                             "leg를 마스킹하고, base 아닌 곳에서 END_PAIRING을 금지한다.")
+                        help="Enable the decode-time hard mask -- masks any leg that would make "
+                             "base return infeasible during rollout, and forbids EndPairing away from the base.")
     args = parser.parse_args()
 
     ckpt = args.checkpoint

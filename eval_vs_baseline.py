@@ -87,7 +87,7 @@ def run_greedy(flights, constraint, encoder, decoder):
         mask = torch.tensor(mask_list, dtype=torch.float32)
 
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0:
-            # flight도 없고 END_DUTY도 불가 → END_PAIRING 강제
+            # No flight available and END_DUTY not allowed either -- force END_PAIRING
             n_pairings += 1
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
@@ -115,12 +115,12 @@ def run_greedy(flights, constraint, encoder, decoder):
         n_flights = len(flights)
 
         if action == n_flights:
-            # END_DUTY: 현재 duty 종료 → rest period 진입
+            # END_DUTY: end the current duty -- enter rest period
             state = step_end_duty(state, constraint)
             continue
 
         if action == n_flights + 1:
-            # END_PAIRING: pairing 종료 → 다음 미배정 flight로 이동
+            # END_PAIRING: end the pairing -- move to the next unassigned flight
             n_pairings += 1
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
@@ -213,7 +213,7 @@ def main():
     decoder.load_state_dict(ckpt["decoder"])
     encoder.eval()
     decoder.eval()
-    print(f"모델 로드: {ckpt_path}  (n_airports={n_airports})")
+    print(f"Model loaded: {ckpt_path}  (n_airports={n_airports})")
 
     # ── load baseline ──
     baseline = load_baseline(args.results)
@@ -279,9 +279,9 @@ def main():
                 gaps.append((n_rl - n_bl) / n_bl * 100)
         if gaps:
             print()
-            print(f"평균 gap (baseline 있는 {len(gaps)}개): {sum(gaps)/len(gaps):+.2f}%")
-            print(f"  양수 = RL이 baseline보다 pairing 더 많음 (나쁨)")
-            print(f"  음수 = RL이 baseline보다 pairing 적음 (좋음)")
+            print(f"Average gap ({len(gaps)} instances with a baseline): {sum(gaps)/len(gaps):+.2f}%")
+            print(f"  Positive = RL has more pairings than baseline (worse)")
+            print(f"  Negative = RL has fewer pairings than baseline (better)")
 
 
 if __name__ == "__main__":

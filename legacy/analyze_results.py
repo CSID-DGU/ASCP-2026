@@ -1,17 +1,17 @@
 """
-Skip Connection Ablation 결과 분석 스크립트
+Skip Connection Ablation results analysis script
 
-experiments/results/skip_ablation_results.json 을 읽어:
-  1. 학습 곡선 비교 (reward & pairings, sample/greedy)
-  2. 최종 성능 비교 (constraint별 pairings 히트맵)
-  3. 수렴 속도 비교 (처음으로 특정 threshold에 도달하는 에피소드)
-  4. 요약 테이블 출력
+Reads experiments/results/skip_ablation_results.json and:
+  1. Compares learning curves (reward & pairings, sample/greedy)
+  2. Compares final performance (pairings heatmap per constraint)
+  3. Compares convergence speed (episode at which a given threshold is first reached)
+  4. Prints a summary table
 
-실행:
+Usage:
   source venv/bin/activate
   python experiments/analyze_results.py
 
-출력:
+Output:
   experiments/results/learning_curves.png
   experiments/results/final_performance.png
   experiments/results/convergence_speed.png
@@ -25,18 +25,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import matplotlib
-    matplotlib.use("Agg")   # 화면 없는 서버에서도 동작
+    matplotlib.use("Agg")   # works on headless servers too
     import matplotlib.pyplot as plt
     import matplotlib.ticker as ticker
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
-    print("[경고] matplotlib 없음 — 텍스트 요약만 출력합니다.")
+    print("[Warning] matplotlib not found -- printing text summary only.")
 
 RESULTS_PATH = os.path.join(ROOT, "experiments", "results", "skip_ablation_results.json")
 OUT_DIR      = os.path.join(ROOT, "experiments", "results")
 
-# 구성별 색상 & 스타일
+# Color & style per configuration
 STYLE = {
     "baseline":         dict(color="#555555", linestyle="-",  linewidth=2,   marker="o",  label="baseline (no skip)"),
     "film_skip":        dict(color="#E07B39", linestyle="--", linewidth=1.8, marker="s",  label="film_skip"),
@@ -51,14 +51,14 @@ DUTY_KEYS   = ["6.0", "8.0", "10.0", "12.0", "14.0"]
 
 def load_results():
     if not os.path.exists(RESULTS_PATH):
-        print(f"[오류] 결과 파일 없음: {RESULTS_PATH}")
-        print("  먼저 실험을 실행하세요: python experiments/skip_ablation.py")
+        print(f"[Error] Results file not found: {RESULTS_PATH}")
+        print("  Run the experiment first: python experiments/skip_ablation.py")
         sys.exit(1)
     with open(RESULTS_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
-# ── 1. 학습 곡선 ─────────────────────────────────────────────────────────────
+# -- 1. Learning curves --------------------------------------------------------
 def plot_learning_curves(results):
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     fig.suptitle("Skip Connection Ablation — Learning Curves", fontsize=14, fontweight="bold")
@@ -88,10 +88,10 @@ def plot_learning_curves(results):
     path = os.path.join(OUT_DIR, "learning_curves.png")
     plt.savefig(path, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  저장: {path}")
+    print(f"  Saved: {path}")
 
 
-# ── 2. 최종 성능 비교 (constraint별) ─────────────────────────────────────────
+# -- 2. Final performance comparison (per constraint) ---------------------------
 def plot_final_performance(results):
     config_names = list(results.keys())
 
@@ -99,7 +99,7 @@ def plot_final_performance(results):
     fig.suptitle("Skip Connection Ablation — Final Performance (greedy, after training)",
                  fontsize=13, fontweight="bold")
 
-    # 2-a. constraint별 pairings 라인 플롯
+    # 2-a. Pairings line plot per constraint
     ax = axes[0]
     duty_vals = [float(k) for k in DUTY_KEYS]
     for name, res in results.items():
@@ -116,7 +116,7 @@ def plot_final_performance(results):
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=9)
 
-    # 2-b. max_duty=14h 기준 bar chart
+    # 2-b. Bar chart at max_duty=14h
     ax2 = axes[1]
     bar_data = {name: results[name]["final_eval"]["14.0"]["pairings"] for name in config_names}
     colors   = [STYLE[n]["color"] for n in config_names]
@@ -132,14 +132,14 @@ def plot_final_performance(results):
     path = os.path.join(OUT_DIR, "final_performance.png")
     plt.savefig(path, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  저장: {path}")
+    print(f"  Saved: {path}")
 
 
-# ── 3. 수렴 속도: greedy pairings가 처음으로 threshold 이하가 되는 에피소드 ──
+# -- 3. Convergence speed: episode where greedy pairings first drops to/below threshold --
 def plot_convergence_speed(results):
-    # baseline의 최종 greedy pairings를 기준으로 threshold 설정
+    # Set thresholds based on baseline's final greedy pairings
     baseline_final = results["baseline"]["final_eval"]["14.0"]["pairings"]
-    # threshold = baseline 최종 + 일부 여유 (도달하기 어렵지 않도록)
+    # threshold = baseline final + some margin (so it's not too hard to reach)
     thresholds = sorted(set([
         baseline_final + 5,
         baseline_final + 2,
@@ -161,7 +161,7 @@ def plot_convergence_speed(results):
         for thr in thresholds:
             found = next(
                 (r["episode"] for r in h if r["pairings_greedy"] <= thr),
-                None  # 도달 못 했으면 None
+                None  # None if never reached
             )
             reach_eps.append(found if found is not None else 9999)
         st = STYLE[name]
@@ -193,18 +193,18 @@ def plot_convergence_speed(results):
     path = os.path.join(OUT_DIR, "convergence_speed.png")
     plt.savefig(path, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  저장: {path}")
+    print(f"  Saved: {path}")
 
 
-# ── 4. 요약 테이블 ────────────────────────────────────────────────────────────
+# -- 4. Summary table -----------------------------------------------------------
 def print_summary_table(results):
     print("\n" + "=" * 90)
-    print("SKIP CONNECTION ABLATION — 결과 요약")
+    print("SKIP CONNECTION ABLATION — Results Summary")
     print("=" * 90)
 
-    # 헤더
+    # Header
     header_duty = "  ".join(f"{d:>5}" for d in DUTY_LABELS)
-    print(f"{'구성':<22}  {'pairings @ duty (greedy)':^40}  {'최종 reward':>11}  {'학습시간':>9}")
+    print(f"{'Config':<22}  {'pairings @ duty (greedy)':^40}  {'Final reward':>11}  {'Train time':>9}")
     print(f"{'':22}  {header_duty}  {'(14h)':>11}  {'':>9}")
     print("-" * 90)
 
@@ -216,7 +216,7 @@ def print_summary_table(results):
         reward = res["final_eval"]["14.0"]["reward"]
         t      = res["total_time_sec"]
 
-        # baseline 대비 개선 표시
+        # Show improvement relative to baseline
         p14  = p_vals[-1]
         diff = p14 - baseline_p14
         diff_str = f"({diff:+d})" if name != "baseline" else "     "
@@ -224,26 +224,26 @@ def print_summary_table(results):
         print(f"{name:<22}  {p_str}  {reward:>8.1f} {diff_str:>4}  {t:>8.1f}s")
 
     print("=" * 90)
-    print("  baseline 대비 pairings 차이: (+) 증가 (악화), (-) 감소 (개선)")
+    print("  Pairings diff vs baseline: (+) increase (worse), (-) decrease (better)")
 
-    # 최적 구성 추천
-    print("\n[분석]")
+    # Recommend best configuration
+    print("\n[Analysis]")
     best_name = min(
         results.keys(),
         key=lambda n: results[n]["final_eval"]["14.0"]["pairings"]
     )
     best_p = results[best_name]["final_eval"]["14.0"]["pairings"]
-    print(f"  최소 pairings (max_duty=14h): {best_name} → {best_p}개")
+    print(f"  Minimum pairings (max_duty=14h): {best_name} -> {best_p}")
 
     best_reward_name = max(
         results.keys(),
         key=lambda n: results[n]["final_eval"]["14.0"]["reward"]
     )
     best_r = results[best_reward_name]["final_eval"]["14.0"]["reward"]
-    print(f"  최고 reward (max_duty=14h):   {best_reward_name} → {best_r:.1f}")
+    print(f"  Highest reward (max_duty=14h):   {best_reward_name} -> {best_r:.1f}")
 
-    # 수렴 속도 (greedy pairings 기준 마지막 10% 에피소드 평균)
-    print("\n[수렴 후 안정성 — 마지막 20% 에피소드 greedy pairings 평균]")
+    # Convergence speed (avg of greedy pairings over last 10% of episodes)
+    print("\n[Post-convergence stability -- avg greedy pairings over last 20% of episodes]")
     for name, res in results.items():
         h = res["history"]
         tail = h[int(len(h) * 0.8):]
@@ -255,18 +255,18 @@ def print_summary_table(results):
     print()
 
 
-# ── 메인 ─────────────────────────────────────────────────────────────────────
+# -- Main -------------------------------------------------------------------
 def main():
     results = load_results()
-    print(f"결과 로드 완료: {len(results)}개 구성")
+    print(f"Results loaded: {len(results)} configurations")
 
     if HAS_MPL:
-        print("\n플롯 생성 중...")
+        print("\nGenerating plots...")
         plot_learning_curves(results)
         plot_final_performance(results)
         plot_convergence_speed(results)
     else:
-        print("matplotlib 없음 — 플롯 생략")
+        print("matplotlib not found -- skipping plots")
 
     print_summary_table(results)
 

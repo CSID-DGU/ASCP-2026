@@ -1,6 +1,6 @@
 """
-Curriculum Step 1: 50 flights + constraint 고정 (max_duty=10h)
-목표: constraint 고정 상태에서 reward가 올라가는지 (수렴 확인)
+Curriculum Step 1: 50 flights + fixed constraint (max_duty=10h)
+Goal: check whether reward increases with a fixed constraint (convergence check)
 """
 
 import sys
@@ -113,13 +113,13 @@ def train():
     flights = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=50)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
 
-    # ★ constraint 고정
+    # fixed constraint
     CONSTRAINT = {"max_duty": 10.0}
     c_tensor = torch.tensor([CONSTRAINT["max_duty"]], dtype=torch.float32)
 
     print(f"=== Curriculum Step 1 ===")
-    print(f"flights: {len(flights)}개, airports: {n_airports}개")
-    print(f"constraint: max_duty={CONSTRAINT['max_duty']}h (고정)")
+    print(f"flights: {len(flights)}, airports: {n_airports}")
+    print(f"constraint: max_duty={CONSTRAINT['max_duty']}h (fixed)")
     print()
 
     encoder = FlightEncoder(n_airports=n_airports)
@@ -130,7 +130,7 @@ def train():
 
     origins, dests, dep_times, arr_times = flights_to_tensors(flights)
 
-    # 기록용
+    # for logging
     greedy_rewards = []
     greedy_pairings = []
 
@@ -168,7 +168,7 @@ def train():
         optimizer.step()
 
         if episode % 50 == 0:
-            # 최근 50개 평균
+            # average of the last 50
             recent_r = greedy_rewards[-50:]
             recent_p = greedy_pairings[-50:]
             avg_r = sum(recent_r) / len(recent_r)
@@ -182,19 +182,19 @@ def train():
                 f"adv: {advantage:6.2f}"
             )
 
-    # 최종 결과
+    # final results
     print()
     print("=" * 60)
-    print("Step 1 결과")
+    print("Step 1 Results")
     print("=" * 60)
 
     first50 = greedy_pairings[:50]
     last50 = greedy_pairings[-50:]
-    print(f"  처음 50ep 평균 pairings: {sum(first50)/len(first50):.1f}")
-    print(f"  마지막 50ep 평균 pairings: {sum(last50)/len(last50):.1f}")
+    print(f"  First 50 ep avg pairings: {sum(first50)/len(first50):.1f}")
+    print(f"  Last 50 ep avg pairings: {sum(last50)/len(last50):.1f}")
 
     improved = sum(first50)/len(first50) > sum(last50)/len(last50)
-    print(f"  수렴 여부: {'줄어듦 (수렴 중)' if improved else '안 줄어듦 (수렴 안 함)'}")
+    print(f"  Converged: {'decreasing (converging)' if improved else 'not decreasing (not converging)'}")
 
     return encoder, decoder
 

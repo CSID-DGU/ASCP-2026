@@ -1,6 +1,6 @@
 """
-Curriculum Step 1: 50 flights + constraint 고정 + 단순 reward
-reward = -len(pairings) 만 사용 (혜린 복합 reward와 비교용)
+Curriculum Step 1: 50 flights + fixed constraint + simple reward
+Uses only reward = -len(pairings) (for comparison against Hyerin's composite reward)
 """
 
 import sys
@@ -34,7 +34,7 @@ def state_to_vec(state, encoder):
 
 
 def simple_step(state, action, flights, assigned):
-    """단순 step: reward 없이 state만 업데이트"""
+    """Simple step: updates state only, without reward"""
     f = flights[action]
     assigned[f["id"]] = True
     flight_time = f["arr_time"] - f["dep_time"]
@@ -107,7 +107,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
 
         state = simple_step(state, action, flights, assigned)
 
-    # 단순 reward: -len(pairings)
+    # simple reward: -len(pairings)
     reward = -n_pairings
     return reward, log_probs, entropies, n_pairings
 
@@ -119,9 +119,9 @@ def train():
     CONSTRAINT = {"max_duty": 10.0}
     c_tensor = torch.tensor([CONSTRAINT["max_duty"]], dtype=torch.float32)
 
-    print(f"=== Step 1 — 단순 reward: -len(pairings) ===")
-    print(f"flights: {len(flights)}개, airports: {n_airports}개")
-    print(f"constraint: max_duty={CONSTRAINT['max_duty']}h (고정)")
+    print(f"=== Step 1 — simple reward: -len(pairings) ===")
+    print(f"flights: {len(flights)}, airports: {n_airports}")
+    print(f"constraint: max_duty={CONSTRAINT['max_duty']}h (fixed)")
     print()
 
     encoder = FlightEncoder(n_airports=n_airports)
@@ -177,19 +177,19 @@ def train():
 
     print()
     print("=" * 60)
-    print("Step 1 결과 (단순 reward)")
+    print("Step 1 Results (simple reward)")
     print("=" * 60)
 
     first50 = greedy_pairings[:50]
     last50 = greedy_pairings[-50:]
-    print(f"  처음 50ep 평균 pairings: {sum(first50)/len(first50):.1f}")
-    print(f"  마지막 50ep 평균 pairings: {sum(last50)/len(last50):.1f}")
+    print(f"  First 50 ep avg pairings: {sum(first50)/len(first50):.1f}")
+    print(f"  Last 50 ep avg pairings: {sum(last50)/len(last50):.1f}")
 
     improved = sum(first50)/len(first50) > sum(last50)/len(last50)
-    print(f"  수렴 여부: {'줄어듦 (수렴 중)' if improved else '안 줄어듦 (수렴 안 함)'}")
+    print(f"  Converged: {'decreasing (converging)' if improved else 'not decreasing (not converging)'}")
 
     print()
-    print("FiLM 검증:")
+    print("FiLM verification:")
     for duty in [6.0, 8.0, 10.0, 12.0, 14.0]:
         c = torch.tensor([duty], dtype=torch.float32)
         with torch.no_grad():

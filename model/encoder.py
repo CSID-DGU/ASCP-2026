@@ -5,9 +5,14 @@ from .film import FiLM
 
 
 class FlightEncoder(nn.Module):
-    """Embedding + FiLM + Transformer — 에피소드당 1번 호출 (encode)
+    """Embedding + FiLM + Transformer -- called once per episode (encode).
 
-    flight 데이터 -> embedding -> FiLM(constraint 반영) -> Transformer(관계 파악)
+    Paper Sec. "Constraint-Conditioned Pairing Generator", Eq. (5):
+    H^enc = Transformer(FiLM_pre(H^(0); c~)), H = FiLM_post(H^enc; c~).
+    flight data -> embedding -> FiLM_pre(rule profile) -> Transformer -> FiLM_post.
+    FiLM_pre conditions the encoder input so self-attention can capture
+    rule-dependent relationships among flight legs; FiLM_post then
+    readjusts the contextualized representations before the pointer decoder.
     """
 
     def __init__(
@@ -25,7 +30,7 @@ class FlightEncoder(nn.Module):
     ):
         super().__init__()
 
-        # Embedding: 공항(learnable) + 시간(dep, arr, fly) 3개
+        # Embedding: airport (learnable) + 3 temporal features (dep, arr, fly)
         self.airport_emb = nn.Embedding(n_airports, airport_emb_dim)
         input_dim = airport_emb_dim * 2 + 3  # origin_emb + dest_emb + dep + arr + fly
         self.flight_mlp = nn.Sequential(
@@ -34,14 +39,15 @@ class FlightEncoder(nn.Module):
             nn.Linear(d_model, d_model),
         )
 
-        # FiLM: constraint로 flight 벡터 변조 (Transformer 전+후 양쪽)
-        # use_film_before/after=False이면 해당 FiLM을 건너뜀 (identity)
+        # FiLM_pre / FiLM_post (Eq. 5): modulate flight vectors with the rule
+        # profile before and after the Transformer, respectively.
+        # use_film_before/after=False skips the corresponding FiLM (identity, ablation use).
         self.film_before = FiLM(constraint_dim, d_model, use_skip=skip_film)
         self.film_after  = FiLM(constraint_dim, d_model, use_skip=skip_film)
         self.use_film_before = use_film_before
         self.use_film_after  = use_film_after
 
-        # Transformer: flight 간 관계 파악
+        # Transformer encoder: captures spatiotemporal dependencies among flight legs (Eq. 5)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -53,11 +59,11 @@ class FlightEncoder(nn.Module):
         self.skip_transformer = skip_transformer
 
     def film_params(self):
-        """FiLM 레이어 파라미터만 반환 — optimizer에서 lr 분리 시 사용"""
+        """Return only the FiLM layer parameters -- used to give FiLM a separate optimizer lr."""
         return list(self.film_before.parameters()) + list(self.film_after.parameters())
 
     def non_film_params(self):
-        """FiLM 제외 나머지 파라미터 반환 — optimizer에서 lr 분리 시 사용"""
+        """Return all parameters except FiLM -- used to give FiLM a separate optimizer lr."""
         return (list(self.airport_emb.parameters()) +
                 list(self.flight_mlp.parameters()) +
                 list(self.transformer.parameters()))
@@ -75,10 +81,10 @@ class FlightEncoder(nn.Module):
         Args:
             origins:    (N,) int
             dests:      (N,) int
-            dep_times:  (N,) float — 정규화된 출발 시간 [0, 1]
-            arr_times:  (N,) float — 정규화된 도착 시간 [0, 1]
-            fly_times:  (N,) float — 정규화된 비행 시간 (arr - dep) [0, ~0.2]
-            constraint: (constraint_dim,) float — 정규화된 constraint 벡터
+            dep_times:  (N,) float -- normalized departure time [0, 1]
+            arr_times:  (N,) float -- normalized arrival time [0, 1]
+            fly_times:  (N,) float -- normalized flight time (arr - dep) [0, ~0.2]
+            constraint: (constraint_dim,) float -- normalized rule-profile vector c~ (Eq. 5)
         Returns:
             (N, d_model)
         """

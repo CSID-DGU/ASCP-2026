@@ -1,9 +1,10 @@
 """
-diagnose_film_overnight.py — FiLM이 max_duty_periods에 반응해 overnight을 실제로 조절하는지 확인.
+diagnose_film_overnight.py -- check whether FiLM actually adjusts overnight behavior
+in response to max_duty_periods.
 
-experiments/train.py의 _film_validation은 max_duty_periods 스윕에서 avg_overnight을
-로깅하지 않는다 (max_legs 스윕에서만 로깅). 이 스크립트는 기존 checkpoint로 같은 실험을
-재현하되 avg_overnight까지 함께 출력한다.
+experiments/train.py's _film_validation does not log avg_overnight during the
+max_duty_periods sweep (it only logs it during the max_legs sweep). This script
+reproduces the same experiment from an existing checkpoint but also prints avg_overnight.
 """
 import sys
 import argparse
@@ -57,7 +58,7 @@ def main():
     origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, 5 * 24.0, device=device)
 
     print(f"checkpoint: {args.checkpoint}")
-    print(f"  [max_duty_periods 변화] (합격 기준: dp=1→4 pairings ≥30% 감소, avg_overnight도 함께 증가해야 함)")
+    print(f"  [max_duty_periods sweep] (pass criterion: pairings should drop >=30% from dp=1->4, and avg_overnight should increase alongside it)")
     with torch.no_grad():
         for dp in [1, 2, 3, 4]:
             val_c = {**get_delta_constraints(base), "max_duty_periods": dp, "max_pairing_days": 5}

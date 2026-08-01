@@ -1,12 +1,12 @@
 """
-  - 절대시각(abs_min) 사용 — eval_llm_final.py의 load_flights와 동일
-  - base 출발 강제 / 미복귀 허용(base_penalty만 존재, invalid 아님) — RL과 동일
-  - min_conn=39min, max_conn=540min, max_legs=8(duty당), min_rest=600min
-  - max_pairing_days=5 종료 조건 추가
-  - CSV 전체 기간(멀티데이) 사용
-  - 항공사별 base 목록 분리
+  - Uses absolute time (abs_min) -- same as load_flights in eval_llm_final.py
+  - Base departure forced / non-return allowed (only a base_penalty applies, not invalid) -- same as RL
+  - min_conn=39min, max_conn=540min, max_legs=8 (per duty), min_rest=600min
+  - Added max_pairing_days=5 termination condition
+  - Uses the full CSV period (multi-day)
+  - Base lists split per airline
 
-필요 컬럼: ORIGIN, DEST, FL_DATE, CRS_DEP_TIME, CRS_ARR_TIME, CRS_ELAPSED_TIME
+Required columns: ORIGIN, DEST, FL_DATE, CRS_DEP_TIME, CRS_ARR_TIME, CRS_ELAPSED_TIME
 """
 
 import os
@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ─── 경로 ──────────────────────────────────────────────────────────────────────
+# --- Paths ------------------------------------------------------------------
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "RL", "data")
 FILES = {
     "Delta":   "delta_2019_01.csv",
@@ -27,15 +27,15 @@ SAMPLE_FILES = {
     "JetBlue": "sample_JE_20190101_20190107.csv",   # raw BTS format
 }
 
-# ─── 항공사별 제약 (config.py DEFAULT_CONSTRAINTS + AIRLINE_BASES) ─────────────
+# --- Per-airline constraints (config.py DEFAULT_CONSTRAINTS + AIRLINE_BASES) ---
 AIRLINE_CONFIG = {
     "Delta": {
-        "min_conn":         39,    # 분 (0.65h)
-        "max_conn":         540,   # 분 (9.0h)
-        "max_duty":         780,   # 분 (13.0h)
-        "max_legs":         8,     # duty당
-        "min_rest":         600,   # 분 (10.0h)
-        "max_duty_periods": 2,     # overnight 횟수 → duty 최대 3개
+        "min_conn":         39,    # minutes (0.65h)
+        "max_conn":         540,   # minutes (9.0h)
+        "max_duty":         780,   # minutes (13.0h)
+        "max_legs":         8,     # per duty
+        "min_rest":         600,   # minutes (10.0h)
+        "max_duty_periods": 2,     # number of overnights -> up to 3 duties
         "max_pairing_days": 5,
         "bases": {"ATL", "DTW", "MSP", "JFK", "LAX", "SEA", "SLC"},
     },
@@ -55,7 +55,7 @@ AIRLINE_CONFIG = {
         "max_duty":         780,
         "max_legs":         8,
         "min_rest":         600,
-        "max_duty_periods": 3,     # overnight 3회 → duty 최대 4개
+        "max_duty_periods": 3,     # 3 overnights -> up to 4 duties
         "max_pairing_days": 5,
         "bases": {"JFK", "BOS", "FLL", "LAX", "MCO"},
     },
@@ -65,7 +65,7 @@ N_SIMS   = 8000
 RNG      = np.random.default_rng(0)
 TARGET_OLD = 3.0
 
-# ─── UTC 오프셋 (eval_llm_final.py와 동일) ────────────────────────────────────
+# --- UTC offsets (same as eval_llm_final.py) --------------------------------
 _UTC = {
     **{ap: -600 for ap in ['HNL','KOA','LIH','OGG']},
     **{ap: -540 for ap in ['ANC','FAI']},
@@ -88,7 +88,7 @@ _UTC = {
 }
 def _offset(ap): return _UTC.get(ap, -300)
 
-# ─── 데이터 로드 (eval_llm_final.py load_flights와 동일한 절대시각) ────────────
+# --- Data loading (same absolute-time scheme as eval_llm_final.py's load_flights) ---
 def load_flights(csv_path):
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.strip()
@@ -114,7 +114,7 @@ def load_flights(csv_path):
     flights = pd.DataFrame(rows)
     return flights
 
-# ─── small-scale 샘플 로드 ────────────────────────────────────────────────────
+# --- small-scale sample loading ----------------------------------------------
 def load_sample(airline, fname):
     """
     Returns (flight_hours Series, quality_df with origin/dest/dep_abs/arr_abs)
@@ -134,13 +134,13 @@ def load_sample(airline, fname):
 
     return fh, qdf
 
-# ─── 데이터셋 품질 지표 ────────────────────────────────────────────────────────
+# --- Dataset quality metrics --------------------------------------------------
 def compute_quality(flights_df, cfg):
     """
-    BDR  : Base Departure Ratio  — 전체 편 중 base 출발 편 비율
-           RL rollout 시작 가능성 직접 반영
-    CAR  : Connection Availability Rate — 다음 연결 편이 ≥1 존재하는 편 비율
-           multi-leg pairing 형성 가능성 지표 (avg_legs보다 직접적)
+    BDR  : Base Departure Ratio  -- fraction of all flights that depart from a base
+           Directly reflects the likelihood of starting an RL rollout
+    CAR  : Connection Availability Rate -- fraction of flights with >=1 feasible next connection
+           An indicator of multi-leg pairing formation potential (more direct than avg_legs)
     """
     bases     = cfg["bases"]
     min_conn  = cfg["min_conn"]
@@ -148,7 +148,7 @@ def compute_quality(flights_df, cfg):
 
     bdr = float(flights_df["origin"].isin(bases).mean())
 
-    # origin → sorted dep_abs 인덱스
+    # origin -> sorted dep_abs index
     dep_idx = {}
     for ap, grp in flights_df.groupby("origin"):
         dep_idx[ap] = np.sort(grp["dep_abs"].values)
@@ -166,7 +166,7 @@ def compute_quality(flights_df, cfg):
     car = conn / len(flights_df)
     return bdr, car
 
-# ─── 공항별 출발 인덱스 구축 ──────────────────────────────────────────────────
+# --- Build per-airport departure index -----------------------------------------
 def build_index(flights):
     idx = {}
     for ap, g in flights.groupby("origin"):
@@ -179,7 +179,7 @@ def build_index(flights):
         }
     return idx
 
-# ─── 네트워크 시뮬레이션 (per-pairing, RL 정합) ───────────────────────────────
+# --- Network simulation (per-pairing, aligned with RL) -------------------------
 def sim_network(flights, cfg, n_sims=N_SIMS):
     min_conn  = cfg["min_conn"]
     max_conn  = cfg["max_conn"]
@@ -194,7 +194,7 @@ def sim_network(flights, cfg, n_sims=N_SIMS):
 
     base_flights = flights[flights["origin"].isin(bases)].reset_index(drop=True)
     if len(base_flights) == 0:
-        print("[경고] base 출발 비행 없음")
+        print("[warning] no base-departing flights")
         return np.ones(n_sims, int)
 
     bf_dep  = base_flights["dep_abs"].values
@@ -266,7 +266,7 @@ def sim_network(flights, cfg, n_sims=N_SIMS):
 
     return legs_out
 
-# ─── 시간기준 천장 (time-only, per-pairing) ───────────────────────────────────
+# --- Time-based ceiling (time-only, per-pairing) --------------------------------
 def sim_time_only(elapsed_min, cfg, n_sims=N_SIMS, max_sample=30):
     n_duties  = cfg["max_duty_periods"] + 1
     max_duty  = cfg["max_duty"]
@@ -280,17 +280,17 @@ def sim_time_only(elapsed_min, cfg, n_sims=N_SIMS, max_sample=30):
         total += np.maximum(legs, 1)
     return total
 
-# ─── 메인 ──────────────────────────────────────────────────────────────────────
+# --- Main -----------------------------------------------------------------------
 dfs, stats = {}, {}
 
 for airline, fname in FILES.items():
     path = os.path.join(DATA_DIR, fname)
-    print(f"\n[{airline}] 로드 중: {path}")
+    print(f"\n[{airline}] loading: {path}")
     flights = load_flights(path)
     cfg = AIRLINE_CONFIG[airline]
 
-    print(f"  총 비행편: {len(flights)}, "
-          f"base 출발: {(flights['origin'].isin(cfg['bases'])).sum()}")
+    print(f"  total flights: {len(flights)}, "
+          f"base departures: {(flights['origin'].isin(cfg['bases'])).sum()}")
 
     t = sim_time_only(flights["dur"].values, cfg)
     n = sim_network(flights, cfg)
@@ -305,9 +305,9 @@ for airline, fname in FILES.items():
     print(f"  network   : {n.mean():.2f} ± {n.std():.2f}")
     dfs[airline] = flights
 
-# ─── 샘플 데이터 로드 + 품질 지표 ────────────────────────────────────────────
+# --- Load sample data + quality metrics ----------------------------------------
 print("\n" + "="*60)
-print("샘플 데이터셋 품질 지표 (BDR / CAR)")
+print("Sample dataset quality metrics (BDR / CAR)")
 print("="*60)
 
 sample_hours = {}
@@ -330,9 +330,9 @@ for airline, fname in SAMPLE_FILES.items():
     print(f"  {airline:>8}: full  BDR={full_bdr:.3f}  CAR={full_car:.3f}  (n={len(dfs[airline]):,})")
     print(f"  {airline:>8}: small BDR={samp_bdr:.3f}  CAR={samp_car:.3f}  (n={len(qdf):,})")
 
-# ─── 목표 제안 출력 ───────────────────────────────────────────────────────────
+# --- Print target proposal -------------------------------------------------------
 print("\n" + "="*60)
-print("항공사별 현실적 avg_legs (per-pairing, network-feasible)")
+print("Realistic avg_legs per airline (per-pairing, network-feasible)")
 print("="*60)
 print(f"{'airline':>8} {'mdp':>4} {'avg_ft(h)':>9} "
       f"{'time-only':>12} {'network':>12}")
@@ -342,16 +342,16 @@ for a, st in stats.items():
           f"{st['t_mean']:>7.2f}±{st['t_std']:.2f}  "
           f"{st['n_mean']:>7.2f}±{st['n_std']:.2f}")
 
-print("\n=== RL target avg_legs 제안 ===")
-print(f"  LLM 비교 기준 (v0)    : 5.72  (per-pairing, 같은 Delta 데이터)")
-print(f"  RL 현재               : ~1.8  (per-pairing)")
+print("\n=== RL target avg_legs proposal ===")
+print(f"  LLM comparison baseline (v0)    : 5.72  (per-pairing, same Delta data)")
+print(f"  RL current               : ~1.8  (per-pairing)")
 for a, st in stats.items():
     tgt = round(st["n_mean"] * 0.75, 1)
-    print(f"  {a:>8} 현실 평균 {st['n_mean']:.2f} → "
-          f"권장 target {tgt}  "
-          f"(MIN_LEGS_FOR_PAIRING 상향 참고)")
+    print(f"  {a:>8} realistic mean {st['n_mean']:.2f} -> "
+          f"recommended target {tgt}  "
+          f"(reference for raising MIN_LEGS_FOR_PAIRING)")
 
-# ─── 시각화 ───────────────────────────────────────────────────────────────────
+# --- Visualization -----------------------------------------------------------------
 plt.rcParams.update({
     "font.family": "DejaVu Sans",
     "axes.edgecolor": "#9aa0b0", "axes.linewidth": 0.8,
@@ -360,12 +360,12 @@ plt.rcParams.update({
 PALETTE  = {"Delta": "#3b3f6b", "Alaska": "#5e7e96", "JetBlue": "#9a8aa8"}
 PANEL_BG = "#f3f3f8"
 
-# 3행: [상단 히스토그램 / 중단 avg_legs / 하단 품질 비교]
+# 3 rows: [top histogram / middle avg_legs / bottom quality comparison]
 fig = plt.figure(figsize=(14.5, 13.5))
 gs  = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.1, 0.9],
                         hspace=0.50, wspace=0.22)
 
-# ─── 상단: 비행시간 분포 + small-scale 오버레이 ───────────────────────────────
+# --- Top: flight duration distribution + small-scale overlay -----------------------
 raw_dfs = {}
 bins = np.arange(0, 15, 1)
 
@@ -379,13 +379,13 @@ for col, (airline, fname) in enumerate(FILES.items()):
     ax.set_facecolor(PANEL_BG)
     ft = raw["flight_hours"].dropna()
 
-    # ── full dataset 막대 ──
+    # -- full dataset bars --
     counts, edges = np.histogram(ft, bins=bins)
     ax.bar(edges[:-1]+0.5, counts, 0.86,
            color=PALETTE[airline], alpha=0.9, edgecolor="white",
            lw=0.6, zorder=3, label=f"Full (n={len(ft):,})")
 
-    # ── small-scale 오버레이 (full 스케일로 정규화해 형태 비교) ──
+    # -- small-scale overlay (normalized to full scale for shape comparison) --
     ft_s = sample_hours[airline].dropna()
     s_counts, _ = np.histogram(ft_s, bins=bins)
     scale = len(ft) / len(ft_s)
@@ -395,7 +395,7 @@ for col, (airline, fname) in enumerate(FILES.items()):
            hatch="///", zorder=4,
            label=f"Small-scale (n={len(ft_s):,}, ×{scale:.0f})")
 
-    # ── mean / median 선 ──
+    # -- mean / median lines --
     ax.axvline(ft.mean(),   color="#e4572e", ls="--", lw=1.6,
                label=f"mean = {ft.mean():.2f}h")
     ax.axvline(ft.median(), color="#f2a541", ls=":",  lw=1.8,
@@ -413,7 +413,7 @@ for col, (airline, fname) in enumerate(FILES.items()):
         ax.spines[sp].set_visible(False)
     ax.legend(fontsize=7.5, framealpha=0.9, loc="upper right", ncol=1)
 
-# ─── 중단: 천장 vs 현실 + RL 현재값 ─────────────────────────────────────────
+# --- Middle: ceiling vs realistic + RL current value -------------------------------
 axb = fig.add_subplot(gs[1, :])
 axb.set_facecolor(PANEL_BG)
 airlines = list(stats.keys()); x = np.arange(len(airlines)); w = 0.30
@@ -468,18 +468,18 @@ axb.set_title(
     fontweight="bold", pad=10
 )
 
-# ─── 하단: 데이터셋 품질 비교 (Full vs Small-scale) ──────────────────────────
-# BDR  : Base Departure Ratio — RL rollout 시작 가능 편 비율
-# CAR  : Connection Availability Rate — 다음 연결 편 보유 편 비율
-#        (avg_legs보다 직접적인 "multi-leg 가능 여부" 지표)
+# --- Bottom: dataset quality comparison (Full vs Small-scale) ----------------------
+# BDR  : Base Departure Ratio -- fraction of flights that can start an RL rollout
+# CAR  : Connection Availability Rate -- fraction of flights with a next connection
+#        (a more direct "is multi-leg possible" indicator than avg_legs)
 ax_q = fig.add_subplot(gs[2, :])
 ax_q.set_facecolor(PANEL_BG)
 
 x_q = np.arange(len(airlines))
 w_q = 0.18
 
-BDR_COLOR = "#4472C4"   # 파랑
-CAR_COLOR = "#ED7D31"   # 주황
+BDR_COLOR = "#4472C4"   # blue
+CAR_COLOR = "#ED7D31"   # orange
 
 full_bdr_vals  = [quality[a]["full_bdr"]  for a in airlines]
 samp_bdr_vals  = [quality[a]["samp_bdr"]  for a in airlines]
@@ -503,7 +503,7 @@ b4 = ax_q.bar(x_q + 1.5*w_q, samp_car_vals, w_q,
               color=CAR_COLOR, alpha=0.38, edgecolor=CAR_COLOR, lw=1.5,
               hatch="///", zorder=3, label="Small-scale — CAR")
 
-# 값 라벨
+# value labels
 for bar_group in [b1, b2, b3, b4]:
     for bar in bar_group:
         h = bar.get_height()
@@ -540,7 +540,7 @@ ax_q.text(
     fontsize=8, style="italic", color="#6b6f7d"
 )
 
-# ─── 전체 꾸밈 ────────────────────────────────────────────────────────────────
+# --- Overall styling --------------------------------------------------------------
 fig.suptitle("Flight Dataset Analysis  (2019-01, per-pairing, RL-aligned)",
              fontsize=15, fontweight="bold", y=0.995)
 
@@ -560,6 +560,6 @@ out_path  = os.path.join(os.path.dirname(__file__), "target_avg_legs.png")
 out_path2 = os.path.join(DATA_DIR, "dataset_avg.png")
 plt.savefig(out_path,  dpi=150, bbox_inches="tight", facecolor="white")
 plt.savefig(out_path2, dpi=150, bbox_inches="tight", facecolor="white")
-print(f"\n그래프 저장: {out_path}")
-print(f"그래프 저장: {out_path2}")
+print(f"\nfigure saved: {out_path}")
+print(f"figure saved: {out_path2}")
 plt.show()

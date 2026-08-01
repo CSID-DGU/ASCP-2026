@@ -1,20 +1,20 @@
 """
-Skip Connection Ablation 실험 스크립트
+Skip Connection Ablation experiment script
 
-5가지 구성을 각각 독립적으로 학습시키고 결과를 JSON으로 저장.
+Trains each of the 5 configurations independently and saves the results to JSON.
 
-실험 구성:
-  baseline          : skip 없음 (control)
-  film_skip         : FiLM 블록에만 skip
-  transformer_skip  : Transformer 블록에만 skip
-  decoder_skip      : Decoder state_mlp에만 skip
-  all_skip          : 세 곳 모두 skip
+Experiment configurations:
+  baseline          : no skip (control)
+  film_skip         : skip only in the FiLM block
+  transformer_skip  : skip only in the Transformer block
+  decoder_skip      : skip only in the Decoder state_mlp
+  all_skip          : skip in all three places
 
-실행:
+Usage:
   source venv/bin/activate
   python experiments/skip_ablation.py
 
-결과:
+Output:
   experiments/results/skip_ablation_results.json
 """
 
@@ -26,7 +26,7 @@ import torch
 import torch.optim as optim
 from torch.distributions import Categorical
 
-# 프로젝트 루트를 경로에 추가
+# Add project root to the path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "RL"))
@@ -37,17 +37,17 @@ from environment import get_mask, step, final_reward
 from RL.constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from RL.state import init_state
 
-# ── 학습 하이퍼파라미터 ──────────────────────────────────────────────────────
-N_EPISODES   = 600      # 각 구성당 에피소드 수
-LOG_INTERVAL = 20       # 기록 주기
-FLIGHT_LIMIT = 50       # 데이터 크기 (train.py와 동일)
+# -- Training hyperparameters -----------------------------------------------
+N_EPISODES   = 600      # episodes per configuration
+LOG_INTERVAL = 20       # logging interval
+FLIGHT_LIMIT = 50       # data size (same as train.py)
 LR           = 1e-4
 GRAD_CLIP    = 1.0
 ENTROPY_COEF = 0.005
 PAIRING_PENALTY = -1.0
 BASE_PENALTY    = -2.0
 
-# ── 실험 구성 정의 ───────────────────────────────────────────────────────────
+# -- Experiment configuration definitions ------------------------------------
 CONFIGS = {
     "baseline":         dict(skip_film=False, skip_transformer=False, skip_state_mlp=False),
     "film_skip":        dict(skip_film=True,  skip_transformer=False, skip_state_mlp=False),
@@ -57,7 +57,7 @@ CONFIGS = {
 }
 
 
-# ── 헬퍼 함수 (train.py와 동일) ──────────────────────────────────────────────
+# -- Helper functions (same as train.py) -------------------------------------
 def constraint_to_tensor(constraint):
     return torch.tensor([constraint[k] for k in FILM_CONSTRAINT_KEYS], dtype=torch.float32)
 
@@ -153,14 +153,14 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     return total_reward, log_probs, entropies, n_pairings
 
 
-# ── 단일 구성 학습 ────────────────────────────────────────────────────────────
+# -- Train a single configuration ---------------------------------------------
 def run_config(config_name, cfg, flights, n_airports):
     print(f"\n{'='*60}")
-    print(f"  실험: {config_name}")
+    print(f"  Experiment: {config_name}")
     print(f"  skip_film={cfg['skip_film']}  skip_transformer={cfg['skip_transformer']}  skip_state_mlp={cfg['skip_state_mlp']}")
     print(f"{'='*60}")
 
-    torch.manual_seed(42)   # 재현성을 위해 seed 고정
+    torch.manual_seed(42)   # fix seed for reproducibility
 
     encoder = FlightEncoder(
         n_airports=n_airports,
@@ -231,7 +231,7 @@ def run_config(config_name, cfg, flights, n_airports):
                 "loss":           round(loss.item(), 4),
             })
 
-    # ── 학습 후 constraint별 최종 평가 ──
+    # -- Final evaluation per constraint after training --
     final_eval = {}
     for duty in [6.0, 8.0, 10.0, 12.0, 14.0]:
         with torch.no_grad():
@@ -244,7 +244,7 @@ def run_config(config_name, cfg, flights, n_airports):
         print(f"  max_duty={duty:4.0f}h → pairings: {np_:3d}, reward: {r:7.1f}")
 
     total_time = round(time.time() - t0, 1)
-    print(f"  완료: {total_time}s")
+    print(f"  Done: {total_time}s")
 
     return {
         "config":     cfg,
@@ -254,12 +254,12 @@ def run_config(config_name, cfg, flights, n_airports):
     }
 
 
-# ── 메인 ─────────────────────────────────────────────────────────────────────
+# -- Main -----------------------------------------------------------------------
 def main():
-    print("데이터 로드 중...")
+    print("Loading data...")
     flights    = load_flights("RL/data/T_ONTIME_MARKETING.csv", limit=FLIGHT_LIMIT)
     n_airports = max(max(f["origin"], f["dest"]) for f in flights) + 1
-    print(f"flights: {len(flights)}개, airports: {n_airports}개")
+    print(f"flights: {len(flights)}, airports: {n_airports}")
 
     all_results = {}
 
@@ -267,18 +267,18 @@ def main():
         result = run_config(config_name, cfg, flights, n_airports)
         all_results[config_name] = result
 
-    # 결과 저장
+    # Save results
     out_path = os.path.join(ROOT, "experiments", "results", "skip_ablation_results.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
 
-    print(f"\n결과 저장 완료: {out_path}")
+    print(f"\nResults saved: {out_path}")
 
-    # 간단 요약 출력
+    # Print brief summary
     print("\n" + "="*60)
-    print("실험 요약 (greedy, max_duty=14h 기준)")
+    print("Experiment summary (greedy, at max_duty=14h)")
     print("="*60)
-    print(f"{'구성':<22} {'최종 pairings':>14} {'최종 reward':>12} {'학습시간':>10}")
+    print(f"{'Config':<22} {'Final pairings':>14} {'Final reward':>12} {'Train time':>10}")
     print("-"*60)
     for name, res in all_results.items():
         p = res["final_eval"]["14.0"]["pairings"]
