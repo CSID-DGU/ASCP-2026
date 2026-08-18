@@ -1,10 +1,11 @@
 """
 evaluation/eval_best.py — stage3/phase2 체크포인트를 병렬로 평가해서 더 나은 쪽만 결과로 출력.
 
-기준(사용자 지정): dead time(duty-내부 gap만, overnight 제외)과 deadhead 둘 다
-한쪽이 다른 쪽보다 같거나 낮고 적어도 하나는 진짜 낮으면(Pareto dominance) 그 쪽만
-채택. 어느 쪽도 우세하지 않으면(한쪽은 dead time이 낫고 다른 쪽은 deadhead가 나은
-경우) 둘 다 출력해서 판단은 사용자가 하게 한다.
+Criterion (user-specified): if one side is <= the other on both dead time
+(within-duty gaps only, excluding overnight) and deadhead, and strictly lower
+on at least one (Pareto dominance), only that side is adopted. If neither side
+dominates (e.g. one has better dead time while the other has better deadhead),
+both are printed and the user makes the call.
 
 사용례:
   python evaluation/eval_best.py checkpoints/meze3bec --airline turkish --subset-size 1200 \
@@ -26,8 +27,8 @@ def run_eval(checkpoint, extra_args, device):
 
 
 def parse_metrics(output):
-    dead_time = re.search(r"dead time\(duty-내부 gap만, overnight 제외\):\s*([\d.]+)h", output)
-    deadhead  = re.search(r"deadhead:\s*(\d+)개 flight", output)
+    dead_time = re.search(r"dead time \(within-duty gaps only, excl\. overnight\):\s*([\d.]+)h", output)
+    deadhead  = re.search(r"deadhead:\s*(\d+) legs", output)
     mandays   = re.search(r"ManDays:\s*(\d+)", output)
     ftc       = re.search(r"FTC:\s*([\d.]+)%", output)
     return dict(
@@ -39,7 +40,7 @@ def parse_metrics(output):
 
 
 def dominates(a, b):
-    """a가 b를 Pareto dominate하는가: dead_time·deadhead 둘 다 <=, 적어도 하나는 <."""
+    """Whether a Pareto-dominates b: dead_time and deadhead are both <=, and at least one is <."""
     if a["dead_time"] is None or b["dead_time"] is None:
         return False
     le_dead = a["dead_time"] <= b["dead_time"]
@@ -49,8 +50,8 @@ def dominates(a, b):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="stage3/phase2 병렬 평가 → dead_time·deadhead 기준 더 나은 쪽만 출력")
-    parser.add_argument("checkpoint_dir", help="예: checkpoints/meze3bec")
+    parser = argparse.ArgumentParser(description="Evaluate stage3/phase2 in parallel -- print only the side that's better on dead_time/deadhead")
+    parser.add_argument("checkpoint_dir", help="e.g. checkpoints/meze3bec")
     parser.add_argument("--stage-a", default="stage3_best.pt")
     parser.add_argument("--stage-b", default="phase2_best.pt")
     parser.add_argument("--device-a", default="cuda:0")
@@ -60,7 +61,7 @@ def main():
     ckpt_a = f"{args.checkpoint_dir}/{args.stage_a}"
     ckpt_b = f"{args.checkpoint_dir}/{args.stage_b}"
 
-    print(f"[eval_best] {args.stage_a}(device={args.device_a}) / {args.stage_b}(device={args.device_b}) 병렬 평가 시작", flush=True)
+    print(f"[eval_best] Starting parallel evaluation: {args.stage_a}(device={args.device_a}) / {args.stage_b}(device={args.device_b})", flush=True)
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_a = ex.submit(run_eval, ckpt_a, extra, args.device_a)
@@ -69,9 +70,9 @@ def main():
         out_b, err_b, rc_b = fut_b.result()
 
     if rc_a != 0:
-        print(f"[eval_best] {args.stage_a} 실행 실패(rc={rc_a}):\n{err_a}", file=sys.stderr)
+        print(f"[eval_best] {args.stage_a} run failed (rc={rc_a}):\n{err_a}", file=sys.stderr)
     if rc_b != 0:
-        print(f"[eval_best] {args.stage_b} 실행 실패(rc={rc_b}):\n{err_b}", file=sys.stderr)
+        print(f"[eval_best] {args.stage_b} run failed (rc={rc_b}):\n{err_b}", file=sys.stderr)
 
     m_a = parse_metrics(out_a)
     m_b = parse_metrics(out_b)
@@ -80,19 +81,19 @@ def main():
     print(f"[eval_best] {args.stage_b}: dead_time={m_b['dead_time']}h deadhead={m_b['deadhead']} ManDays={m_b['mandays']} FTC={m_b['ftc']}%")
 
     if m_a["dead_time"] is None or m_b["dead_time"] is None:
-        print("\n[eval_best] 한쪽 이상 파싱 실패 — 둘 다 원본 출력\n")
+        print("\n[eval_best] At least one side failed to parse -- printing both raw outputs\n")
         print(f"=== {args.stage_a} ===\n{out_a}")
         print(f"=== {args.stage_b} ===\n{out_b}")
         return
 
     if dominates(m_a, m_b):
-        print(f"\n[eval_best] {args.stage_a}가 dead_time·deadhead 둘 다 우세 → {args.stage_a} 결과만 채택\n")
+        print(f"\n[eval_best] {args.stage_a} dominates on both dead_time and deadhead -- adopting {args.stage_a} results only\n")
         print(out_a)
     elif dominates(m_b, m_a):
-        print(f"\n[eval_best] {args.stage_b}가 dead_time·deadhead 둘 다 우세 → {args.stage_b} 결과만 채택\n")
+        print(f"\n[eval_best] {args.stage_b} dominates on both dead_time and deadhead -- adopting {args.stage_b} results only\n")
         print(out_b)
     else:
-        print("\n[eval_best] 우열 없음(한쪽은 dead_time↓, 다른 쪽은 deadhead↓) → 둘 다 출력\n")
+        print("\n[eval_best] No dominance (one is better on dead_time, the other on deadhead) -- printing both\n")
         print(f"=== {args.stage_a} ===\n{out_a}")
         print(f"=== {args.stage_b} ===\n{out_b}")
 

@@ -1,14 +1,14 @@
-# Alaska Airlines 운항 제약값 — 2019 기준 (Alaska 2022 TA 참조)
-# base_airport는 파일에 포함하지 않음 — train.py에서 에피소드마다 실제 ID 주입
+# Alaska Airlines operating constraint values -- as of 2019 (referencing Alaska 2022 TA)
+# base_airport is not included in this file -- train.py injects the actual ID per episode
 
 ALASKA_CONSTRAINTS = {
-    "max_duty":        12.5,  # duty 최대 경과 시간 (h) — Alaska 2022 TA 기준
-    "min_conn":        0.65,  # 최소 연결 시간 (h, ~39분) — BTS p5 추정
-    "max_conn":         8.8,  # 최대 연결 시간 (h) — BTS p95 추정
-    "max_legs":           6,  # duty당 최대 flight 수 — BTS p95 추정
-    "min_rest":        10.0,  # duty 간 최소 휴식 (h) — FAR 117 §117.25
-    "max_duty_periods":   2,  # pairing당 최대 overnight rest 수 (overnight 횟수 기준)
-    "max_pairing_days":   5,  # pairing 최대 기간 (일) — BTS p95 추정
-    "min_pairing_legs":   3,  # END_PAIRING 허용 최소 leg 수 — 2-leg Nash 차단
-    # base_airport 제외 — 에피소드별 주입
+    "max_duty":        12.5,  # max duty elapsed time (h) -- per Alaska 2022 TA
+    "min_conn":        0.65,  # min connection time (h, ~39 min) -- BTS p5 estimate
+    "max_conn":         8.8,  # max connection time (h) -- BTS p95 estimate
+    "max_legs":           6,  # max flights per duty -- BTS p95 estimate
+    "min_rest":        10.0,  # min rest between duties (h) -- FAR 117 SS117.25
+    "max_duty_periods":   2,  # max overnight rests per pairing (i.e. number of overnights)
+    "max_pairing_days":   5,  # max pairing length (days) -- BTS p95 estimate
+    "min_pairing_legs":   3,  # min legs required for END_PAIRING -- blocks 2-leg Nash
+    # base_airport excluded -- injected per episode
 }

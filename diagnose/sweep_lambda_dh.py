@@ -1,9 +1,8 @@
 """
-sweep_lambda_dh.py — delta 기준 lambda_dh(DH penalty) 스윕 실험
+sweep_lambda_dh.py -- lambda_dh (DH penalty) sweep experiment on the delta dataset
 
-chunking+timezone 수정 후 pool을 한 번만 수집하고, lambda_dh 값을 바꿔가며
-solve_set_covering을 반복 실행해 ManDays/DH/avg_legs 트레이드오프를 확인한다.
-(log/0703/avg_legs_종합보고_및_계획.md §5-2)
+Collects the pool once, then repeatedly runs solve_set_covering with different
+lambda_dh values to check the ManDays/DH/avg_legs tradeoff.
 """
 
 import os
@@ -64,12 +63,12 @@ def main():
 
     constraint = eip._GET_CONSTRAINT[args.airline](base_ids[0])
 
-    print(f"\n전체 데이터 로드 중 ({args.airline}, window_days={args.window_days})...", flush=True)
+    print(f"\nLoading full dataset ({args.airline}, window_days={args.window_days})...", flush=True)
     windows, n_total = eip.load_windows_with_global_ids(data_path, airport_map, args.window_days)
-    print(f"총 {n_total}편, {len(windows)}개 윈도우", flush=True)
+    print(f"{n_total} flights total, {len(windows)} windows", flush=True)
 
     connected_sampler = eip.sample_connected_subnet_std
-    print(f"\nPool 수집 중 (rollouts/chunk={args.n_rollouts_per_chunk}, subset={args.subset_size})... (한 번만 수행)", flush=True)
+    print(f"\nCollecting pool (rollouts/chunk={args.n_rollouts_per_chunk}, subset={args.subset_size})... (done once)", flush=True)
     with torch.no_grad():
         pool, covered = eip.collect_pool_full(
             windows, base_ids, constraint, encoder, decoder,
@@ -77,7 +76,7 @@ def main():
             subset_size=args.subset_size,
             connected_sampler=connected_sampler,
         )
-    print(f"pool 크기: {len(pool)}, 커버: {len(covered)}/{n_total}", flush=True)
+    print(f"pool size: {len(pool)}, covered: {len(covered)}/{n_total}", flush=True)
 
     print("\n" + "=" * 90)
     print(f"{'lambda_dh':>10} {'pairing':>8} {'ManDays':>9} {'DH':>7} {'dead_h':>10} {'FTC%':>8} {'avg_legs':>9} {'status':>10}")

@@ -1,4 +1,4 @@
-"""기존 데이터 품질분석 그래프+수치를 wandb에 게시 (학습 큐와 별도 run)"""
+"""Publish existing data-quality analysis figures + metrics to wandb (a separate run from the training queue)."""
 import os
 import sys
 
@@ -42,7 +42,7 @@ for airline, fname in FILES.items():
     small_bdr, small_car = compute_quality(small_q, cfg)
     fid = frechet_distance_1d(full_fh.values, small_fh.values)
 
-    print(f"[{airline}] BDR/CAR/FID 계산 완료, avg_legs 시뮬레이션 시작 (N_SIMS=8000)...")
+    print(f"[{airline}] BDR/CAR/FID computed, starting avg_legs simulation (N_SIMS=8000)...")
     t = sim_time_only(full_q["dur"].values, cfg)
     n = sim_network(full_q, cfg)
 
@@ -55,13 +55,13 @@ for airline, fname in FILES.items():
         round(float(n.mean()), 3), round(float(n.std()), 3),
         cfg["max_duty_periods"],
     )
-    print(f"[{airline}] 완료: FID={fid:.4f}  BDR {full_bdr:.3f}->{small_bdr:.3f}  "
+    print(f"[{airline}] done: FID={fid:.4f}  BDR {full_bdr:.3f}->{small_bdr:.3f}  "
           f"CAR {full_car:.3f}->{small_car:.3f}")
 
 ref_table = wandb.Table(columns=["name", "value", "meaning"], data=[
-    ["MIN_LEGS_FOR_PAIRING", TARGET_OLD, "avg_legs 하한 참고선 (플롯 상수)"],
-    ["LLM_v0_avg_legs", 5.72, "Delta 데이터로 학습한 LLM v0 baseline avg_legs (플롯 상수)"],
-    ["RL_current_avg_legs", 1.85, "당시 RL 정책 실측 avg_legs (플롯 상수)"],
+    ["MIN_LEGS_FOR_PAIRING", TARGET_OLD, "avg_legs lower-bound reference line (plot constant)"],
+    ["LLM_v0_avg_legs", 5.72, "avg_legs of the LLM v0 baseline trained on Delta data (plot constant)"],
+    ["RL_current_avg_legs", 1.85, "avg_legs measured from the RL policy at the time (plot constant)"],
 ])
 
 png_map = {
@@ -83,5 +83,5 @@ for rel in ["analysis/flight_time_distribution.py",
     artifact.add_file(os.path.join(REPO_ROOT, rel), name=rel)
 run.log_artifact(artifact)
 
-print(f"\n완료: {run.url}")
+print(f"\ndone: {run.url}")
 wandb.finish()

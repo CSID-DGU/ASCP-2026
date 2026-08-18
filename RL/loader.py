@@ -10,13 +10,14 @@ def convert_time(hhmm):
     return h + m / 60
 
 
-# 공항별 UTC 오프셋(분, 표준시 기준). BTS CRS_DEP_TIME/CRS_ARR_TIME은 각 공항의 현지
-# 로컬시각이라, 서로 다른 타임존의 공항을 잇는 연결편은 dep_time을 그대로 빼면 gap이
-# 음수/이상값으로 나와 실제로는 연결 가능한 편이 마스크에서 차단된다 (예: ATL(ET)→LAX(PT)
-# 착륙 후 다음 편 dep_time이 PT 기준이라 ET 기준 current_time과 clock이 안 맞음).
-# dep_time을 UTC 절대시간으로 앵커링하면 arr_time = dep_time + elapsed(block time,
-# 타임존 무관)만으로 도착 시각도 자동으로 올바른 UTC가 된다.
-# (analysis/flight_time_distribution.py의 _UTC 테이블과 동일 출처)
+# UTC offset per airport (minutes, standard time). BTS CRS_DEP_TIME/CRS_ARR_TIME are each
+# airport's local time, so for connections between airports in different time zones, subtracting
+# dep_time directly yields a negative/bogus gap and masks out connections that are actually
+# feasible (e.g. after landing at LAX (PT) from ATL (ET), the next flight's dep_time is in PT,
+# which doesn't line up with an ET-based current_time clock).
+# Anchoring dep_time to UTC absolute time means arr_time = dep_time + elapsed (block time,
+# timezone-independent) automatically yields a correct UTC arrival time too.
+# (same source as the _UTC table in analysis/flight_time_distribution.py)
 _UTC_OFFSET_MIN = {
     **{ap: -600 for ap in ['HNL', 'KOA', 'LIH', 'OGG']},
     **{ap: -540 for ap in ['ANC', 'FAI']},
@@ -40,16 +41,17 @@ _UTC_OFFSET_MIN = {
 
 
 def utc_offset_hours(airport_code):
-    """공항의 UTC 오프셋(시간). 목록에 없으면 Eastern(-5h)을 기본값으로 사용."""
+    """UTC offset for an airport (hours). Defaults to Eastern (-5h) if not in the table."""
     return _UTC_OFFSET_MIN.get(airport_code, -300) / 60.0
 
 
 def build_airport_map(path):
-    """전체 BTS CSV 기준으로 공항→int 맵을 생성한다.
+    """Build an airport-to-int map from the full BTS CSV.
 
-    path: str 또는 str 리스트. 여러 항공사 CSV를 합쳐 통합 공항 ID 공간 구성 가능.
-    빈도 내림차순 정렬: index 0 = 가장 빈도 높은 공항(허브/base 후보).
-    에피소드마다 다른 rolling window를 써도 ID가 일관된다.
+    path: a str or list of str. Multiple carrier CSVs can be combined to build a unified
+    airport ID space.
+    Sorted by descending frequency: index 0 = the highest-frequency airport (hub/base candidate).
+    IDs stay consistent across episodes even when different rolling windows are used.
     """
     paths = [path] if isinstance(path, str) else path
     counts = Counter()
@@ -61,28 +63,29 @@ def build_airport_map(path):
 
 
 def bases_to_ids(bases, airport_map):
-    """문자열 base 리스트를 정수 ID로 변환한다.
+    """Convert a list of base code strings to integer IDs.
 
     Args:
-        bases:       공항 코드 문자열 리스트 (예: ["ATL", "DTW", "MSP"])
-        airport_map: build_airport_map()으로 생성한 공항→int 맵
+        bases:       list of airport code strings (e.g. ["ATL", "DTW", "MSP"])
+        airport_map: airport-to-int map produced by build_airport_map()
 
     Returns:
-        정수 ID 리스트. airport_map에 없는 코드는 경고 후 무시한다.
+        A list of integer IDs. Codes not present in airport_map are dropped with a warning.
     """
     ids = [airport_map[b] for b in bases if b in airport_map]
     missing = [b for b in bases if b not in airport_map]
     if missing:
-        print(f"[bases_to_ids] 경고: airport_map에 없는 base 제외됨: {missing}")
+        print(f"[bases_to_ids] warning: bases not in airport_map were excluded: {missing}")
     if not ids:
-        raise ValueError(f"유효한 base가 없음. bases={bases}")
+        raise ValueError(f"No valid bases found. bases={bases}")
     return ids
 
 
 def get_bases(flights, n_bases=3):
-    """flight dict 리스트에서 빈도 상위 n_bases개 공항 ID를 반환한다.
+    """Return the top n_bases airport IDs by frequency from a list of flight dicts.
 
-    airport_map이 빈도 내림차순이므로 결과는 통상 [0, 1, ..., n_bases-1].
+    Since airport_map is sorted by descending frequency, the result is typically
+    [0, 1, ..., n_bases-1].
     """
     counts = Counter()
     for f in flights:
@@ -92,15 +95,16 @@ def get_bases(flights, n_bases=3):
 
 
 def load_flights(path, limit=50, seed=42, n_days_max=None, use_utc=False):
-    """BTS 데이터에서 flight 로드.
+    """Load flights from BTS data.
 
-    공항 인덱스: 전체 CSV 기준 빈도 내림차순 → index 0 = 허브.
-    limit과 무관하게 항상 동일한 airport_map이 사용된다.
+    Airport index: descending frequency over the full CSV -> index 0 = hub.
+    The same airport_map is always used regardless of limit.
 
-    use_utc: True면 dep_time을 UTC 절대시간으로 앵커링.
-        기본 False — 기존 체크포인트들은 이 수정 전(로컬시각) loader로 학습됐으므로, eval에서
-        무조건 켜면 학습 때 못 본 분포를 주는 OOD 상태가 됨. 새로 이 옵션을 켜고 학습한
-        모델을 평가할 때만 켜서 써야 함.
+    use_utc: if True, anchors dep_time to UTC absolute time.
+        Defaults to False -- existing checkpoints were trained with the loader's earlier
+        (local-time) behavior, so unconditionally enabling this at eval time would feed an
+        OOD distribution the model never saw during training. Only enable this when evaluating
+        a model that was trained with this option turned on.
     """
     df = pd.read_csv(path)
     df = df[[
@@ -108,7 +112,7 @@ def load_flights(path, limit=50, seed=42, n_days_max=None, use_utc=False):
     ]].dropna()
     df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
-    # 전체 데이터 기준으로 airport_map 구축 (subset 잘라내기 전에 계산)
+    # Build airport_map over the full dataset (computed before slicing to a subset)
     airport_counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
     airports_sorted = sorted(airport_counts.keys(), key=lambda a: -airport_counts[a])
     airport_map = {a: i for i, a in enumerate(airports_sorted)}
@@ -129,10 +133,11 @@ def load_flights(path, limit=50, seed=42, n_days_max=None, use_utc=False):
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
     if use_utc:
-        # dep_time을 UTC 절대시간으로 앵커링 (출발 공항 로컬시각 - UTC 오프셋)
-        # → 서로 다른 타임존 공항 간 연결편 gap 계산이 정확해짐
+        # Anchor dep_time to UTC absolute time (origin local time minus UTC offset)
+        # -> makes connection-gap calculations correct across airports in different time zones
         df["dep_time"] -= df["ORIGIN"].map(utc_offset_hours)
-    # CRS_ELAPSED_TIME(분, block time)은 타임존 무관 → dep_time에 더하면 arr_time도 같은 기준
+    # CRS_ELAPSED_TIME (minutes, block time) is timezone-independent -> adding it to dep_time
+    # keeps arr_time on the same basis
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)
@@ -155,12 +160,12 @@ def load_flights(path, limit=50, seed=42, n_days_max=None, use_utc=False):
 
 
 def sample_connected_subnet(flights_window, base_id, n_max):
-    """공항(스테이션) 집합 기반 서브넷 샘플링 — star graph 문제 해결
-      1. base를 반드시 포함
-      2. 교통량 상위 spoke를 하나씩 추가
-      3. chosen 공항 집합 '내부' 간선(origin∈chosen AND dest∈chosen)만 포함
-         → spoke-spoke 간선이 살아남아 ATL→MSP→SLC→ATL 같은 긴 chain 가능
-      4. n_max 초과 시 시간순으로 잘라냄
+    """Subnet sampling based on the airport (station) set -- solves the star-graph problem.
+      1. Always include the base.
+      2. Add spokes one at a time, ordered by traffic volume.
+      3. Keep only edges 'internal' to the chosen airport set (origin in chosen AND dest in
+         chosen) -> spoke-spoke edges survive, enabling long chains like ATL->MSP->SLC->ATL.
+      4. Trim to chronological order if n_max is exceeded.
     """
     from collections import Counter
     deg = Counter()
@@ -194,27 +199,30 @@ def load_flights_rolling(
     df=None,
     use_utc=False,
 ):
-    """슬라이딩 윈도우 방식으로 실제 날짜 데이터 로드.
+    """Load real date-based data using a sliding window approach.
 
-    에피소드마다 offset_days를 달리하면 서로 다른 flight 구성으로 훈련 가능.
-    hub_only 없이 모든 노선(spoke-spoke 포함)을 그대로 사용한다.
+    Varying offset_days per episode allows training on different flight compositions.
+    All routes (including spoke-spoke) are used as-is, with no hub_only restriction.
 
-    Base-first sampling (base_airport + n_max 지정 시):
-        base_flights = origin=base 또는 dest=base → 전부 포함
-        mid_flights  = 나머지 spoke-spoke         → 남은 슬롯만큼 랜덤 샘플링
-    n_max 미지정 시 전체 flight 반환.
+    Base-first sampling (when base_airport + n_max are given):
+        base_flights = origin=base or dest=base -> all included
+        mid_flights  = the remaining spoke-spoke flights -> randomly sampled to fill
+                       the remaining slots
+    Returns all flights if n_max is not given.
 
     Args:
-        path:          BTS CSV 경로
-        window_days:   윈도우 크기 (일), 기본 5
-        offset_days:   전체 날짜 목록 기준 시작 인덱스 (에피소드마다 랜덤 지정)
-        airport_map:   전체-데이터 기준 공항 ID 맵; None이면 전체 CSV에서 재계산(느림).
-        base_airport:  에피소드 base 공항 ID; base-first sampling 기준
-        n_max:         에피소드 최대 flight 수; 초과 시 base-first sampling 적용
-        df:            사전 로드된 DataFrame; 제공 시 CSV 재로딩 생략 (에피소드 반복 호출 최적화)
+        path:          path to the BTS CSV
+        window_days:   window size (days), default 5
+        offset_days:   starting index into the full date list (randomized per episode)
+        airport_map:   airport ID map computed over the full dataset; if None, recomputed
+                       from the full CSV (slow).
+        base_airport:  episode base airport ID; used for base-first sampling
+        n_max:         max flights per episode; base-first sampling applies when exceeded
+        df:            pre-loaded DataFrame; if given, skips re-loading the CSV (optimization
+                       for repeated per-episode calls)
 
     Returns:
-        flight dict 리스트 (dep_time 오름차순 정렬)
+        list of flight dicts (sorted ascending by dep_time)
     """
     if df is None:
         df = pd.read_csv(path)
@@ -223,13 +231,13 @@ def load_flights_rolling(
         ]].dropna()
         df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
 
-    # airport_map이 없으면 전체 데이터 기준으로 구축 (에피소드 간 ID 일관성 보장)
+    # If airport_map is not given, build it over the full dataset (keeps IDs consistent across episodes)
     if airport_map is None:
         counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
         airports_sorted = sorted(counts.keys(), key=lambda a: -counts[a])
         airport_map = {a: i for i, a in enumerate(airports_sorted)}
 
-    # 윈도우 날짜 추출
+    # Extract window dates
     dates = sorted(df["FL_DATE"].unique())
     window_dates = dates[offset_days: offset_days + window_days]
     if not window_dates:
@@ -237,12 +245,12 @@ def load_flights_rolling(
 
     df = df[df["FL_DATE"].isin(window_dates)].copy()
 
-    # 시간 변환 + 윈도우 시작일 기준 day offset
+    # Time conversion + day offset relative to the window start date
     base_date = min(window_dates)
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
     if use_utc:
-        # dep_time을 UTC 절대시간으로 앵커링 — load_flights()와 동일 이유
+        # Anchor dep_time to UTC absolute time -- same reasoning as load_flights()
         df["dep_time"] -= df["ORIGIN"].map(utc_offset_hours)
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
@@ -262,7 +270,7 @@ def load_flights_rolling(
             "arr_time": float(row["arr_time"]),
         })
 
-    # connected subnet sampling: star graph 문제 해결 (base-first 랜덤 샘플링 → 공항 집합 기반)
+    # connected subnet sampling: solves the star-graph problem (base-first random sampling -> airport-set based)
     if n_max is not None and len(flights) > n_max and base_airport is not None:
         flights = sample_connected_subnet(flights, base_airport, n_max)
 

@@ -1,12 +1,18 @@
 """
-diagnose_gap_alignment.py — intra-duty gap 진단 (재학습 없이 기존 체크포인트로)
+diagnose_gap_alignment.py -- intra-duty gap diagnostics (using an existing checkpoint,
+no retraining).
 
-log/0706/FTC_gap_진단_실행계획.md Step1(후보 gap 분포) + Step2(score-gap 상관) 실행 스크립트.
+Execution script for Step 1 (candidate gap distribution) + Step 2 (score-gap
+correlation) from log/0706/FTC_gap_diagnosis_execution_plan.md.
 
-Step1: duty-내부 연결 선택 시점마다 mask 통과 후보들의 gap 중 "선택된 gap == 최솟값"인
-       비율을 측정 — 낮으면 "더 짧은 후보가 있었는데 다른 걸 골랐다"는 뜻.
-Step2: 같은 시점에서 decoder raw score(logit)와 실제 gap의 Spearman 상관을 측정 —
-       약하면 모델이 gap을 잘 구분 못한다는 뜻(FTC_근본원인_모델설계_분석.md 가설 B).
+Step 1: at every intra-duty connection selection point, measures the fraction of
+        decision points where "the chosen gap == the minimum" among the mask-passing
+        candidates -- a low fraction means "a shorter candidate existed but a
+        different one was picked."
+Step 2: at the same decision points, measures the Spearman correlation between the
+        decoder's raw score (logit) and the actual gap -- a weak correlation means the
+        model doesn't distinguish gaps well (hypothesis B in
+        FTC_root_cause_model_design_analysis.md).
 """
 import os
 import sys
@@ -56,7 +62,7 @@ def new_pairing_state(f, episode_base, assigned):
 
 
 def rollout_with_diagnostics(flights, constraint, encoder, decoder, encoded, device, greedy=False):
-    """duty-내부 연결 선택마다 (선택 gap, 후보 gap 목록, 후보 score 목록)을 기록."""
+    """Records (chosen gap, candidate gap list, candidate score list) for every intra-duty connection selection."""
     assigned = {f["id"]: False for f in flights}
     records = []
 
@@ -66,7 +72,7 @@ def rollout_with_diagnostics(flights, constraint, encoder, decoder, encoded, dev
     first = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
     assigned[first["id"]] = True
     state = new_pairing_state(first, episode_base, assigned)
-    state["pairing_start"] = False  # 첫 편은 pairing_start가 아니라 첫 편 자체(gap 패널티 없음 케이스)
+    state["pairing_start"] = False  # the first flight is treated as the flight itself, not pairing_start (no gap penalty case)
 
     _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
     max_steps = len(flights) * 4
@@ -90,7 +96,7 @@ def rollout_with_diagnostics(flights, constraint, encoder, decoder, encoded, dev
         logits = decoder(encoded, state_vec, mask, return_logits=True)
         probs = torch.softmax(logits, dim=-1)
 
-        # 진단 대상: pairing 첫 편도 아니고 rest 직후도 아닌, "같은 duty 내부 연결" 시점만
+        # Diagnostic target: only points that are "connections within the same duty" -- not the first flight of a pairing, not right after rest
         is_intra_context = not state.get("pairing_start", False) and not state.get("is_resting", False)
         pending = None
         if is_intra_context:
@@ -165,38 +171,38 @@ def main():
 
     n = len(all_records)
     print(f"checkpoint: {args.checkpoint}")
-    print(f"진단 대상 duty-내부 연결 선택 시점: {n}건 ({args.n_rollouts} rollouts)")
+    print(f"diagnostic target intra-duty connection selection points: {n} ({args.n_rollouts} rollouts)")
     if n == 0:
-        print("기록 없음 — subset/제약 조건 확인 필요")
+        print("no records -- check subset/constraint settings")
         return
 
-    # Step 1: 선택 gap == 후보 중 최솟값 비율
+    # Step 1: fraction where the chosen gap == the minimum among candidates
     is_min_choice = [abs(r["chosen_gap"] - min(r["gaps"])) < 1e-6 for r in all_records]
     min_gaps = [min(r["gaps"]) for r in all_records]
     chosen_gaps = [r["chosen_gap"] for r in all_records]
     print()
-    print("=== Step 1: 후보 gap 분포 (가설 A: 데이터 구조) ===")
-    print(f"  선택 gap == 후보 최솟값 비율: {sum(is_min_choice)/n*100:.1f}%")
-    print(f"  후보 최솟값 평균:   {sum(min_gaps)/n:.2f}h  (중앙값 {sorted(min_gaps)[n//2]:.2f}h)")
-    print(f"  실제 선택 gap 평균: {sum(chosen_gaps)/n:.2f}h  (중앙값 {sorted(chosen_gaps)[n//2]:.2f}h)")
+    print("=== Step 1: candidate gap distribution (hypothesis A: data structure) ===")
+    print(f"  fraction where chosen gap == candidate minimum: {sum(is_min_choice)/n*100:.1f}%")
+    print(f"  mean of candidate minimums:   {sum(min_gaps)/n:.2f}h  (median {sorted(min_gaps)[n//2]:.2f}h)")
+    print(f"  mean of actual chosen gaps: {sum(chosen_gaps)/n:.2f}h  (median {sorted(chosen_gaps)[n//2]:.2f}h)")
 
-    # Step 2: score-gap Spearman 상관 (decision point별로 계산 후 평균)
+    # Step 2: score-gap Spearman correlation (computed per decision point, then averaged)
     corrs = []
     for r in all_records:
-        if len(set(r["gaps"])) < 2:  # 후보 gap이 다 같으면 상관 정의 불가
+        if len(set(r["gaps"])) < 2:  # correlation is undefined if all candidate gaps are identical
             continue
         rho, _ = spearmanr(r["gaps"], r["scores"])
-        if rho == rho:  # NaN 체크
+        if rho == rho:  # NaN check
             corrs.append(rho)
     print()
-    print("=== Step 2: score-gap 상관 (가설 B: 모델 설계) ===")
-    print(f"  상관 계산 가능한 decision point: {len(corrs)}/{n}건")
+    print("=== Step 2: score-gap correlation (hypothesis B: model design) ===")
+    print(f"  decision points where correlation is computable: {len(corrs)}/{n}")
     if corrs:
         avg_rho = sum(corrs) / len(corrs)
-        print(f"  평균 Spearman rho (gap vs score): {avg_rho:.3f}")
-        print(f"  (음수면 gap 클수록 score 낮음 = 모델이 gap을 인식하고 있다는 뜻)")
+        print(f"  mean Spearman rho (gap vs score): {avg_rho:.3f}")
+        print(f"  (negative means larger gap -> lower score, i.e. the model is aware of gap)")
         strong_neg = sum(1 for c in corrs if c <= -0.5)
-        print(f"  rho <= -0.5(강한 음의 상관)인 decision point 비율: {strong_neg/len(corrs)*100:.1f}%")
+        print(f"  fraction of decision points with rho <= -0.5 (strong negative correlation): {strong_neg/len(corrs)*100:.1f}%")
 
 
 if __name__ == "__main__":

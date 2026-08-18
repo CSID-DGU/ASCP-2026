@@ -1,11 +1,11 @@
 """
-Turkish Airlines .legs 파일 로더.
+Loader for Turkish Airlines .legs files.
 
-파일 형식: ORIGIN|DEST|FLEET|AC_NUM|DEP_DT_LOCAL|ARR_DT_LOCAL|DEP_TZ_MIN|ARR_TZ_MIN
-UTC 변환: dep_utc = dep_local - DEP_TZ_MIN분
+File format: ORIGIN|DEST|FLEET|AC_NUM|DEP_DT_LOCAL|ARR_DT_LOCAL|DEP_TZ_MIN|ARR_TZ_MIN
+UTC conversion: dep_utc = dep_local - DEP_TZ_MIN minutes
 
-load_flights_rolling()과 동일한 flight dict 형식을 반환하므로
-train.py / evaluation/evaluate_ip.py 등 기존 코드를 그대로 활용 가능.
+Returns the same flight dict format as load_flights_rolling(), so existing code
+(experiments/train.py / evaluation/evaluate_ip.py, etc.) can be reused as-is.
 """
 import os
 import glob
@@ -13,12 +13,12 @@ import random
 import pandas as pd
 from collections import Counter
 
-# Zeren & Özkol (2016, Expert Systems With Applications 55) Table 2 재현 —
-# "planning month + N일" 중 N을 0~15로 스캔하면 6개월 전부 N=6~7에서 오차 1.3% 이내로
-# 수렴함. Feb는 N=7일 때 15,742편으로 목표(15,738) 대비 오차 0.03%.
-# 이 값을 turkish 데이터셋의 기본 윈도우로 채택.
+# Reproduces Table 2 of Zeren & Ozkol (2016, Expert Systems With Applications 55) --
+# scanning N = 0 to 15 for "planning month + N days" converges to within 1.3% error for all
+# six months at N=6-7. For Feb, N=7 gives 15,742 flights vs. a target of 15,738 (0.03% error).
+# This value is adopted as the default window for the turkish dataset.
 ZEREN_FEB_FILE = "tt201402.legs"
-ZEREN_FEB_WINDOW = ("2014-02-01", "2014-03-08")  # buffer=7일, [start, end) 반개구간
+ZEREN_FEB_WINDOW = ("2014-02-01", "2014-03-08")  # buffer=7 days, half-open interval [start, end)
 
 
 def _parse_legs_file(path):
@@ -48,31 +48,33 @@ def _parse_legs_file(path):
 
 def parse_legs_dir(dir_path, fleet_prefix="3", files=None, date_range=None):
     """
-    디렉토리 내 .legs 파일을 파싱 → UTC 기준 시간 포함 DataFrame 반환.
+    Parse .legs files in a directory -> return a DataFrame with UTC-based times.
 
-    반환 컬럼:
-        ORIGIN, DEST          공항 코드
+    Returned columns:
+        ORIGIN, DEST          airport codes
         dep_utc, arr_utc      UTC datetime
-        dep_date_utc          dep_utc의 날짜 (rolling window 기준)
+        dep_date_utc          date of dep_utc (used for the rolling window)
 
     Args:
-        dir_path:     .legs 파일이 있는 디렉토리
-        fleet_prefix: 포함할 fleet 코드 prefix. None이면 전체. 기본 "3" = Airbus narrow body.
-        files:        사용할 파일 이름 목록 (예: ["tt201401.legs"]). None이면 디렉토리 내 전체.
-                       주의: 월간 파일끼리 날짜 범위가 겹치므로(각 파일이 전후 버퍼 포함) 여러
-                       파일을 동시에 넘기면 겹치는 구간의 항공편이 중복 카운트된다.
-        date_range:   (start, end) 문자열 튜플. dep_date_utc를 [start, end)로 필터링.
-                       None이면 필터링 없음. ZEREN_FEB_WINDOW 참고.
+        dir_path:     directory containing the .legs files
+        fleet_prefix: fleet code prefix to include. None = all. Default "3" = Airbus narrow body.
+        files:        list of file names to use (e.g. ["tt201401.legs"]). None = all files in
+                       the directory.
+                       Note: monthly files have overlapping date ranges (each file includes a
+                       buffer before/after), so passing multiple files at once double-counts
+                       flights in the overlapping region.
+        date_range:   (start, end) string tuple. Filters dep_date_utc to [start, end).
+                       None = no filtering. See ZEREN_FEB_WINDOW.
     """
     if files is not None:
         legs_files = [os.path.join(dir_path, f) for f in files]
         missing = [p for p in legs_files if not os.path.exists(p)]
         if missing:
-            raise FileNotFoundError(f".legs 파일 없음: {missing}")
+            raise FileNotFoundError(f".legs file(s) not found: {missing}")
     else:
         legs_files = sorted(glob.glob(os.path.join(dir_path, "*.legs")))
     if not legs_files:
-        raise FileNotFoundError(f".legs 파일 없음: {dir_path}")
+        raise FileNotFoundError(f"No .legs files found: {dir_path}")
 
     dfs = [_parse_legs_file(p) for p in legs_files]
     df  = pd.concat(dfs, ignore_index=True)
@@ -80,14 +82,14 @@ def parse_legs_dir(dir_path, fleet_prefix="3", files=None, date_range=None):
     if fleet_prefix is not None:
         df = df[df["FLEET"].str.startswith(fleet_prefix)].copy()
 
-    # 로컬 시간 → UTC: dep_utc = dep_local - DEP_TZ분
+    # Local time -> UTC: dep_utc = dep_local - DEP_TZ minutes
     df["dep_local"] = pd.to_datetime(df["DEP_DT"])
     df["arr_local"] = pd.to_datetime(df["ARR_DT"])
     df["dep_utc"]   = df["dep_local"] - pd.to_timedelta(df["DEP_TZ"], unit="min")
     df["arr_utc"]   = df["arr_local"] - pd.to_timedelta(df["ARR_TZ"], unit="min")
     df["dep_date_utc"] = df["dep_utc"].dt.normalize()
 
-    # 같은 origin-dest 및 arr <= dep (동향 단거리 시간대 역전) 필터
+    # Filter out same origin-dest and arr <= dep (timezone inversion on short same-direction hops)
     df = df[(df["ORIGIN"] != df["DEST"]) & (df["arr_utc"] > df["dep_utc"])].copy()
 
     if date_range is not None:
@@ -99,18 +101,18 @@ def parse_legs_dir(dir_path, fleet_prefix="3", files=None, date_range=None):
 
 def build_airport_map_turkish(dir_path=None, fleet_prefix="3", df=None):
     """
-    공항→int ID 맵 생성.
+    Build an airport-to-int ID map.
 
-    빈도 내림차순 정렬 (index 0 = 가장 빈도 높은 공항 = HB1/HB2 homebase).
+    Sorted by descending frequency (index 0 = the highest-frequency airport = HB1/HB2 homebase).
 
     Args:
-        dir_path:     parse_legs_dir에 넘길 디렉토리 경로. df가 있으면 생략 가능.
-        fleet_prefix: parse_legs_dir에 넘길 fleet 필터. df가 있으면 무시.
-        df:           이미 parse_legs_dir()로 로드한 DataFrame. 제공 시 재파싱 생략.
+        dir_path:     directory path to pass to parse_legs_dir. Can be omitted if df is given.
+        fleet_prefix: fleet filter to pass to parse_legs_dir. Ignored if df is given.
+        df:           a DataFrame already loaded via parse_legs_dir(). Skips re-parsing if given.
     """
     if df is None:
         if dir_path is None:
-            raise ValueError("dir_path 또는 df 중 하나를 제공해야 합니다.")
+            raise ValueError("Either dir_path or df must be provided.")
         df = parse_legs_dir(dir_path, fleet_prefix=fleet_prefix)
     counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
     airports_sorted = sorted(counts.keys(), key=lambda a: -counts[a])
@@ -118,7 +120,7 @@ def build_airport_map_turkish(dir_path=None, fleet_prefix="3", df=None):
 
 
 def sample_connected_subnet(flights_window, base_id, n_max):
-    """공항 집합 기반 서브넷 샘플링 — star graph 문제 해결 (loader.py와 동일 로직)."""
+    """Subnet sampling based on the airport set -- solves the star-graph problem (same logic as loader.py)."""
     deg = Counter()
     for f in flights_window:
         deg[f["origin"]] += 1
@@ -149,26 +151,26 @@ def load_flights_rolling_turkish(
     n_max=None,
 ):
     """
-    슬라이딩 윈도우 방식으로 Turkish .legs 데이터에서 flight 로드.
+    Load flights from Turkish .legs data using a sliding window approach.
 
-    load_flights_rolling()과 동일한 flight dict 형식 반환.
-    dep_time / arr_time: UTC 기준 윈도우 시작 시점으로부터의 상대 시간 (hours).
+    Returns the same flight dict format as load_flights_rolling().
+    dep_time / arr_time: time relative to the window start, in UTC hours.
 
     Args:
-        window_days:  윈도우 크기 (일), 기본 5
-        offset_days:  전체 날짜 목록 기준 시작 인덱스 (에피소드마다 랜덤 지정)
-        airport_map:  build_airport_map_turkish()로 생성한 공항→int 맵
-        base_airport: 에피소드 base 공항 ID; base-first sampling 기준
-        df:           parse_legs_dir()로 사전 로드된 DataFrame (필수)
-        n_max:        에피소드 최대 flight 수; 초과 시 base-first sampling 적용
+        window_days:  window size (days), default 5
+        offset_days:  starting index into the full date list (randomized per episode)
+        airport_map:  airport-to-int map produced by build_airport_map_turkish()
+        base_airport: episode base airport ID; used for base-first sampling
+        df:           DataFrame pre-loaded via parse_legs_dir() (required)
+        n_max:        max flights per episode; base-first sampling applies when exceeded
 
     Returns:
-        flight dict 리스트 (dep_time 오름차순)
+        list of flight dicts (ascending by dep_time)
     """
     if df is None:
-        raise ValueError("df는 parse_legs_dir()로 사전 로드해 전달해야 합니다.")
+        raise ValueError("df must be pre-loaded via parse_legs_dir() and passed in.")
     if airport_map is None:
-        raise ValueError("airport_map은 build_airport_map_turkish()로 생성해 전달해야 합니다.")
+        raise ValueError("airport_map must be built via build_airport_map_turkish() and passed in.")
 
     dates = sorted(df["dep_date_utc"].unique())
     window_dates = dates[offset_days: offset_days + window_days]
@@ -177,7 +179,7 @@ def load_flights_rolling_turkish(
 
     df_win = df[df["dep_date_utc"].isin(window_dates)].copy()
 
-    # 윈도우 시작 UTC 기준 상대 시간 (hours)
+    # Time relative to the window start UTC (hours)
     base_dt = pd.Timestamp(min(window_dates))
     df_win["dep_time"] = (df_win["dep_utc"] - base_dt).dt.total_seconds() / 3600.0
     df_win["arr_time"] = (df_win["arr_utc"] - base_dt).dt.total_seconds() / 3600.0
@@ -198,7 +200,7 @@ def load_flights_rolling_turkish(
             "arr_time": float(row["arr_time"]),
         })
 
-    # connected subnet sampling: star graph 문제 해결
+    # connected subnet sampling: solves the star-graph problem
     if n_max is not None and len(flights) > n_max and base_airport is not None:
         flights = sample_connected_subnet(flights, base_airport, n_max)
 

@@ -1,6 +1,6 @@
 """
-diagnose_film_crossairline.py — 같은 delta flight 데이터에 delta/alaska/jetblue의
-constraint를 그대로 바꿔 넣어서 pairing 행동이 실제로 달라지는지 확인.
+diagnose_film_crossairline.py -- swap in the full delta/alaska/jetblue constraint sets
+on the same delta flight data to check whether pairing behavior actually changes.
 
 diagnose_film_overnight.py는 delta 안에서 max_duty_periods 성분 하나만 흔들었는데,
 이건 FiLM의 존재 목적(항공사 간 일반화)을 검증 못 한다 — 성분 하나가 아니라 항공사
@@ -35,7 +35,7 @@ AIRLINES = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints,  # 값만 참고 — turkish flight/embedding은 안 씀 (실험 2)
+    "turkish": get_turkish_constraints,  # for reference values only -- turkish flight/embedding is not used (experiment 2)
 }
 
 
@@ -44,7 +44,7 @@ def main():
     parser.add_argument("checkpoint")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--n-rollouts", type=int, default=10)
-    parser.add_argument("--greedy", action="store_true", help="stochastic 대신 greedy(결정론) rollout — 노이즈 제거용")
+    parser.add_argument("--greedy", action="store_true", help="use greedy (deterministic) rollout instead of stochastic -- for removing noise")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -52,10 +52,11 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
     n_airports = ckpt.get("n_airports", ckpt["encoder"]["airport_emb.weight"].shape[0])
     if n_airports <= 145:
-        print(f"경고: n_airports={n_airports} — multi-airline 통합 임베딩(168)이 아닌 "
-              f"단일 항공사 체크포인트로 보임. alaska/jetblue constraint 결과는 무의미할 수 있음.")
+        print(f"warning: n_airports={n_airports} -- this looks like a single-airline "
+              f"checkpoint rather than a multi-airline unified embedding (168). "
+              f"alaska/jetblue constraint results may be meaningless.")
 
-    # multi-airline 학습 시 쓴 것과 동일한 통합 airport map 재구성 (delta+alaska+jetblue)
+    # Rebuild the same unified airport map used during multi-airline training (delta+alaska+jetblue)
     map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
     airport_map = build_airport_map(map_paths)
     base_ids = bases_to_ids(list(config.AIRLINE_BASES["delta"]), airport_map)
@@ -71,7 +72,7 @@ def main():
     decoder.load_state_dict(ckpt["decoder"])
     encoder.eval(); decoder.eval()
 
-    # flight 데이터는 delta 고정 — constraint만 항공사별로 바꿔가며 비교하는 게 핵심
+    # Flight data is fixed to delta -- the key point is comparing while only swapping constraints per airline
     flights = load_flights_rolling(
         config.AIRLINE_DATA["delta"], window_days=5, offset_days=0, airport_map=airport_map,
         base_airport=base, n_max=config.EPISODE_MAX_FLIGHTS,
@@ -79,8 +80,8 @@ def main():
     origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, 5 * 24.0, device=device)
 
     print(f"checkpoint: {args.checkpoint}  (n_airports={n_airports})")
-    print(f"flight 데이터: delta 고정 {len(flights)}편 — constraint만 항공사별로 교체")
-    print(f"{'항공사':<10}{'pairings':>10}{'deadheads':>11}{'coverage':>10}{'avg_overnight':>15}{'avg_legs':>10}")
+    print(f"flight data: delta fixed, {len(flights)} flights -- only constraints swapped per airline")
+    print(f"{'airline':<10}{'pairings':>10}{'deadheads':>11}{'coverage':>10}{'avg_overnight':>15}{'avg_legs':>10}")
     with torch.no_grad():
         for airline, get_fn in AIRLINES.items():
             val_c = get_fn(base)
@@ -100,7 +101,7 @@ def main():
                   f"{sum(cov_list)/n:>9.1f}%{sum(on_list)/n:>15.3f}{sum(legs_list)/n:>10.3f}")
 
     print()
-    print("constraint 값 참고:")
+    print("constraint values for reference:")
     for airline, get_fn in AIRLINES.items():
         c = get_fn(base)
         print(f"  {airline}: " + ", ".join(f"{k}={c[k]}" for k in FILM_CONSTRAINT_KEYS))
