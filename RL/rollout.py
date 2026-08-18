@@ -59,6 +59,9 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     min_pairing_legs = constraint.get("min_pairing_legs", 2)
 
     _reach_cache = {}
+    if require_return and constraint.get("_base_reach") is not None:
+        # 호출부가 계산한 현재 base의 reachability를 재사용해 rollout별 중복 계산을 막음.
+        _reach_cache[constraint.get("base_airport", 0)] = constraint["_base_reach"]
 
     def constraint_for(base):
         c = {**constraint, "base_airport": base}
@@ -151,7 +154,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "n_duties":    n_rest + 1,
             "intra_duty_gap":    intra,
             "inter_duty_excess": inter,
-            "ends_at_base":      True,
+            # salvage 결과도 실제 마지막 도착지가 목표 base인지 다시 확인함.
+            "ends_at_base":      recs[-1]["dest"] == end_ap,
             "true_start_airport": start_ap,
             "is_truncated":      True,
         })
@@ -216,7 +220,9 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             return None, None
         if not startable:
             return None, None
-        return episode_base, min(startable, key=lambda f: f["dep_time"])
+        f = min(startable, key=lambda f: f["dep_time"])
+        # legacy 재시작에서도 constraint 기준 base와 실제 출발 공항을 일치시킴.
+        return f["origin"], f
 
     def begin_pairing():
         nonlocal state, episode_base, cur_c
@@ -316,6 +322,12 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                   greedy=False, device=None):
     """Run B rollouts concurrently, using one batched decoder call per step."""
+    if constraint.get("require_base_return"):
+        # 배치 경로는 base 회전과 salvage를 지원하지 않아 strict 요청을 명시적으로 차단함.
+        raise NotImplementedError(
+            "rollout_batch는 strict hard mask를 지원하지 않습니다. "
+            "rollout_with_pairings 기반 경로를 사용하세요."
+        )
     dev = device or torch.device("cpu")
     n_flights    = len(flights)
     episode_base = constraint.get("base_airport", 0)
