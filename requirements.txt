@@ -1,0 +1,5 @@
+torch==2.12.1
+numpy==2.2.6
+pandas==2.3.3
+PuLP==3.3.2
+wandb==0.28.0

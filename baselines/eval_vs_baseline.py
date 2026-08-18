@@ -4,7 +4,7 @@ RL vs Tahir I²CGp gap comparison.
 Usage:
     cd /home/hyrn2/github/ASCP-2026
     source venv/bin/activate
-    python eval_vs_baseline.py [--checkpoint checkpoints/model_latest.pt]
+    python baselines/eval_vs_baseline.py [--checkpoint checkpoints/model_latest.pt]
                                [--at 09]        # filter by aircraft type
                                [--tightness 1]  # filter by tightness level
                                [--results path/to/i2cgp_results.json]
@@ -25,7 +25,9 @@ import json
 import argparse
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "RL"))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder, PointerDecoder
 from RL.cppsc_loader import load_cppsc_flights, get_cppsc_constraints
@@ -35,7 +37,7 @@ from RL.environment import get_mask, step, step_end_duty, final_reward
 from torch.distributions import Categorical
 
 TAHIR_RESULTS = os.path.join(
-    os.path.dirname(__file__), "..", "Tahir", "experiments", "i2cgp_results.json"
+    REPO_ROOT, "RL", "baseline", "Tahir", "experiments", "i2cgp_results.json"
 )
 
 ALL_TYPES = ["727", "09", "94", "95", "757", "319", "320"]

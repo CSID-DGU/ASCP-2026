@@ -316,7 +316,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
                constraint_sampler=None, init_best=float("inf")):
-    from set_partition import solve_lp_relaxation
+    from evaluation.set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
     best_avg_pairings = init_best

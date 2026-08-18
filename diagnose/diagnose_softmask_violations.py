@@ -5,7 +5,7 @@ min_conn·max_conn/max_pairing_days/max_duty_periods)을 얼마나 위반하는�
 측정한다.
 
 배경(log/0717/FiLM_방향결정_및_계획.md §1):
-  기존 evaluate_ip.py/rollout.py는 pairing pool을 만들 때 위반 여부를 전혀
+  기존 evaluation/evaluate_ip.py/rollout.py는 pairing pool을 만들 때 위반 여부를 전혀
   체크하지 않는다(마스크가 없는 지금은 위반된 pairing도 그대로 pool에 들어가
   IP가 선택할 수 있음). 여기서는 rollout을 직접 실행하며 매 flight 선택/
   END_DUTY 시점마다 "만약 하드 마스크가 있었다면 막혔을 상황인가"를 계산해

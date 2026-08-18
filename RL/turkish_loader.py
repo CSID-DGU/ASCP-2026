@@ -13,13 +13,6 @@ import random
 import pandas as pd
 from collections import Counter
 
-# Zeren & Özkol (2016, Expert Systems With Applications 55) Table 2 재현 —
-# "planning month + N일" 중 N을 0~15로 스캔하면 6개월 전부 N=6~7에서 오차 1.3% 이내로
-# 수렴함. Feb는 N=7일 때 15,742편으로 목표(15,738) 대비 오차 0.03%.
-# 이 값을 turkish 데이터셋의 기본 윈도우로 채택.
-ZEREN_FEB_FILE = "tt201402.legs"
-ZEREN_FEB_WINDOW = ("2014-02-01", "2014-03-08")  # buffer=7일, [start, end) 반개구간
-
 
 def _parse_legs_file(path):
     rows = []
@@ -46,7 +39,7 @@ def _parse_legs_file(path):
     return pd.DataFrame(rows)
 
 
-def parse_legs_dir(dir_path, fleet_prefix="3", files=None, date_range=None):
+def parse_legs_dir(dir_path, fleet_prefix="3", files=None):
     """
     디렉토리 내 .legs 파일을 파싱 → UTC 기준 시간 포함 DataFrame 반환.
 
@@ -59,10 +52,6 @@ def parse_legs_dir(dir_path, fleet_prefix="3", files=None, date_range=None):
         dir_path:     .legs 파일이 있는 디렉토리
         fleet_prefix: 포함할 fleet 코드 prefix. None이면 전체. 기본 "3" = Airbus narrow body.
         files:        사용할 파일 이름 목록 (예: ["tt201401.legs"]). None이면 디렉토리 내 전체.
-                       주의: 월간 파일끼리 날짜 범위가 겹치므로(각 파일이 전후 버퍼 포함) 여러
-                       파일을 동시에 넘기면 겹치는 구간의 항공편이 중복 카운트된다.
-        date_range:   (start, end) 문자열 튜플. dep_date_utc를 [start, end)로 필터링.
-                       None이면 필터링 없음. ZEREN_FEB_WINDOW 참고.
     """
     if files is not None:
         legs_files = [os.path.join(dir_path, f) for f in files]
@@ -90,10 +79,6 @@ def parse_legs_dir(dir_path, fleet_prefix="3", files=None, date_range=None):
     # 같은 origin-dest 및 arr <= dep (동향 단거리 시간대 역전) 필터
     df = df[(df["ORIGIN"] != df["DEST"]) & (df["arr_utc"] > df["dep_utc"])].copy()
 
-    if date_range is not None:
-        start, end = date_range
-        df = df[(df["dep_date_utc"] >= start) & (df["dep_date_utc"] < end)].copy()
-
     return df[["ORIGIN", "DEST", "dep_utc", "arr_utc", "dep_date_utc"]].reset_index(drop=True)
 
 
@@ -115,29 +100,6 @@ def build_airport_map_turkish(dir_path=None, fleet_prefix="3", df=None):
     counts = Counter(list(df["ORIGIN"]) + list(df["DEST"]))
     airports_sorted = sorted(counts.keys(), key=lambda a: -counts[a])
     return {a: i for i, a in enumerate(airports_sorted)}
-
-
-def sample_connected_subnet(flights_window, base_id, n_max):
-    """공항 집합 기반 서브넷 샘플링 — star graph 문제 해결 (loader.py와 동일 로직)."""
-    deg = Counter()
-    for f in flights_window:
-        deg[f["origin"]] += 1
-        deg[f["dest"]] += 1
-    spokes = [a for a, _ in deg.most_common() if a != base_id]
-    chosen = {base_id}
-    out = []
-    for s in spokes:
-        chosen.add(s)
-        candidate = [f for f in flights_window
-                     if f["origin"] in chosen and f["dest"] in chosen]
-        if len(candidate) >= n_max:
-            out = candidate
-            break
-        out = candidate
-    out = sorted(out, key=lambda f: f["dep_time"])[:n_max]
-    for i, f in enumerate(out):
-        f["id"] = i
-    return out
 
 
 def load_flights_rolling_turkish(
@@ -198,8 +160,18 @@ def load_flights_rolling_turkish(
             "arr_time": float(row["arr_time"]),
         })
 
-    # connected subnet sampling: star graph 문제 해결
+    # base-first sampling: base 관련 편 우선, 나머지 랜덤 샘플링
     if n_max is not None and len(flights) > n_max and base_airport is not None:
-        flights = sample_connected_subnet(flights, base_airport, n_max)
+        base_fs = [f for f in flights if f["origin"] == base_airport or f["dest"] == base_airport]
+        mid_fs  = [f for f in flights if f["origin"] != base_airport and f["dest"] != base_airport]
+        if len(base_fs) >= n_max:
+            random.shuffle(base_fs)
+            flights = sorted(base_fs[:n_max], key=lambda f: f["dep_time"])
+        else:
+            remaining = n_max - len(base_fs)
+            random.shuffle(mid_fs)
+            flights = sorted(base_fs + mid_fs[:remaining], key=lambda f: f["dep_time"])
+        for i, f in enumerate(flights):
+            f["id"] = i
 
     return flights

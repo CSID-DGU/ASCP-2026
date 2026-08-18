@@ -43,7 +43,7 @@ from constraints import (
     get_turkish_constraints, FILM_CONSTRAINT_KEYS,
 )
 from utils import flights_to_tensors, constraint_to_tensor, state_to_vec as _state_to_vec_orig
-from set_partition import solve_set_covering
+from evaluation.set_partition import solve_set_covering
 from rollout import set_environment
 
 import config
@@ -52,8 +52,8 @@ import train as train_mod
 import rollout as rollout_mod
 from train import run_episode
 
-import evaluate_ip
-from evaluate_ip import collect_pool_full, sample_connected_subnet_std
+from evaluation import evaluate_ip
+from evaluation.evaluate_ip import collect_pool_full, sample_connected_subnet_std
 
 GREEDY_AIRLINES = {
     "delta": get_delta_constraints, "alaska": get_alaska_constraints,

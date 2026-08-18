@@ -19,7 +19,7 @@ Gap formula:
 [2026-07-09 현대화] 예전 버전은 이 파일 안에 자체 run_greedy/state_to_vec를 손으로
 재구현했는데, 그 사이 모델이 gap_bias·79차원 state_vec·END_DUTY를 흡수한 step() 등으로
 바뀌면서 완전히 어긋났다(RL.environment.step_end_duty 자체가 사라짐). 재구현 대신
-evaluate_ip.py가 쓰는 것과 동일한 RL/rollout.py::rollout_with_pairings, RL/utils.py의
+evaluation/evaluate_ip.py가 쓰는 것과 동일한 RL/rollout.py::rollout_with_pairings, RL/utils.py의
 state_to_vec/flights_to_tensors를 그대로 재사용하도록 바꿔 이후 모델 변경에도 같이
 현행화되게 했다.
 """
@@ -51,7 +51,7 @@ TAHIR_RESULTS = os.path.join(_REPO_ROOT, "Tahir", "experiments", "i2cgp_results.
 ALL_TYPES = ["727", "09", "94", "95", "757", "319", "320"]
 
 WINDOW_DAYS = 5
-MAX_TIME = WINDOW_DAYS * 24.0   # evaluate_ip.py와 동일한 고정 정규화 분모(시간)
+MAX_TIME = WINDOW_DAYS * 24.0   # evaluation/evaluate_ip.py와 동일한 고정 정규화 분모(시간)
 
 
 # ── greedy rollout (rollout.py 재사용) ───────────────────────────────────────
@@ -125,7 +125,7 @@ def main():
                         help="Path to Tahir i2cgp_results.json")
     args = parser.parse_args()
 
-    # ── load model (evaluate_ip.py와 동일한 자동 감지 로직: v8=78dim/7scalars, v13+=79dim/8scalars) ──
+    # ── load model (evaluation/evaluate_ip.py와 동일한 자동 감지 로직: v8=78dim/7scalars, v13+=79dim/8scalars) ──
     ckpt_path = args.checkpoint if os.path.isabs(args.checkpoint) else os.path.join(_REPO_ROOT, args.checkpoint)
     if not os.path.exists(ckpt_path):
         print(f"[ERROR] No checkpoint found at {ckpt_path}")

@@ -1,7 +1,7 @@
 """
-evaluate_ip.py — 전체 1개월 데이터 커버 평가
+evaluation/evaluate_ip.py — 전체 1개월 데이터 커버 평가
 
-evaluate_ip.py는 에피소드당 최대 600편 subset만 커버 (n_max=600).
+evaluation/evaluate_ip.py는 에피소드당 최대 600편 subset만 커버 (n_max=600).
 이 스크립트는 전체 1개월을 window_days 단위 비겹침 윈도우로 나눠 모든 편을 커버한다.
 
 흐름:
@@ -23,7 +23,9 @@ import argparse
 import torch
 import pandas as pd
 
-sys.path.insert(0, "RL")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 DEVICE = torch.device("cpu")
 
@@ -47,7 +49,7 @@ _GET_CONSTRAINT = {
     "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용
 }
 from model import FlightEncoder, PointerDecoder
-from set_partition import solve_set_covering, solve_lp_relaxation
+from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings, set_environment
 from base_reach import build_base_reach

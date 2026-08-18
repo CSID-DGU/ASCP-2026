@@ -4,7 +4,7 @@ diagnose_table3_stability.py — ④' Table3 IP 단계만 같은 체크포인트
 실행마다 얼마나 흔들리는지 확인한다.
 
 배경(log/0717/지금_확정된_결론.md 부록 A·C): ③ greedy는 argmax 기반이라
-결정론적이지만, ④' Table3는 evaluate_ip.py::collect_pool_full()이
+결정론적이지만, ④' Table3는 evaluation/evaluate_ip.py::collect_pool_full()이
 random.shuffle/random.choice로 pool을 매번 다르게 모으기 때문에 실행마다
 IP solve 결과가 달라질 수 있다. pws5cjlz(C)는 4단계 중 ④'에서만 jetblue
 pairings/avg_legs가 delta에 근소하게 뒤져 예측과 반대로 나온 적이 있는데
@@ -36,7 +36,7 @@ import torch
 from loader import build_airport_map, bases_to_ids
 import config
 from rollout import set_environment
-import evaluate_ip
+from evaluation import evaluate_ip
 
 from diagnose_film_inference_ablation import load_model, run_table3_stage
 

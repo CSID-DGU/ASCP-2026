@@ -16,7 +16,7 @@ delta 고정값으로 강제해서 "C인데 디코더의 직접 constraint 경�
 실제 항공사별 constraint 대신 **항상 delta 고정값**으로 바꿔치기한다 — 즉 디코더
 입력의 constraint_vec(7) 부분이 어떤 항공사를 평가하든 delta 값으로 고정된다.
 base_airport는 모든 테스트가 이미 같은 값(delta base)을 쓰므로 영향 없음. FiLM에
-들어가는 constraint_to_tensor 호출(encoder 쪽, evaluate_ip.py/run_greedy_stage에서
+들어가는 constraint_to_tensor 호출(encoder 쪽, evaluation/evaluate_ip.py/run_greedy_stage에서
 직접 실제 constraint로 호출)은 전혀 건드리지 않으므로 FiLM은 정상 동작한다.
 
 구현: `experiments/train.py`와 `RL/rollout.py`는 각각 `from utils import
@@ -50,7 +50,7 @@ from constraints import (
     get_turkish_constraints, FILM_CONSTRAINT_KEYS,
 )
 from utils import flights_to_tensors, constraint_to_tensor, state_to_vec as _state_to_vec_orig
-from set_partition import solve_set_covering
+from evaluation.set_partition import solve_set_covering
 from rollout import set_environment
 
 import config
@@ -59,8 +59,8 @@ import train as train_mod
 import rollout as rollout_mod
 from train import run_episode
 
-import evaluate_ip
-from evaluate_ip import collect_pool_full, sample_connected_subnet_std
+from evaluation import evaluate_ip
+from evaluation.evaluate_ip import collect_pool_full, sample_connected_subnet_std
 
 GREEDY_AIRLINES = {
     "delta": get_delta_constraints, "alaska": get_alaska_constraints,

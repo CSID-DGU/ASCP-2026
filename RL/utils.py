@@ -1,4 +1,4 @@
-# utils.py — train.py, evaluate_ip.py, evaluate_ip_full.py 공용 유틸
+# utils.py — experiments/train.py와 evaluation/evaluate_ip.py 공용 유틸
 #
 # 중복 제거 대상:
 #   - constraint_to_tensor: constraint dict → FiLM 입력 tensor
@@ -13,7 +13,7 @@ from constraints import FILM_CONSTRAINT_KEYS
 # True면 state_to_vec()이 constraint_vec 자리를 0으로 채워 디코더의 constraint
 # 직접 concat 경로를 원천 차단한다(C'/D' 조건). set_skip_decoder_constraint()로
 # 학습/평가 스크립트 시작 시 한 번 설정하면 이 모듈을 쓰는 모든 호출부
-# (train.py, rollout.py, evaluate_ip.py)에 즉시 반영된다.
+# (experiments/train.py, RL/rollout.py, evaluation/evaluate_ip.py)에 즉시 반영된다.
 _SKIP_DECODER_CONSTRAINT = False
 
 

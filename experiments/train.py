@@ -462,7 +462,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
     # "coverage_only" = ν^exc(deadhead dual)를 0으로 고정 — coverage dual(π^cov)만 반영.
     # dual-ablation 3분할(off/coverage_only/net) 중 off는 기존 --dual-weight 0으로 이미 커버됨.
     assert dual_mode in ("net", "coverage_only"), f"unknown dual_mode: {dual_mode}"
-    from set_partition import solve_lp_relaxation
+    from evaluation.set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
     best_avg_pairings = init_best

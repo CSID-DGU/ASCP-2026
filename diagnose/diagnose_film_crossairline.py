@@ -6,7 +6,7 @@ diagnose_film_overnight.py는 delta 안에서 max_duty_periods 성분 하나만 
 이건 FiLM의 존재 목적(항공사 간 일반화)을 검증 못 한다 — 성분 하나가 아니라 항공사
 전체 constraint 세트를 통째로 바꿔서 비교해야 함. multi-airline 체크포인트(168 공항
 통합 임베딩)에만 의미 있음 — delta 단독 체크포인트에 alaska/jetblue를 넣으면 airport
-ID가 우연히 겹칠 뿐이라 무의미(evaluate_ip.py의 n_airports>145 분기 참고).
+ID가 우연히 겹칠 뿐이라 무의미(evaluation/evaluate_ip.py의 n_airports>145 분기 참고).
 """
 import os
 import sys

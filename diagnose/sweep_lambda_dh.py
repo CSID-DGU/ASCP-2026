@@ -17,8 +17,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
-import evaluate_ip as eip
-from set_partition import solve_set_covering
+from evaluation import evaluate_ip as eip
+from evaluation.set_partition import solve_set_covering
 import config
 
 

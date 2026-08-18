@@ -1,5 +1,5 @@
 """
-eval_best.py — stage3/phase2 체크포인트를 병렬로 평가해서 더 나은 쪽만 결과로 출력.
+evaluation/eval_best.py — stage3/phase2 체크포인트를 병렬로 평가해서 더 나은 쪽만 결과로 출력.
 
 기준(사용자 지정): dead time(duty-내부 gap만, overnight 제외)과 deadhead 둘 다
 한쪽이 다른 쪽보다 같거나 낮고 적어도 하나는 진짜 낮으면(Pareto dominance) 그 쪽만
@@ -7,10 +7,10 @@ eval_best.py — stage3/phase2 체크포인트를 병렬로 평가해서 더 나
 경우) 둘 다 출력해서 판단은 사용자가 하게 한다.
 
 사용례:
-  python eval_best.py checkpoints/meze3bec --airline turkish --subset-size 1200 \
+  python evaluation/eval_best.py checkpoints/meze3bec --airline turkish --subset-size 1200 \
       --lambda-dh 10 --ip-time-limit 1800 --device-a cuda:0 --device-b cuda:1
 
-evaluate_ip.py에 전달할 추가 인자는 그대로 뒤에 붙이면 된다(--airline, --subset-size 등).
+evaluation/evaluate_ip.py에 전달할 추가 인자는 그대로 뒤에 붙이면 된다(--airline, --subset-size 등).
 """
 import argparse
 import re
@@ -20,7 +20,7 @@ import subprocess
 
 
 def run_eval(checkpoint, extra_args, device):
-    cmd = [sys.executable, "-u", "evaluate_ip.py", checkpoint, "--device", device] + extra_args
+    cmd = [sys.executable, "-u", "evaluation/evaluate_ip.py", checkpoint, "--device", device] + extra_args
     proc = subprocess.run(cmd, capture_output=True, text=True)
     return proc.stdout, proc.stderr, proc.returncode
 

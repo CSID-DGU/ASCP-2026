@@ -5,7 +5,7 @@ C 체크포인트 전용)를 단일 항공사 체크포인트(A, 예: z2db089m)�
 기존 스크립트는 airport_map을 항상 delta+alaska+jetblue 통합 맵으로 만드는데
 (멀티에어라인 체크포인트 n_airports=168 전제), 단일 항공사 체크포인트(n_airports=145,
 Delta 공항만 학습)에 그 통합 맵을 쓰면 공항 인덱스가 학습 시점과 어긋나서 조용히
-잘못된 임베딩을 참조하게 된다(evaluate_ip.py:389-415가 이미 이 문제를 n_airports
+잘못된 임베딩을 참조하게 된다(evaluation/evaluate_ip.py의 모델 로드 경로가 이미 이 문제를 n_airports
 분기로 처리하고 있음 — 이 스크립트는 그 분기 로직만 가져와 적용).
 
 flight window는 항상 delta 고정(Table 3 설계 자체가 그렇다)이므로, A가 학습한
@@ -31,12 +31,12 @@ from constraints import (
     FILM_CONSTRAINT_KEYS,
 )
 from model import FlightEncoder, PointerDecoder
-from set_partition import solve_set_covering
+from evaluation.set_partition import solve_set_covering
 from rollout import set_environment
 import config
 
-import evaluate_ip
-from evaluate_ip import collect_pool_full, sample_connected_subnet_std
+from evaluation import evaluate_ip
+from evaluation.evaluate_ip import collect_pool_full, sample_connected_subnet_std
 
 AIRLINES = {
     "delta":   get_delta_constraints,
@@ -68,7 +68,7 @@ def main():
     # ── 핵심 수정: 체크포인트가 실제로 학습한 공항 맵과 일치시킨다 ──────────
     # multi-airline(n_airports>145)이면 delta+alaska+jetblue 통합 맵(원본과 동일),
     # 단일 항공사(n_airports<=145, 이 프로젝트에서는 사실상 delta 단독)면 delta
-    # CSV 하나로만 맵을 만든다 — evaluate_ip.py:410-415와 동일한 분기.
+    # CSV 하나로만 맵을 만든다 — evaluation/evaluate_ip.py의 airport-map 분기와 동일한 처리.
     if n_airports > 145:
         print(f"n_airports={n_airports} → multi-airline 통합 임베딩으로 판단, 통합 공항맵 사용")
         map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]

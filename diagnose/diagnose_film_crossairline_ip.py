@@ -1,11 +1,11 @@
 """
 diagnose_film_crossairline_ip.py — diagnose_film_crossairline.py(③ greedy rollout)를
 IP 평가 레벨로 확장. 같은 delta flight 윈도우를 고정하고 constraint만 delta/alaska/jetblue로
-교체해가며 evaluate_ip.py와 동일한 pool 수집 + Set Covering IP를 돌려, legs/deadhead/ManDays
+교체해가며 evaluation/evaluate_ip.py와 동일한 pool 수집 + Set Covering IP를 돌려, legs/deadhead/ManDays
 등에서 나오는 차이가 순수하게 FiLM의 constraint 조건화 때문인지 확인한다(항공사별 flight
 network 차이라는 confound 제거).
 
-evaluate_ip.py의 collect_pool_full/solve_set_covering을 그대로 재사용하되, 월 전체가 아니라
+evaluation/evaluate_ip.py의 collect_pool_full/solve_set_covering을 그대로 재사용하되, 월 전체가 아니라
 윈도우 1개(offset_days=0, window_days=5)만 고정해서 세 항공사 constraint에 반복 적용한다.
 """
 import os
@@ -24,12 +24,12 @@ from constraints import (
     FILM_CONSTRAINT_KEYS,
 )
 from model import FlightEncoder, PointerDecoder
-from set_partition import solve_set_covering
+from evaluation.set_partition import solve_set_covering
 from rollout import set_environment
 import config
 
-import evaluate_ip
-from evaluate_ip import collect_pool_full, sample_connected_subnet_std
+from evaluation import evaluate_ip
+from evaluation.evaluate_ip import collect_pool_full, sample_connected_subnet_std
 
 AIRLINES = {
     "delta":   get_delta_constraints,

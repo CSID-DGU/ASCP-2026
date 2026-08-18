@@ -42,7 +42,7 @@ AIRLINE_BASES = {
 
 # FiLM 입력 정규화 기준값 — constraint 값을 [0, 1]로 정규화하기 위한 분모
 # 각 항목별 실제 상한값 (항공사 중 최대 or 여유값)
-# evaluate_ip.py도 동일한 값을 써야 checkpoint 호환 — 수정 시 혜린 확인 필요
+# evaluation/evaluate_ip.py도 동일한 값을 써야 checkpoint 호환 — 수정 시 혜린 확인 필요
 CONSTRAINT_NORMS = {
     "max_duty":         14.0,   # 항공사 최대(13.0)보다 여유
     "min_conn":          1.0,   # Stage3 범위 상한
@@ -125,7 +125,7 @@ MIN_LEGS_FOR_DUTY_BONUS = 2    # v16: END_DUTY_BONUS가 무위험 고정보상�
                        # dead_time 상승 감수 (avg gap 연결 허용하므로)
                        # pairing 첫 편 및 rest 직후 편에는 적용 안 함 (연결이 아니므로)
 
-# IP/LP cost 함수 상수 — evaluate_ip.py, train.py Phase 2 공용
+# IP/LP cost 함수 상수 — evaluation/evaluate_ip.py, train.py Phase 2 공용
 # cost = dead_time - LEG_BONUS_IP*(n_legs-1) + DEADHEAD_PENALTY_IP*(강제종료) + PAIRING_FIXED_COST
 IP_LEG_BONUS        = 1.5   # leg 추가될수록 cost 감소 → 효율적 연결 장려
 IP_DEADHEAD_PENALTY = 5.0   # 강제 deadhead 발생 시 가산
