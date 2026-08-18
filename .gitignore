@@ -37,6 +37,7 @@ data/
 *.png
 
 # Local papers, archives, and backup files
+*.md
 *.pdf
 *.zip
 *.orig
