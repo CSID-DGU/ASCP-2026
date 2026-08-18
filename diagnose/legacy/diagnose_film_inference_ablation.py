@@ -1,5 +1,5 @@
 """
-diagnose_film_inference_ablation.py — 이미 학습된 체크포인트(기본 C=pws5cjlz)를
+diagnose_film_inference_ablation.py — [legacy] 이미 학습된 체크포인트(기본 C=pws5cjlz)를
 재학습 없이, 추론 시점에만 FiLM 출력을 identity(gamma=1, beta=0)로 강제해서
 "C인데 FiLM만 무력화된 상태"를 만든 뒤, 정상 C와 같은 검증 배터리(③ greedy,
 ④' Table3 IP)로 비교한다.
@@ -24,7 +24,7 @@ diagnose_film_inference_ablation.py — 이미 학습된 체크포인트(기본 
 Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
-    python -u diagnose/diagnose_film_inference_ablation.py checkpoints/pws5cjlz/stage3_best.pt \
+    python -u diagnose/legacy/diagnose_film_inference_ablation.py checkpoints/pws5cjlz/stage3_best.pt \
         --device cuda:0 --use-utc
 """
 import os
@@ -34,7 +34,7 @@ import argparse
 
 import torch
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "experiments"))

@@ -38,7 +38,7 @@ import config
 from rollout import set_environment
 from evaluation import evaluate_ip
 
-from diagnose_film_inference_ablation import load_model, run_table3_stage
+from diagnose.legacy.diagnose_film_inference_ablation import load_model, run_table3_stage
 
 
 def main():

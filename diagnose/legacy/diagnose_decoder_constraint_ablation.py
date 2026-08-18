@@ -1,5 +1,5 @@
 """
-diagnose_decoder_constraint_ablation.py — 이미 학습된 체크포인트(기본 C=pws5cjlz)를
+diagnose_decoder_constraint_ablation.py — [legacy] 이미 학습된 체크포인트(기본 C=pws5cjlz)를
 재학습 없이, 추론 시점에만 "디코더가 매 step 직접 보는 constraint_vec(7)" 입력을
 delta 고정값으로 강제해서 "C인데 디코더의 직접 constraint 경로만 무력화된 상태"를
 만든 뒤, 정상 C 및 FiLM 무력화 C(diagnose_film_inference_ablation.py)와 같은 검증
@@ -28,7 +28,7 @@ state_to_vec`로 자기 모듈 네임스페이스에 별도 바인딩을 만들�
 Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
-    python -u diagnose/diagnose_decoder_constraint_ablation.py checkpoints/pws5cjlz/stage3_best.pt \
+    python -u diagnose/legacy/diagnose_decoder_constraint_ablation.py checkpoints/pws5cjlz/stage3_best.pt \
         --device cuda:0 --use-utc
 """
 import os
@@ -38,7 +38,7 @@ import argparse
 
 import torch
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "experiments"))

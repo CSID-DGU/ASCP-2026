@@ -32,7 +32,7 @@ Eq.2)를 모사하는 보너스를 RL reward에 얹어서, "RL 보상 신호를 
 Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
-    python -u experiments/train_tahir_reward_variant.py \
+    python -u diagnose/train_tahir_reward_variant.py \
         --tahir-duty-lambda 2.0 --device cuda:0 --use-utc \
         --log log/0711/train_tahir_reward_variant.log
 """
@@ -40,6 +40,7 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "RL"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "experiments"))
 
 import argparse
 import torch
@@ -77,7 +78,7 @@ def main():
 
     environment.step = _make_wrapped_step(args.tahir_duty_lambda)
 
-    import train as train_mod  # experiments/train.py — 같은 디렉토리라 추가 경로 조작 불필요
+    import train as train_mod  # experiments/train.py 재사용
     train_mod.config.AIRLINE = args.airline
     train_mod._set_device(args.device)
     train_mod.USE_UTC = args.use_utc
