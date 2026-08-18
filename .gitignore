@@ -2,6 +2,7 @@
 .venv/
 venv/
 env/
+/ascp/
 __pycache__/
 *.py[cod]
 .pytest_cache/
