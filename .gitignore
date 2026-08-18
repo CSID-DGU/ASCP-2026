@@ -29,6 +29,7 @@ results/
 runs/
 wandb/
 *.log
+*_results.json
 
 # Local datasets and generated figures
 data/

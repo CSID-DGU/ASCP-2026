@@ -30,7 +30,7 @@ sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder, PointerDecoder
-from RL.cppsc_loader import load_cppsc_flights, get_cppsc_constraints
+from RL.baseline.Tahir.cppsc_loader import load_cppsc_flights, get_cppsc_constraints
 from RL.constraints import FILM_CONSTRAINT_KEYS
 from RL.state import init_state
 from RL.environment import get_mask, step, step_end_duty, final_reward
