@@ -88,7 +88,18 @@ _UTC = {
 }
 def _offset(ap): return _UTC.get(ap, -300)
 
-# --- Data loading (same absolute-time scheme as eval_llm_final.py's load_flights) ---
+
+def frechet_distance_1d(a, b):
+    """두 1차원 표본 사이 Fréchet distance: (μ1-μ2)² + (σ1+σ2-2√(σ1σ2))²
+
+    (log/0703/미착수_3개_진행결과.md에 기록된 원래 정의 그대로 복원 — JetBlue
+    FID=0.3175 기준값으로 검증함)
+    """
+    mu1, mu2 = np.mean(a), np.mean(b)
+    s1, s2 = np.std(a), np.std(b)
+    return float((mu1 - mu2) ** 2 + (s1 + s2 - 2 * np.sqrt(s1 * s2)) ** 2)
+
+# ─── 데이터 로드 (eval_llm_final.py load_flights와 동일한 절대시각) ────────────
 def load_flights(csv_path):
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.strip()

@@ -1,5 +1,5 @@
 # rollout.py -- run RL rollouts and collect pairing structs (shared by
-# evaluate_ip.py and train.py's Phase 2)
+# evaluation/evaluate_ip.py and experiments/train.py's Phase 2)
 #
 # rollout_with_pairings: run one rollout -> return a list of pairings
 # rollout_batch: run B rollouts in a batch
@@ -59,6 +59,11 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     min_pairing_legs = constraint.get("min_pairing_legs", 2)
 
     _reach_cache = {}
+    # 호출부(evaluation/evaluate_ip.py 등)가 base_airport에 대한 _base_reach를 이미 계산해서
+    # constraint에 실어 보낸 경우 재사용한다 — 매 rollout(chunk당 n_rollouts_per_chunk+1번)마다
+    # 같은 base를 또 계산하던 중복을 없앤다(2026-07-29). 회전으로 처음 보는 base는 그대로 새로 계산.
+    if require_return and constraint.get("_base_reach") is not None:
+        _reach_cache[constraint.get("base_airport", 0)] = constraint["_base_reach"]
 
     def constraint_for(base):
         c = {**constraint, "base_airport": base}
@@ -151,7 +156,10 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "n_duties":    n_rest + 1,
             "intra_duty_gap":    intra,
             "inter_duty_excess": inter,
-            "ends_at_base":      True,
+            # 하드코딩된 True 대신 실제로 검증 — salvage_doomed()가 넘기는 end_ap은
+            # "이 prefix가 도착해야 하는 base"이고, recs[-1]이 정말 거기 도착하는지
+            # 확인해야 end_ap 인자가 죽은 파라미터가 아니라 실제 안전장치로 쓰인다.
+            "ends_at_base":      recs[-1]["dest"] == end_ap,
             "true_start_airport": start_ap,
             "is_truncated":      True,
         })
@@ -216,7 +224,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             return None, None
         if not startable:
             return None, None
-        return episode_base, min(startable, key=lambda f: f["dep_time"])
+        # base 아닌 곳에서 강제 시작(legacy deadhead-start) — 반환하는 base는
+        # episode_base가 아니라 실제로 고른 flight의 origin이어야 한다. episode_base를
+        # 그대로 반환하면 pairing_start_ap(실제 origin)과 어긋나서, begin_pairing()이
+        # 진짜 base 전환으로 인식 못 하고 cur_c/_base_reach를 안 갱신하게 된다
+        # (require_base_return=False일 땐 무해하지만, 정합성을 항상 보장해둔다).
+        f = min(startable, key=lambda f: f["dep_time"])
+        return f["origin"], f
 
     def begin_pairing():
         nonlocal state, episode_base, cur_c
@@ -315,7 +329,19 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 
 def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                   greedy=False, device=None):
-    """Run B rollouts concurrently, using one batched decoder call per step."""
+    """B개 rollout을 매 step 배치 decoder call로 동시 실행.
+
+    require_base_return은 여기서 지원하지 않는다 — base 회전/salvage_doomed 같은
+    hard-mask 안전장치가 rollout_with_pairings()에만 있고 이 배치 경로엔 없어서,
+    그냥 통과시키면 base 미복귀 pairing이 조용히 섞여 나온다(2026-07-29). 지금은
+    아무 호출부도 이 조합을 안 쓰지만, 나중에 실수로 쓰면 바로 터지게 막아둔다.
+    """
+    if constraint.get("require_base_return"):
+        raise NotImplementedError(
+            "rollout_batch()/collect_pool()/collect_pool_multibase()는 "
+            "require_base_return을 지원하지 않습니다 — hard mask가 필요하면 "
+            "rollout_with_pairings() 기반 경로(예: evaluation/evaluate_ip.py의 collect_pool_full)를 쓰세요."
+        )
     dev = device or torch.device("cpu")
     n_flights    = len(flights)
     episode_base = constraint.get("base_airport", 0)

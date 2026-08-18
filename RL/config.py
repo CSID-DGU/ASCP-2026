@@ -20,7 +20,7 @@ DEFAULT_CONSTRAINTS = {
     "min_pairing_legs":    2,   # END_PAIRING 허용 최소 leg 수 (항공사별 override)
     "pairing_cost":      5.0,   # END_PAIRING reward 패널티
     "uncovered_penalty": 10.0,  # 미배정 flight 1개당 패널티
-    "base_penalty":     500.0,   
+    "base_penalty":     500.0,
                                  # 기존 값이 pairing_cost와 같아서 사실상 무시됨 — 실측
                                  # base-to-base 비율 10.63%(yvaa65ph)로 확인 후 상향)
 }
@@ -42,6 +42,7 @@ AIRLINE_BASES = {
 
 # FiLM 입력 정규화 기준값 — constraint 값을 [0, 1]로 정규화하기 위한 분모
 # 각 항목별 실제 상한값 (항공사 중 최대 or 여유값)
+# evaluation/evaluate_ip.py must use the same values for checkpoint compatibility.
 CONSTRAINT_NORMS = {
     "max_duty":         14.0,   # 항공사 최대(13.0)보다 여유
     "min_conn":          1.0,   # Stage3 범위 상한
@@ -61,13 +62,13 @@ CONSTRAINT_NORMS = {
 #   - 검증 범위(12.0~14.0h)가 훈련 범위를 벗어나면 extrapolation → 항상 identity 출력
 #
 STAGE3_CONSTRAINT_RANGES = {
-    "max_duty":         (10.5, 14.0),   
-    "min_rest":         (9.5,  12.0),   
-    "min_conn":         (0.5,  1.0),    
-    "max_conn":         (3.5,  13.0),   
-    "max_legs":         (3,    10),     
-    "max_duty_periods": (2,    4),      
-    "max_pairing_days": (2,    8),      
+    "max_duty":         (10.5, 14.0),
+    "min_rest":         (9.5,  12.0),
+    "min_conn":         (0.5,  1.0),
+    "max_conn":         (3.5,  13.0),
+    "max_legs":         (3,    10),
+    "max_duty_periods": (2,    4),
+    "max_pairing_days": (2,    8),
 }
 
 # 매 에피소드 이 확률로 STAGE3_CONSTRAINT_RANGES 랜덤 샘플링 대신 현재 선택된 항공사의
@@ -118,7 +119,7 @@ MIN_LEGS_FOR_DUTY_BONUS = 2    # v16: END_DUTY_BONUS가 무위험 고정보상�
                        # dead_time 상승 감수 (avg gap 연결 허용하므로)
                        # pairing 첫 편 및 rest 직후 편에는 적용 안 함 (연결이 아니므로)
 
-# IP/LP cost 함수 상수 — evaluate_ip.py, train.py Phase 2 공용
+# IP/LP cost 함수 상수 — evaluation/evaluate_ip.py, train.py Phase 2 공용
 # cost = dead_time - LEG_BONUS_IP*(n_legs-1) + DEADHEAD_PENALTY_IP*(강제종료) + PAIRING_FIXED_COST
 IP_LEG_BONUS        = 1.5   # leg 추가될수록 cost 감소 → 효율적 연결 장려
 IP_DEADHEAD_PENALTY = 5.0   # 강제 deadhead 발생 시 가산

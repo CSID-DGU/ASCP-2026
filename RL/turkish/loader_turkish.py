@@ -5,7 +5,7 @@ File format: ORIGIN|DEST|FLEET|AC_NUM|DEP_DT_LOCAL|ARR_DT_LOCAL|DEP_TZ_MIN|ARR_T
 UTC conversion: dep_utc = dep_local - DEP_TZ_MIN minutes
 
 Returns the same flight dict format as load_flights_rolling(), so existing code
-(train.py / evaluate_ip.py, etc.) can be reused as-is.
+(experiments/train.py / evaluation/evaluate_ip.py, etc.) can be reused as-is.
 """
 import os
 import glob

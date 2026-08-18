@@ -14,6 +14,7 @@ Step 2: at the same decision points, measures the Spearman correlation between t
         model doesn't distinguish gaps well (hypothesis B in
         FTC_root_cause_model_design_analysis.md).
 """
+import os
 import sys
 import argparse
 
@@ -21,7 +22,9 @@ import torch
 from torch.distributions import Categorical
 from scipy.stats import spearmanr
 
-sys.path.insert(0, "RL")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder, PointerDecoder
 from loader import build_airport_map, bases_to_ids, load_flights_rolling

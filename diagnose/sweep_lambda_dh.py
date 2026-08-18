@@ -5,16 +5,19 @@ Collects the pool once, then repeatedly runs solve_set_covering with different
 lambda_dh values to check the ManDays/DH/avg_legs tradeoff.
 """
 
+import os
 import sys
 import math
 import argparse
 
 import torch
 
-sys.path.insert(0, "RL")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
-import evaluate_ip as eip
-from set_partition import solve_set_covering
+from evaluation import evaluate_ip as eip
+from evaluation.set_partition import solve_set_covering
 import config
 
 

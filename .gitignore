@@ -1,19 +1,54 @@
+# Python environments and caches
+.venv/
 venv/
+env/
+/ascp/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors and operating systems
 .DS_Store
-data/
-logs/
-results/
+.idea/
+.vscode/
+*~
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Experiment artifacts
 checkpoints/
-*.md
-!README.md
-*.txt
+logs/
+log/
+results/
+runs/
+wandb/
+*.log
+*_results.json
+
+# Local datasets and generated figures
+data/
+*.csv
 *.legs
 *.png
-*.csv
-test/
-wandb/
-log/
 
+# Local papers, archives, and backup files
+*.md
+*.pdf
+*.zip
+*.orig
 
+# Working notes contain meeting records and unpublished material.
+/journel/
+/CLAUDE.md
+
+# Local paper organization and historical implementations
+/paper_experiments/
+/paper_runs/
+/legacy/
