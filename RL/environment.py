@@ -64,6 +64,9 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # the caller in rollout.py and passed through the constraint dict.
     require_return   = c.get("require_base_return", False)
     base_reach       = c.get("_base_reach") if require_return else None
+    if require_return and base_reach is None:
+        # strict 모드가 복귀 가능성 검사를 빠뜨린 채 완화되지 않도록 즉시 중단함.
+        raise ValueError("require_base_return=True이면 _base_reach가 필요합니다.")
     max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
 
@@ -81,7 +84,9 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
         # 1. Airport-continuity check
         if pairing_start:
-            if base_remaining and f["origin"] != base_ap:
+            if c.get("strict_base_start", False) and f["origin"] != base_ap:
+                valid = False
+            elif base_remaining and f["origin"] != base_ap:
                 valid = False
         elif f["origin"] != state["current_airport"]:
             valid = False

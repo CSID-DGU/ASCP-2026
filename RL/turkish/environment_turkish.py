@@ -57,6 +57,9 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # the hard mask (a stricter subset).
     require_return   = c.get("require_base_return", False)
     base_reach       = c.get("_base_reach") if require_return else None
+    if require_return and base_reach is None:
+        # strict 모드에서 Turkish 복귀 검사가 누락되면 즉시 실패시킴.
+        raise ValueError("require_base_return=True이면 _base_reach가 필요합니다.")
     max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
     if pairing_start:
@@ -73,7 +76,9 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
         # 1. Airport connectivity check
         if pairing_start:
-            if base_remaining and f["origin"] not in base_id_set:
+            if c.get("strict_base_start", False) and f["origin"] != base_ap:
+                valid = False
+            elif base_remaining and f["origin"] not in base_id_set:
                 valid = False
         elif f["origin"] != state["current_airport"]:
             valid = False

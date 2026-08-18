@@ -1,0 +1,87 @@
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "RL"))
+
+import environment
+from base_reach import build_base_reach
+from turkish import environment_turkish
+
+
+def make_state(**updates):
+    value = {
+        "current_airport": 0, "current_time": 0.0, "duty_start_time": 0.0,
+        "legs": 0, "total_legs": 0, "pairing_start": True,
+        "pairing_start_time": 0.0, "is_resting": False,
+        "rest_end_time": None, "duty_period": 0,
+    }
+    value.update(updates)
+    return value
+
+
+def make_constraint(**updates):
+    value = {
+        "base_airport": 0, "min_conn": 0.5, "max_conn": 4.0,
+        "min_rest": 8.0, "max_duty": 14.0, "max_legs": 4,
+        "max_duty_periods": 2, "max_pairing_days": 2,
+        "min_pairing_legs": 2, "require_base_return": True,
+        "strict_base_start": True,
+    }
+    value.update(updates)
+    return value
+
+
+class StrictMaskContractTest(unittest.TestCase):
+    def test_strict_mode_requires_reachability(self):
+        flights = [{"id": 0, "origin": 0, "dest": 1, "dep_time": 1.0, "arr_time": 2.0}]
+        with self.assertRaisesRegex(ValueError, "_base_reach"):
+            environment.get_mask(make_state(), flights, {0: False}, make_constraint())
+
+    def test_strict_start_never_uses_non_base_origin(self):
+        flights = [
+            {"id": 0, "origin": 1, "dest": 0, "dep_time": 1.0, "arr_time": 2.0},
+            {"id": 1, "origin": 0, "dest": 1, "dep_time": 3.0, "arr_time": 4.0},
+        ]
+        rule = make_constraint()
+        rule["_base_reach"] = build_base_reach(flights, 0, rule)
+        mask = environment.get_mask(make_state(), flights, {0: False, 1: True}, rule)
+        self.assertEqual(mask[0], 0)
+
+    def test_strict_end_pairing_requires_base_return(self):
+        flights = [{"id": 0, "origin": 0, "dest": 1, "dep_time": 1.0, "arr_time": 2.0}]
+        rule = make_constraint()
+        rule["_base_reach"] = build_base_reach(flights, 0, rule)
+        mask = environment.get_mask(
+            make_state(current_airport=1, current_time=2.0, legs=2,
+                       total_legs=2, pairing_start=False),
+            flights, {0: True}, rule,
+        )
+        self.assertEqual(mask[-1], 0)
+
+    def test_unreachable_flight_is_masked_before_selection(self):
+        flights = [
+            {"id": 0, "origin": 0, "dest": 1, "dep_time": 1.0, "arr_time": 2.0},
+            {"id": 1, "origin": 0, "dest": 2, "dep_time": 1.0, "arr_time": 2.0},
+            {"id": 2, "origin": 1, "dest": 0, "dep_time": 3.0, "arr_time": 4.0},
+        ]
+        rule = make_constraint()
+        rule["_base_reach"] = build_base_reach(flights, 0, rule)
+        mask = environment.get_mask(make_state(), flights, {0: False, 1: False, 2: False}, rule)
+        self.assertEqual(mask[0], 1)
+        self.assertEqual(mask[1], 0)
+
+    def test_turkish_strict_start_is_bound_to_episode_base(self):
+        flights = [
+            {"id": 0, "origin": 1, "dest": 0, "dep_time": 1.0, "arr_time": 2.0},
+            {"id": 1, "origin": 0, "dest": 1, "dep_time": 3.0, "arr_time": 4.0},
+        ]
+        rule = make_constraint(base_ids=[0, 1])
+        rule["_base_reach"] = build_base_reach(flights, 0, rule)
+        mask = environment_turkish.get_mask(make_state(), flights, {0: False, 1: True}, rule)
+        self.assertEqual(mask[0], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
