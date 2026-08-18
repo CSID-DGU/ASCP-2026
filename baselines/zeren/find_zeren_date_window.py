@@ -10,15 +10,18 @@ find_zeren_date_window.py — Zeren 논문(log/0629/Zeren.pdf) Table 3의 "Feb: 
 → 날짜 경계 문제는 여전히 미해결.
 """
 import sys
+from pathlib import Path
 from collections import Counter
 
 import pandas as pd
 
-sys.path.insert(0, "RL")
-from turkish.loader_turkish import parse_legs_dir
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from RL.turkish.loader_turkish import parse_legs_dir
 
 TARGET = 15738
-DATA_DIR = "RL/data/timetables"
+DATA_DIR = REPO_ROOT / "RL" / "data" / "timetables"
 FILE = "tt201402.legs"
 
 

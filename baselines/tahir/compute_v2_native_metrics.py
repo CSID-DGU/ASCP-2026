@@ -33,20 +33,20 @@ LAMBDA_DH*duration)`. 이건 정확한 상한이 아니라 **"실제 값이 이�
 Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
-    python -u RL/baseline/Tahir/compute_v2_native_metrics.py
+    python -u baselines/tahir/compute_v2_native_metrics.py
 """
 import sys
 import os
 
 _THIS_DIR  = os.path.dirname(os.path.realpath(__file__))
-_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
 _RL_DIR    = os.path.join(_REPO_ROOT, "RL")
-_TAHIR_DIR = os.path.join(_REPO_ROOT, "Tahir")
+_TAHIR_DIR = os.environ.get("TAHIR_DIR", os.path.join(os.path.dirname(_REPO_ROOT), "Tahir"))
 for p in (_REPO_ROOT, _RL_DIR, _TAHIR_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from eval_same_subset import (
+from baselines.tahir.eval_same_subset import (
     run_tahir_and_get_covered_keys,
     DEFAULT_TAHIR_CSV, DEFAULT_DATE_START, DEFAULT_DATE_END,
 )

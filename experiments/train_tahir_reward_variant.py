@@ -23,7 +23,7 @@ Eq.2)를 모사하는 보너스를 RL reward에 얹어서, "RL 보상 신호를 
   tahir_duty_lambda=0.0이면 기존과 완전히 동일(no-op).
 
 판단 기준(사용자 지시, log/0711 참고):
-  학습 후 이 체크포인트를 기존(무수정) RL/baseline/Tahir/eval_cross_objective.py로
+  학습 후 이 체크포인트를 기존(무수정) baselines/tahir/eval_cross_objective.py로
   평가해서 +171.3% 격차가 줄어드는지 확인한다.
   - 줄어들면 → 보상 수정이 유효, 정식 조건으로 채택할지 검토.
   - 안 줄어들면 → "보상 신호 문제"가 아니라 "평가 방식(coverage/objective 정의)

@@ -1,15 +1,15 @@
 """
 RL vs Tahir I²CGp gap comparison — small-scale CPPSC 벤치마크.
 
-Usage (반드시 저장소 루트에서 실행 — 루트의 eval_vs_baseline_tahir.py 심볼릭 링크 경유):
+Usage (반드시 저장소 루트에서 실행):
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
-    python -u eval_vs_baseline_tahir.py --checkpoint checkpoints/z2db089m/model_latest.pt \
+    python -u baselines/tahir/eval_vs_baseline.py --checkpoint checkpoints/z2db089m/model_latest.pt \
         --at 320 --tightness 1
 
 Requires:
   - 학습된 모델 체크포인트 (예: checkpoints/z2db089m/model_latest.pt)
-  - Tahir 저장소가 /home/hyrn/Tahir 심볼릭 링크로 연결되어 있을 것 (log/0708/실험설계.md §0-4)
+  - Tahir 저장소가 ASCP-2026과 같은 상위 폴더에 있거나 TAHIR_DIR로 지정될 것
   - Tahir/experiments/i2cgp_results.json (또는 --results로 경로 지정)
 
 Gap formula:
@@ -30,8 +30,8 @@ import json
 import argparse
 import torch
 
-_THIS_DIR = os.path.dirname(os.path.realpath(__file__))          # .../RL/baseline/Tahir
-_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
+_THIS_DIR = os.path.dirname(os.path.realpath(__file__))          # .../baselines/tahir
+_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)          # `model`, `RL.*` 패키지 임포트용
 _RL_DIR = os.path.join(_REPO_ROOT, "RL")
@@ -39,14 +39,15 @@ if _RL_DIR not in sys.path:
     sys.path.insert(0, _RL_DIR)             # rollout.py/utils.py 내부의 flat import(`import config` 등)용
 
 from model import FlightEncoder, PointerDecoder
-from cppsc_loader import load_cppsc_flights, get_cppsc_constraints
+from baselines.tahir.cppsc_loader import load_cppsc_flights, get_cppsc_constraints
 from constraints import FILM_CONSTRAINT_KEYS
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings
 
 DEVICE = torch.device("cpu")
 
-TAHIR_RESULTS = os.path.join(_REPO_ROOT, "Tahir", "experiments", "i2cgp_results.json")
+_TAHIR_DIR = os.environ.get("TAHIR_DIR", os.path.join(os.path.dirname(_REPO_ROOT), "Tahir"))
+TAHIR_RESULTS = os.path.join(_TAHIR_DIR, "experiments", "i2cgp_results.json")
 
 ALL_TYPES = ["727", "09", "94", "95", "757", "319", "320"]
 

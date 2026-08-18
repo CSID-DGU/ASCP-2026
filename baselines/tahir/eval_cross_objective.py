@@ -23,7 +23,7 @@ solution을 재채점해서, "서로 다른 objective로 서로를 채점"하던
 Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
-    python -u eval_tahir_cross_objective.py --checkpoint checkpoints/z2db089m/model_latest.pt
+    python -u baselines/tahir/eval_cross_objective.py --checkpoint checkpoints/z2db089m/model_latest.pt
 """
 
 import sys
@@ -31,14 +31,14 @@ import os
 import argparse
 
 _THIS_DIR   = os.path.dirname(os.path.realpath(__file__))
-_REPO_ROOT  = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
+_REPO_ROOT  = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
 _RL_DIR     = os.path.join(_REPO_ROOT, "RL")
-_TAHIR_DIR  = os.path.join(_REPO_ROOT, "Tahir")
+_TAHIR_DIR  = os.environ.get("TAHIR_DIR", os.path.join(os.path.dirname(_REPO_ROOT), "Tahir"))
 for p in (_REPO_ROOT, _RL_DIR, _TAHIR_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from eval_same_subset import (
+from baselines.tahir.eval_same_subset import (
     parse_raw_rows, run_tahir_and_get_covered_keys, run_ours_on_subset,
     DEFAULT_CSV, DEFAULT_TAHIR_CSV, DEFAULT_DATE_START, DEFAULT_DATE_END,
 )

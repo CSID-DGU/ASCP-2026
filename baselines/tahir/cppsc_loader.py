@@ -5,12 +5,14 @@ Tahir legs: dep_abs / arr_abs in minutes since 2000-01-01.
 ASCP-2026:  dep_time / arr_time in hours (float).
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import List, Dict, Tuple
 
-# Tahir repo lives alongside ASCP-2026
-TAHIR_DIR = Path(__file__).parent.parent.parent / "Tahir"
+# Tahir source is a sibling repository and is not tracked by this repository.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TAHIR_DIR = Path(os.environ.get("TAHIR_DIR", REPO_ROOT.parent / "Tahir"))
 sys.path.insert(0, str(TAHIR_DIR))
 
 try:

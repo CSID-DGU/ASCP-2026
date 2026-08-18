@@ -20,9 +20,9 @@ Delta 도메인 전용 학습 가중치(Tahir/experiments/delta_dnn/, val_acc 77
 import os
 import sys
 
-_THIS_DIR  = os.path.dirname(os.path.realpath(__file__))            # .../RL/baseline/Tahir
-_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
-_TAHIR_DIR = os.path.join(_REPO_ROOT, "Tahir")
+_THIS_DIR  = os.path.dirname(os.path.realpath(__file__))            # .../baselines/tahir
+_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
+_TAHIR_DIR = os.environ.get("TAHIR_DIR", os.path.join(os.path.dirname(_REPO_ROOT), "Tahir"))
 for p in (_REPO_ROOT, _TAHIR_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)

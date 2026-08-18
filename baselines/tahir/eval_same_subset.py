@@ -18,13 +18,13 @@ eval_same_subset.py — Tahir I2CG가 "실제로 커버한 flight 부분집합"�
      재사용 — 로직 수정 없음)을 실행.
   4. 양쪽 다 이 부분집합에서 coverage 100%인 상태로 dead time/FTC/deadhead/ManDays 비교.
 
-기존 evaluation/evaluate_ip.py / baselines/eval_vs_baseline.py / Tahir/eval_delta.py는 전혀 수정하지 않았고
+기존 evaluation/evaluate_ip.py / baselines/tahir/eval_vs_baseline.py / Tahir/eval_delta.py는 전혀 수정하지 않았고
 이 스크립트는 그 위에 새로 얹은 것.
 
 Usage (반드시 저장소 루트에서 실행):
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
-    python -u eval_tahir_same_subset.py --checkpoint checkpoints/z2db089m/model_latest.pt
+    python -u baselines/tahir/eval_same_subset.py --checkpoint checkpoints/z2db089m/model_latest.pt
 """
 
 import sys
@@ -36,10 +36,10 @@ from datetime import datetime, timedelta
 import torch
 import pandas as pd
 
-_THIS_DIR   = os.path.dirname(os.path.realpath(__file__))            # .../RL/baseline/Tahir
-_REPO_ROOT  = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
+_THIS_DIR   = os.path.dirname(os.path.realpath(__file__))            # .../baselines/tahir
+_REPO_ROOT  = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
 _RL_DIR     = os.path.join(_REPO_ROOT, "RL")
-_TAHIR_DIR  = os.path.join(_REPO_ROOT, "Tahir")
+_TAHIR_DIR  = os.environ.get("TAHIR_DIR", os.path.join(os.path.dirname(_REPO_ROOT), "Tahir"))
 for p in (_REPO_ROOT, _RL_DIR, _TAHIR_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -50,7 +50,7 @@ from dnn.delta_loader import load_bts_instance              # Tahir, 재사용
 from dnn.reference import generate_reference_pairings       # Tahir, 재사용
 from solver.icg import run_i2cg                             # Tahir, 재사용
 import eval_delta as tahir_eval_delta                        # Tahir, 재사용(compute_pairing_metrics만 호출)
-from i2cgp_helper import run_tahir_i2cgp                     # 신규(§2026-07-14) — I2CGp 경로 추가용
+from baselines.tahir.i2cgp_helper import run_tahir_i2cgp     # 신규(§2026-07-14) — I2CGp 경로 추가용
 
 EPOCH = datetime(2000, 1, 1)   # Tahir/dnn/delta_loader.py와 동일 epoch
 
