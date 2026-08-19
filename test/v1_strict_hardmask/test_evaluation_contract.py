@@ -20,5 +20,15 @@ class CppEvaluationContractTest(unittest.TestCase):
         self.assertNotIn("require_base_return", params)
 
 
+    def test_turkish_has_no_cross_base_pairing_exception(self):
+        source = inspect.getsource(evaluate_ip.collect_pool_full)
+        self.assertNotIn("HB1->HB2", source)
+        self.assertIn("return p[\"ends_at_base\"]", source)
+
+    def test_incomplete_coverage_fails_instead_of_reporting_cpp_solution(self):
+        source = inspect.getsource(evaluate_ip.evaluate_full)
+        self.assertIn("result[\"uncoverable\"] > 0", source)
+        self.assertIn("CPP 해를 구성하지 못했습니다", source)
+
 if __name__ == "__main__":
     unittest.main()

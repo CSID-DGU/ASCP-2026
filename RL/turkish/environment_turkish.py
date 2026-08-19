@@ -40,16 +40,8 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     duty_start_time  = state.get("duty_start_time", state["current_time"])
     pairing_start_time = state.get("pairing_start_time", state["current_time"])
 
-    # First leg of a pairing: force departure from a base if unassigned base-origin flights
-    # remain. Once base-origin flights are exhausted, lift the origin restriction to prevent
-    # deadhead loops.
-    # HB1/HB2 asymmetry: if base_ids is given, departure from any base in it is accepted.
-    # base_remaining does not depend on the candidate flight f (loop-invariant), so it is
-    # computed once outside the loop -- recomputing it inside the loop would be O(N^2), which
-    # slows episodes on low-connectivity bases (HB2) to tens of seconds each (found in the
-    # log/0704 turkish smoke test).
+    # Turkish pairing도 첫 flight를 episode에 지정된 base에서 시작함.
     base_ap = c["base_airport"]
-    base_id_set = set(c.get("base_ids") or [base_ap])
     # Turkish CPP도 episode의 출발 base로 복귀 가능한 action만 허용함.
     base_reach = c.get("_base_reach")
     if base_reach is None:
@@ -57,12 +49,6 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         raise ValueError("CPP constraint에는 _base_reach가 필요합니다.")
     max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
-    if pairing_start:
-        base_remaining = any(
-            not assigned[fl["id"]] and fl["origin"] in base_id_set
-            for fl in flights
-        )
-
     for i, f in enumerate(flights):
         if assigned[f["id"]]:
             continue
@@ -72,7 +58,6 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         # 1. Airport connectivity check
         if pairing_start:
             if f["origin"] != base_ap:
-                valid = False
                 valid = False
         elif f["origin"] != state["current_airport"]:
             valid = False

@@ -23,8 +23,7 @@ get_mask, step, final_reward = _env_default.get_mask, _env_default.step, _env_de
 
 
 def _select_environment(airline):
-    """airline에 맞는 get_mask/step/final_reward 구현으로 전환 (turkish는 HB1/HB2 비대칭
-    종료 허용). run_episode 등 이 모듈의 get_mask/step/final_reward를
+    """airline에 맞는 get_mask/step/final_reward 구현으로 전환. run_episode 등 이 모듈의 get_mask/step/final_reward를
     참조하는 모든 호출부에 즉시 반영됨 (모듈 전역 rebind)."""
     global get_mask, step, final_reward
     if airline == "turkish":
@@ -37,7 +36,7 @@ _CONSTRAINT_FN = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용 (base_ids는 train()에서 주입)
+    "turkish": get_turkish_constraints_hb,  # Turkish 규정값 사용, CPP 동일 base 복귀 계약 유지
 }
 from state import init_state
 from base_reach import build_base_reach, can_reach_base
@@ -56,7 +55,7 @@ def _set_device(device_str: str):
 def _prepare_cpp_constraint(flights, constraint):
     """모든 학습 episode에 CPP base 복귀 조건과 reachability를 구성함."""
     c = dict(constraint)
-    base = c.get("base_airport", 0)
+    base = c["base_airport"]
     if c.get("_base_reach") is not None and c.get("_base_reach_base") == base:
         return c
     # 같은 episode와 base에서 계산한 reachability는 sample/greedy rollout이 공유함.
@@ -184,6 +183,15 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         if len(current_legs) < 1 or pairing_dep is None:
             return
         elapsed   = pairing_last_arr - pairing_dep
+        n_legs    = len(current_legs)
+        # dual pool에도 완결된 CPP pairing만 column으로 저장함.
+        if flight_by_id[current_legs[0]]["origin"] != episode_base \
+                or flight_by_id[current_legs[-1]]["dest"] != episode_base:
+            raise ValueError("base로 복귀하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
+        if n_legs < constraint["min_pairing_legs"]:
+            raise ValueError("최소 leg 수를 충족하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
+        if elapsed / 24.0 > constraint["max_pairing_days"]:
+            raise ValueError("최대 pairing 기간을 초과한 pairing은 dual pool에 저장할 수 없습니다.")
         dead_time = max(elapsed - pairing_fly - pairing_rest, 0.0)
         cost      = (dead_time
                      - _LEG_BONUS_IP * max(len(current_legs) - 1, 0)
@@ -192,8 +200,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         # A pairing must start and end at the base to be a valid column for
         # the LP-dual pool (Eq. 2 requires x_p in Omega(c), which excludes
         # pairings that never return to base); same check as RL/rollout.py.
-        ends_at_base = (flight_by_id[current_legs[0]]["origin"] == episode_base
-                        and flight_by_id[current_legs[-1]]["dest"] == episode_base)
+        ends_at_base = True
         pairings.append({"legs": list(current_legs), "fly": pairing_fly,
                          "elapsed": elapsed, "cost": cost,
                          "ends_at_base": ends_at_base})
@@ -704,7 +711,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
         n_airports = len(airport_map)
         print(f"airports: {n_airports}개, airline: {config.AIRLINE}, bases: {airline_bases}")
         if config.AIRLINE == "turkish":
-            # HB1/HB2 비대칭 종료 허용 — base_ids를 클로저로 캡처해 get_turkish_constraints_hb에 주입
+            # 두 Istanbul base 중 episode base를 선택하되 pairing은 동일 base로 복귀함
             _CONSTRAINT_FN["turkish"] = lambda b, _hb=base_ids: get_turkish_constraints_hb(b, base_ids=_hb)
 
     encoder = FlightEncoder(

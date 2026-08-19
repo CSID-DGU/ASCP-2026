@@ -49,7 +49,7 @@ _GET_CONSTRAINT = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints_hb,  # allows asymmetric HB1/HB2 termination
+    "turkish": get_turkish_constraints_hb,  # same-base CPP contract
 }
 from model import FlightEncoder, PointerDecoder
 from set_partition import solve_set_covering, solve_lp_relaxation
@@ -276,12 +276,8 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
     included in at least one rollout (guaranteeing 100% coverage
     opportunity) while preserving the same connectivity density seen during training.
 
-    airline="turkish" allows the two bases HB1/HB2 to substitute for each
-    other (environment_turkish.py) -- rollout.py's p["ends_at_base"] only
-    checks same-base return against the single base assigned to that
-    rollout, so it would incorrectly reject a valid HB1->HB2 cross-return.
-    For turkish only, validity is instead determined by checking whether the
-    actual first/last leg's origin/dest lie in base_id_set (all of HB1, HB2).
+    Turkish도 rollout마다 선택된 episode base에서 시작해 동일 base로 복귀함.
+    base_ids는 chunk 구성과 episode base 선택 후보로만 사용함.
     """
     pool = {}
     covered_global = set()
@@ -319,20 +315,9 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         for c_idx, chunk in enumerate(chunks):
             for local_id, f in enumerate(chunk):
                 f["local_id"] = local_id
-            chunk_by_gid = {f["global_id"]: f for f in chunk}
-
-            def _pairing_valid(p, _chunk_by_gid=chunk_by_gid):
-                if airline != "turkish":
-                    return p["ends_at_base"]
-                # turkish: HB1->HB2 and HB2->HB1 are also valid -- rollout.py's
-                # ends_at_base (single-episode_base same-base check) would
-                # reject this cross-return, so re-derive validity by
-                # comparing the actual first/last leg origin/dest against the
-                # full base_id_set.
-                first = _chunk_by_gid.get(p["legs"][0])
-                last  = _chunk_by_gid.get(p["legs"][-1])
-                return (first is not None and last is not None
-                        and first["origin"] in base_id_set and last["dest"] in base_id_set)
+            def _pairing_valid(p):
+                # 항공사와 무관하게 출발한 동일 base로 복귀한 pairing만 사용함.
+                return p["ends_at_base"]
 
             base_id = random.choice(base_ids)
             c_b = {**constraint, "base_airport": base_id}
@@ -548,6 +533,13 @@ def evaluate_full(
             gap_pct = (result["mip_obj"] - lp_result["lp_value"]) / lp_result["lp_value"] * 100
         else:
             print("  [warn] LP relaxation failed to solve -- cannot compute Gap%")
+
+    if result["uncoverable"] > 0 or result["coverage"] < 1.0:
+        raise RuntimeError(
+            "CPP 해를 구성하지 못했습니다: coverage={:.3f}, uncoverable={}".format(
+                result["coverage"], result["uncoverable"]
+            )
+        )
 
     sel          = result["selected"]
     fly_total    = sum(p["fly"]                         for p in sel) if sel else 0.0

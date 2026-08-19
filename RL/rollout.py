@@ -22,7 +22,7 @@ get_mask, step = _env_default.get_mask, _env_default.step
 
 def set_environment(airline):
     """Switch to the get_mask/step implementation for the given airline
-    (turkish allows asymmetric HB1/HB2 termination). Rebinds this module's
+    (Turkish에도 동일 base 복귀 계약 적용). Rebinds this module's
     get_mask/step globals, so all callers that reference them (e.g.
     collect_pool_full, rollout_subset_global) pick up the change immediately."""
     global get_mask, step
