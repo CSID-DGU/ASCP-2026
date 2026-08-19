@@ -93,7 +93,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         mask_list = get_mask(state, flights, assigned, constraint)
         mask = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
-        # flight도 없고 END_DUTY/END_PAIRING도 불가 → 강제로 새 pairing 시작 (deadhead)
+        # 합법 action이 없으면 임의 위치 이동 없이 미커버 상태로 episode를 종료함.
         no_flight     = sum(mask_list[:-2]) == 0
         no_end_duty   = mask_list[-2] == 0
         no_end_pairing = mask_list[-1] == 0
@@ -207,7 +207,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         pairing_last_arr = f["arr_time"]
         pairing_rest     = 0.0
 
-    episode_base = constraint.get("base_airport", 0)
+    episode_base = constraint["base_airport"]
 
     def base_start_candidates(candidates):
         base_flights = [f for f in candidates if f["origin"] == episode_base]

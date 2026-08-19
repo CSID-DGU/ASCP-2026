@@ -46,14 +46,14 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     pairings = []
 
     # 모든 pairing은 허용 base에서 시작하고 해당 pairing의 base로 복귀해야 함.
-    all_bases      = list(constraint.get("base_ids") or [constraint.get("base_airport", 0)])
+    all_bases      = list(constraint.get("base_ids") or [constraint["base_airport"]])
     min_rest         = constraint.get("min_rest", 10.0)
     min_pairing_legs = constraint.get("min_pairing_legs", 2)
 
     _reach_cache = {}
     if constraint.get("_base_reach") is not None:
         # 호출부가 계산한 현재 base의 reachability를 재사용해 rollout별 중복 계산을 막음.
-        _reach_cache[constraint.get("base_airport", 0)] = constraint["_base_reach"]
+        _reach_cache[constraint["base_airport"]] = constraint["_base_reach"]
 
     def constraint_for(base):
         c = {**constraint, "base_airport": base}
@@ -84,6 +84,13 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         elapsed   = pairing_last_arr - pairing_dep
         fly       = pairing_fly
         n_legs    = len(current_legs)
+        # CPP column은 동일 base 복귀·최소 leg·최대 기간을 모두 만족할 때만 저장함.
+        if pairing_start_ap != flight_by_id[current_legs[-1]]["dest"]:
+            raise ValueError("base로 복귀하지 않은 pairing은 저장할 수 없습니다.")
+        if n_legs < min_pairing_legs:
+            raise ValueError("최소 leg 수를 충족하지 않은 pairing은 저장할 수 없습니다.")
+        if elapsed / 24.0 > cur_c["max_pairing_days"]:
+            raise ValueError("최대 pairing 기간을 초과한 pairing은 저장할 수 없습니다.")
         dead_time = max(elapsed - fly - pairing_rest, 0.0)
         cost = (dead_time
                 - config.IP_LEG_BONUS * max(n_legs - 1, 0)
@@ -94,7 +101,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         # after base rotation). Comparing against the fixed episode_base
         # would misjudge every pairing after a rotation, so pairing_start_ap
         # must be used instead.
-        ends_at_base = (pairing_start_ap == flight_by_id[current_legs[-1]]["dest"])
+        ends_at_base = True
         pairings.append({
             "legs":        list(current_legs),
             "fly":         fly,
@@ -157,9 +164,12 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         return the remaining tail legs to unassigned so other pairings can reuse them."""
         k = 0
         for i, r in enumerate(leg_recs):
-            if r["dest"] == episode_base:
+            elapsed_days = (r["arr"] - leg_recs[0]["dep"]) / 24.0
+            if (r["dest"] == episode_base
+                    and i + 1 >= min_pairing_legs
+                    and elapsed_days <= cur_c["max_pairing_days"]):
                 k = i + 1
-        if k >= min_pairing_legs:
+        if k > 0:
             emit_prefix(leg_recs[:k], episode_base, pairing_start_ap)
             tail = leg_recs[k:]
         else:
@@ -240,7 +250,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     if not any(not v for v in assigned.values()):
         return pairings
 
-    episode_base = constraint.get("base_airport", 0)
+    episode_base = constraint["base_airport"]
     cur_c        = constraint_for(episode_base)
     state        = None
     if not begin_pairing():
@@ -251,10 +261,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         mask      = torch.tensor(mask_list, dtype=torch.float32).to(dev)
 
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
-            if state["current_airport"] != episode_base:
-                salvage_doomed()
-            else:
-                flush_pairing(is_forced=any(not v for v in assigned.values()))
+            # 위치와 무관하게 마지막 합법 base 복귀 prefix만 보존함.
+            salvage_doomed()
             if not begin_pairing():
                 break
             continue

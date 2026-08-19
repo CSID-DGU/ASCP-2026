@@ -86,5 +86,21 @@ class StrictRolloutTest(unittest.TestCase):
         self.assertTrue(all(items[0]["ends_at_base"] for items in results))
 
 
+    def test_all_zero_at_base_does_not_emit_short_pairing(self):
+        flights = [
+            {"id": 0, "origin": 0, "dest": 0, "dep_time": 1.0, "arr_time": 2.0},
+        ]
+        rule = {
+            "base_airport": 0, "base_ids": [0],
+            "min_conn": 0.5, "max_conn": 4.0, "min_rest": 8.0,
+            "max_duty": 14.0, "max_legs": 4, "max_duty_periods": 0,
+            "max_pairing_days": 2, "min_pairing_legs": 2,
+        }
+        rule["_base_reach"] = build_base_reach(flights, 0, rule)
+        pairings = rollout.rollout_with_pairings(
+            flights, rule, None, GreedyLegalDecoder(), None, greedy=True
+        )
+        self.assertEqual(pairings, [])
+
 if __name__ == "__main__":
     unittest.main()

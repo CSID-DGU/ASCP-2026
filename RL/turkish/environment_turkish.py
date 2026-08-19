@@ -48,7 +48,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # computed once outside the loop -- recomputing it inside the loop would be O(N^2), which
     # slows episodes on low-connectivity bases (HB2) to tens of seconds each (found in the
     # log/0704 turkish smoke test).
-    base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+    base_ap = c["base_airport"]
     base_id_set = set(c.get("base_ids") or [base_ap])
     # Turkish CPP도 episode의 출발 base로 복귀 가능한 action만 허용함.
     base_reach = c.get("_base_reach")
@@ -161,6 +161,8 @@ def step(state, action, flights, assigned, constraint=None):
 
     # END_DUTY -> enter rest, pairing continues
     if action == N:
+        if not get_mask(state, flights, assigned, c)[config.END_DUTY]:
+            raise ValueError("현재 상태에서는 END_DUTY를 선택할 수 없습니다.")
         min_rest = c.get("min_rest", config.DEFAULT_CONSTRAINTS["min_rest"])
         next_state = {
             **state,
@@ -185,31 +187,26 @@ def step(state, action, flights, assigned, constraint=None):
 
     # END_PAIRING -> charge the pairing cost, then start a new pairing (or end the episode)
     if action == N + 1:
+        if not get_mask(state, flights, assigned, c)[config.END_PAIRING]:
+            raise ValueError("CPP 제약을 만족하지 않은 pairing은 종료할 수 없습니다.")
         p_cost = c.get("pairing_cost", config.DEFAULT_CONSTRAINTS["pairing_cost"])
-        base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
         # constraint["base_airport"] is injected per episode
-        base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
-        # HB1/HB2 asymmetry: if base_ids is given, returning to any base in it incurs no penalty
-        base_id_set = set(c.get("base_ids") or [base])
+        base = c["base_airport"]
 
         total_legs = state.get("total_legs", 0)
         reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
 
         if total_legs < config.MIN_LEGS_FOR_PAIRING:
             reward += config.MIN_LEGS_PENALTY
-        if state["current_airport"] not in base_id_set:
-            reward -= base_penalty
 
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:
             # All flights covered -> end the episode
             return state, reward, True
         # Unassigned flights remain -> start a new pairing
-        # If the just-arrived location is one of base_ids, start there; otherwise (base not
-        # returned to) relocate to the nearest base and start the new pairing there --
-        # equivalent to prior behavior (teleport to the single base) when base_ids is not given
-        restart_base = state["current_airport"] if state["current_airport"] in base_id_set else base
-        base_unassigned = [f for f in unassigned if f["origin"] == restart_base]
+        # 다음 pairing도 현재 episode에 지정된 동일 base에서 시작함.
+        restart_base = base
+        base_unassigned = [f for f in unassigned if f["origin"] == base]
         next_time = min(f["dep_time"] for f in base_unassigned) if base_unassigned else min(f["dep_time"] for f in unassigned)
         next_state = {
             **state,

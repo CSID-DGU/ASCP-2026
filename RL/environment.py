@@ -53,7 +53,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # base_remaining does not depend on the candidate flight f (loop-invariant),
     # so it is computed once outside the loop rather than recomputed per
     # candidate (which would be O(N^2)).
-    base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+    base_ap = c["base_airport"]
 
     # CPP pairing이 base 복귀 가능성을 잃는 action을 항상 제거함.
     base_reach = c.get("_base_reach")
@@ -176,6 +176,8 @@ def step(state, action, flights, assigned, constraint=None):
 
     # EndDuty -> enter rest, pairing continues
     if action == N:
+        if not get_mask(state, flights, assigned, c)[config.END_DUTY]:
+            raise ValueError("현재 상태에서는 EndDuty를 선택할 수 없습니다.")
         min_rest = c.get("min_rest", config.DEFAULT_CONSTRAINTS["min_rest"])
         next_state = {
             **state,
@@ -199,18 +201,17 @@ def step(state, action, flights, assigned, constraint=None):
 
     # EndPairing -> charge pairing cost, then start a new pairing (or end the episode)
     if action == N + 1:
+        if not get_mask(state, flights, assigned, c)[config.END_PAIRING]:
+            raise ValueError("CPP 제약을 만족하지 않은 pairing은 종료할 수 없습니다.")
         p_cost = c.get("pairing_cost", config.DEFAULT_CONSTRAINTS["pairing_cost"])
-        base_penalty = c.get("base_penalty", config.DEFAULT_CONSTRAINTS["base_penalty"])
         # constraint["base_airport"] is injected per episode
-        base = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
+        base = c["base_airport"]
 
         total_legs = state.get("total_legs", 0)
         reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
 
         if total_legs < config.MIN_LEGS_FOR_PAIRING:
             reward += config.MIN_LEGS_PENALTY
-        if state["current_airport"] != base:
-            reward -= base_penalty
 
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:

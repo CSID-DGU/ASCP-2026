@@ -91,5 +91,24 @@ class StrictMaskContractTest(unittest.TestCase):
         self.assertEqual(mask[0], 0)
 
 
+    def test_direct_end_pairing_cannot_bypass_mask(self):
+        flights = [{"id": 0, "origin": 0, "dest": 1, "dep_time": 1.0, "arr_time": 2.0}]
+        rule = make_constraint()
+        rule["_base_reach"] = build_base_reach(flights, 0, rule)
+        state = make_state(current_airport=1, current_time=2.0, legs=2,
+                           total_legs=2, pairing_start=False)
+        with self.assertRaisesRegex(ValueError, "pairing"):
+            environment.step(state, len(flights) + 1, flights, {0: True}, rule)
+        with self.assertRaisesRegex(ValueError, "pairing"):
+            environment_turkish.step(state, len(flights) + 1, flights, {0: True}, rule)
+
+    def test_missing_base_airport_is_configuration_error(self):
+        flights = []
+        rule = make_constraint()
+        del rule["base_airport"]
+        rule["_base_reach"] = {}
+        with self.assertRaises(KeyError):
+            environment.get_mask(make_state(), flights, {}, rule)
+
 if __name__ == "__main__":
     unittest.main()
