@@ -173,6 +173,8 @@ def step(state, action, flights, assigned, constraint=None):
     """
     c = constraint if constraint else config.DEFAULT_CONSTRAINTS
     N = len(flights)
+    if action < 0 or action >= N + 2:
+        raise IndexError("action이 허용 범위를 벗어났습니다.")
 
     # EndDuty -> enter rest, pairing continues
     if action == N:
@@ -237,7 +239,9 @@ def step(state, action, flights, assigned, constraint=None):
         }
         return next_state, reward, False
 
-    # Select a flight leg
+    # flight action도 직접 호출 시 hard mask legality를 다시 확인함.
+    if not get_mask(state, flights, assigned, c)[action]:
+        raise ValueError("CPP 제약을 위반한 flight는 선택할 수 없습니다.")
     f = flights[action]
     assigned[f["id"]] = True
     flight_time = f["arr_time"] - f["dep_time"]

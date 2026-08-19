@@ -110,5 +110,21 @@ class StrictMaskContractTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             environment.get_mask(make_state(), flights, {}, rule)
 
+    def test_direct_flight_action_cannot_bypass_mask(self):
+        flights = [
+            {"id": 0, "origin": 1, "dest": 0, "dep_time": 1.0, "arr_time": 2.0},
+        ]
+        rule = make_constraint()
+        rule["_base_reach"] = build_base_reach(flights, 0, rule)
+        for module in (environment, environment_turkish):
+            with self.assertRaisesRegex(ValueError, "flight"):
+                module.step(make_state(), 0, flights, {0: False}, rule)
+
+    def test_out_of_range_action_fails_before_state_mutation(self):
+        rule = make_constraint()
+        rule["_base_reach"] = {}
+        with self.assertRaises(IndexError):
+            environment.step(make_state(), 2, [], {}, rule)
+
 if __name__ == "__main__":
     unittest.main()
