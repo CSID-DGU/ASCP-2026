@@ -26,20 +26,19 @@ def make_constraint(**updates):
         "base_airport": 0, "min_conn": 0.5, "max_conn": 4.0,
         "min_rest": 8.0, "max_duty": 14.0, "max_legs": 4,
         "max_duty_periods": 2, "max_pairing_days": 2,
-        "min_pairing_legs": 2, "require_base_return": True,
-        "strict_base_start": True,
+        "min_pairing_legs": 2,
     }
     value.update(updates)
     return value
 
 
 class StrictMaskContractTest(unittest.TestCase):
-    def test_strict_mode_requires_reachability(self):
+    def test_cpp_requires_reachability(self):
         flights = [{"id": 0, "origin": 0, "dest": 1, "dep_time": 1.0, "arr_time": 2.0}]
         with self.assertRaisesRegex(ValueError, "_base_reach"):
             environment.get_mask(make_state(), flights, {0: False}, make_constraint())
 
-    def test_strict_start_never_uses_non_base_origin(self):
+    def test_cpp_start_never_uses_non_base_origin(self):
         flights = [
             {"id": 0, "origin": 1, "dest": 0, "dep_time": 1.0, "arr_time": 2.0},
             {"id": 1, "origin": 0, "dest": 1, "dep_time": 3.0, "arr_time": 4.0},
@@ -49,7 +48,7 @@ class StrictMaskContractTest(unittest.TestCase):
         mask = environment.get_mask(make_state(), flights, {0: False, 1: True}, rule)
         self.assertEqual(mask[0], 0)
 
-    def test_strict_end_pairing_requires_base_return(self):
+    def test_cpp_end_pairing_requires_base_return(self):
         flights = [{"id": 0, "origin": 0, "dest": 1, "dep_time": 1.0, "arr_time": 2.0}]
         rule = make_constraint()
         rule["_base_reach"] = build_base_reach(flights, 0, rule)
@@ -72,7 +71,16 @@ class StrictMaskContractTest(unittest.TestCase):
         self.assertEqual(mask[0], 1)
         self.assertEqual(mask[1], 0)
 
-    def test_turkish_strict_start_is_bound_to_episode_base(self):
+    def test_legacy_flags_cannot_disable_cpp_contract(self):
+        flights = [
+            {"id": 0, "origin": 1, "dest": 0, "dep_time": 1.0, "arr_time": 2.0},
+        ]
+        rule = make_constraint(require_base_return=False, strict_base_start=False)
+        rule["_base_reach"] = build_base_reach(flights, 0, rule)
+        mask = environment.get_mask(make_state(), flights, {0: False}, rule)
+        self.assertEqual(mask[0], 0)
+
+    def test_turkish_cpp_start_is_bound_to_episode_base(self):
         flights = [
             {"id": 0, "origin": 1, "dest": 0, "dep_time": 1.0, "arr_time": 2.0},
             {"id": 1, "origin": 0, "dest": 1, "dep_time": 3.0, "arr_time": 4.0},

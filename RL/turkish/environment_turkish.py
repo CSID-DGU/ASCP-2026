@@ -55,11 +55,10 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # episode_base (=base_ap), so this only enforces a single return to base_ap (the base
     # this pairing actually departed from) -- cross HB1<->HB2 returns are not supported under
     # the hard mask (a stricter subset).
-    require_return   = c.get("require_base_return", False)
-    base_reach       = c.get("_base_reach") if require_return else None
-    if require_return and base_reach is None:
-        # strict 모드에서 Turkish 복귀 검사가 누락되면 즉시 실패시킴.
-        raise ValueError("require_base_return=True이면 _base_reach가 필요합니다.")
+    base_reach = c.get("_base_reach")
+    if base_reach is None:
+        # CPP 실행에는 base 복귀 가능성 자료가 필수이며 누락은 구성 오류로 처리함.
+        raise ValueError("CPP constraint에는 _base_reach가 필요합니다.")
     max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
     if pairing_start:
@@ -76,9 +75,8 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
 
         # 1. Airport connectivity check
         if pairing_start:
-            if c.get("strict_base_start", False) and f["origin"] != base_ap:
+            if f["origin"] != base_ap:
                 valid = False
-            elif base_remaining and f["origin"] not in base_id_set:
                 valid = False
         elif f["origin"] != state["current_airport"]:
             valid = False
@@ -114,7 +112,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
             valid = False
 
         # 5. Base-return feasibility (only when require_base_return is set)
-        if valid and base_reach is not None:
+        if valid:
             ps_time = f["dep_time"] if pairing_start else pairing_start_time
             if not can_reach_base(
                 base_reach, f, ps_time, max_pd,
@@ -147,7 +145,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # When base is not returned to, BASE_PENALTY is handled as a reward in step() (hard mask
     # removed -> soft penalty). If require_base_return is set, revert to a hard mask -- cannot
     # end anywhere other than the base (base_ap, the base this pairing departed from).
-    if require_return and state["current_airport"] != base_ap:
+    if state["current_airport"] != base_ap:
         can_end_pairing = False
     if can_end_pairing:
         mask[config.END_PAIRING] = 1
