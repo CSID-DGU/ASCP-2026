@@ -263,8 +263,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       n_rollouts_per_chunk=5,
                       subset_size=config.EPISODE_MAX_FLIGHTS,
                       connected_sampler=sample_connected_subnet_std,
-                      airline="delta",
-                      require_base_return=False):
+                      airline="delta"):
     """Roll out over all windows to build the global-ID-keyed candidate pool Cθ.
 
     Paper Sec. "Scalable Inference and Global Selection": "For each chunk, we
@@ -337,21 +336,10 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
 
             base_id = random.choice(base_ids)
             c_b = {**constraint, "base_airport": base_id}
-            if require_base_return:
-                # rollout.py supports base rotation (switch to another base
-                # once the current base's departing legs are exhausted) and
-                # salvage (on a dead end, keep only the prefix that ends at
-                # base and return the rest); pass base_ids/strict_base_start
-                # to activate that path.
-                c_b["base_ids"] = base_ids
-                c_b["strict_base_start"] = True
-                c_b["require_base_return"] = True
-                # rollout_subset_global remaps flight["id"] to local_id before
-                # rolling out (mask/step indexing breaks under global IDs), so
-                # reachability must also be computed against local_id to match
-                # the IDs actually looked up during rollout.
-                _local_flights = [{**f, "id": f["local_id"]} for f in chunk]
-                c_b["_base_reach"] = build_base_reach(_local_flights, base_id, c_b)
+            c_b["base_ids"] = base_ids
+            # local ID 기준 reachability를 모든 CPP rollout에 필수로 구성함.
+            _local_flights = [{**f, "id": f["local_id"]} for f in chunk]
+            c_b["_base_reach"] = build_base_reach(_local_flights, base_id, c_b)
 
             for _ in range(n_rollouts_per_chunk):
                 try:
@@ -432,7 +420,6 @@ def evaluate_full(
     wandb_project="ASCP-2026-paper",
     compute_gap=False,
     seed=None,
-    require_base_return=False,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
 
@@ -534,14 +521,10 @@ def evaluate_full(
 
     connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
 
-    _hard_mask = require_base_return
-    if _hard_mask:
-        print("\n[base-return] decode-time hard mask ON (includes reachability pruning)", flush=True)
-        if airline == "turkish":
-            print("  [note] For turkish, HB1<->HB2 cross-return is not enforced; the hard "
-                  "mask only enforces single-base return to whichever base the pairing "
-                  "actually departed from (a stricter subset).",
-                  flush=True)
+    print("\n[base-return] CPP hard constraint ON (includes reachability pruning)", flush=True)
+    if airline == "turkish":
+        print("  [note] Turkish도 pairing별 출발 base로 복귀하는 same-base 조건을 적용합니다.",
+              flush=True)
 
     print(f"\nCollecting pool (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
     with torch.no_grad():
@@ -551,7 +534,6 @@ def evaluate_full(
             subset_size=subset_size,
             connected_sampler=connected_sampler,
             airline=airline,
-            require_base_return=_hard_mask,
         )
 
     print(f"\nSolving IP (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
@@ -670,9 +652,6 @@ if __name__ == "__main__":
                         help="Fix the random/torch RNG -- set this to run a paired comparison of "
                              "multiple checkpoints against the same evaluation instance (e.g. the "
                              "same seed for every ON/OFF checkpoint)")
-    parser.add_argument("--require-base-return", action="store_true",
-                        help="Enable the decode-time hard mask -- masks any leg that would make "
-                             "base return infeasible during rollout, and forbids EndPairing away from the base.")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -697,5 +676,4 @@ if __name__ == "__main__":
         wandb_project=args.wandb_project,
         compute_gap=args.compute_gap,
         seed=args.seed,
-        require_base_return=args.require_base_return,
     )

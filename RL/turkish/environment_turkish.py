@@ -50,11 +50,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # log/0704 turkish smoke test).
     base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
     base_id_set = set(c.get("base_ids") or [base_ap])
-    # Base-return hard mask (only when require_base_return is set) -- same principle as
-    # environment.py. rollout.py's constraint_for() computes _base_reach relative to
-    # episode_base (=base_ap), so this only enforces a single return to base_ap (the base
-    # this pairing actually departed from) -- cross HB1<->HB2 returns are not supported under
-    # the hard mask (a stricter subset).
+    # Turkish CPP도 episode의 출발 base로 복귀 가능한 action만 허용함.
     base_reach = c.get("_base_reach")
     if base_reach is None:
         # CPP 실행에는 base 복귀 가능성 자료가 필수이며 누락은 구성 오류로 처리함.
@@ -111,7 +107,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         if elapsed_days > c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"]):
             valid = False
 
-        # 5. Base-return feasibility (only when require_base_return is set)
+        # 5. Base 복귀 가능성
         if valid:
             ps_time = f["dep_time"] if pairing_start else pairing_start_time
             if not can_reach_base(
@@ -142,9 +138,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         state.get("total_legs", 0) >= min_pairing_legs
         and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
-    # When base is not returned to, BASE_PENALTY is handled as a reward in step() (hard mask
-    # removed -> soft penalty). If require_base_return is set, revert to a hard mask -- cannot
-    # end anywhere other than the base (base_ap, the base this pairing departed from).
+    # CPP pairing은 episode의 출발 base에서만 종료 가능함.
     if state["current_airport"] != base_ap:
         can_end_pairing = False
     if can_end_pairing:

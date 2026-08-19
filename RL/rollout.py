@@ -187,10 +187,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         pairing_inter_excess = 0.0
 
     def pick_start():
-        """Choose the (base, first flight) for the next pairing. Stays on the
-        current base if it still has unassigned departing legs; otherwise
-        rotates to another base. If none have any, either ends the rollout
-        (strict_start) or starts from an arbitrary airport (default)."""
+        """허용 base 중 복귀 가능한 첫 flight를 선택하며 없으면 rollout을 종료함."""
         unassigned = [f for f in flights if not assigned[f["id"]]]
         if not unassigned:
             return None, None

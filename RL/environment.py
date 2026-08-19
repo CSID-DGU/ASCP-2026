@@ -55,13 +55,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # candidate (which would be O(N^2)).
     base_ap = c.get("base_airport", config.DEFAULT_CONSTRAINTS["base_airport"])
 
-    # Hard base-return enforcement (decode-time feasibility masking, Eq. 6).
-    # require_base_return=True (1) masks any leg that would make base return
-    # infeasible and (2) forbids EndPairing away from the base -- so every
-    # completed pairing is structurally guaranteed to start and end at the
-    # base, matching the backward-reachability-from-base mechanism described
-    # in the paper. _base_reach is precomputed once per (flights, base) by
-    # the caller in rollout.py and passed through the constraint dict.
+    # CPP pairing이 base 복귀 가능성을 잃는 action을 항상 제거함.
     base_reach = c.get("_base_reach")
     if base_reach is None:
         # CPP 실행에는 base 복귀 가능성 자료가 필수이며 누락은 구성 오류로 처리함.
@@ -118,7 +112,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         if elapsed_days > max_pd:
             valid = False
 
-        # 5. Base-reachability (only when require_base_return is set)
+        # 5. Base 복귀 가능성
         # Checked via duty_period/max_duty_periods, not max_legs -- EndDuty can
         # always grant a fresh leg budget, so per-duty leg count is not the
         # binding resource for reaching the base; remaining overnight/rest
@@ -153,9 +147,7 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         state.get("total_legs", 0) >= min_pairing_legs
         and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
-    # Failing to return to base is otherwise a soft penalty applied as reward
-    # in step(), not a hard mask. When require_base_return is set, EndPairing
-    # away from the base is masked out (hard constraint).
+    # CPP pairing은 base에 도착한 상태에서만 종료 가능함.
     if state["current_airport"] != base_ap:
         can_end_pairing = False
     if can_end_pairing:
