@@ -33,24 +33,26 @@ class StrictTrainingTest(unittest.TestCase):
             {"id": 0, "origin": 0, "dest": 1, "dep_time": 1.0, "arr_time": 2.0}
         ]
 
-    def test_training_constraint_enables_strict_by_default(self):
-        prepared = train._prepare_training_constraint(self.flights, rule())
-        self.assertTrue(prepared["require_base_return"])
-        self.assertTrue(prepared["strict_base_start"])
+    def test_training_constraint_always_builds_cpp_reachability(self):
+        prepared = train._prepare_cpp_constraint(self.flights, rule())
         self.assertIn("_base_reach", prepared)
+        self.assertEqual(prepared["_base_reach_base"], 0)
 
     def test_prepared_constraint_reuses_reachability(self):
-        prepared = train._prepare_training_constraint(self.flights, rule())
+        prepared = train._prepare_cpp_constraint(self.flights, rule())
         with patch.object(train, "build_base_reach", side_effect=AssertionError("rebuild")):
-            reused = train._prepare_training_constraint(self.flights, prepared)
+            reused = train._prepare_cpp_constraint(self.flights, prepared)
         self.assertIs(reused["_base_reach"], prepared["_base_reach"])
 
-    def test_explicit_legacy_mode_is_preserved(self):
-        prepared = train._prepare_training_constraint(
-            self.flights, rule(require_base_return=False)
+    def test_legacy_flag_cannot_disable_cpp_training(self):
+        legacy_flag = rule(require_base_return=False, strict_base_start=False)
+        prepared = train._prepare_cpp_constraint(self.flights, legacy_flag)
+        self.assertIn("_base_reach", prepared)
+        _, _, _, metrics = train.run_episode(
+            self.flights, legacy_flag, None, NeverCalledDecoder(), None, greedy=True
         )
-        self.assertFalse(prepared["require_base_return"])
-        self.assertNotIn("_base_reach", prepared)
+        self.assertEqual(metrics["n_zero_mask"], 1)
+        self.assertEqual(metrics["n_uncovered"], 1)
 
     def test_stage_episode_stops_instead_of_arbitrary_restart(self):
         _, _, _, metrics = train.run_episode(

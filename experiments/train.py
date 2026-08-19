@@ -53,13 +53,9 @@ def _set_device(device_str: str):
     DEVICE = torch.device(device_str)
 
 
-def _prepare_training_constraint(flights, constraint):
-    """명시적으로 끄지 않은 학습 episode에 strict base 복귀 조건을 구성함."""
+def _prepare_cpp_constraint(flights, constraint):
+    """모든 학습 episode에 CPP base 복귀 조건과 reachability를 구성함."""
     c = dict(constraint)
-    if not c.get("require_base_return", True):
-        return c
-    c["require_base_return"] = True
-    c["strict_base_start"] = True
     base = c.get("base_airport", 0)
     if c.get("_base_reach") is not None and c.get("_base_reach_base") == base:
         return c
@@ -75,7 +71,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         total_reward, log_probs, entropies, metrics dict
         metrics: {n_pairings, n_deadheads, n_uncovered, coverage_pct}
     """
-    constraint = _prepare_training_constraint(flights, constraint)
+    constraint = _prepare_cpp_constraint(flights, constraint)
     assigned = {f["id"]: False for f in flights}
     state = init_state(flights, constraint)
 
@@ -103,43 +99,11 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         no_end_pairing = mask_list[-1] == 0
         if no_flight and no_end_duty and no_end_pairing:
             unassigned = [f for f in flights if not assigned[f["id"]]]
-            if len(unassigned) == 0:
+            if not unassigned:
                 break
-            if constraint.get("require_base_return"):
-                # strict 모드에서는 불법 pairing을 끊고 임의 공항에서 재시작하지 않음.
-                n_zero_mask += 1
-                break
-
-            # base 출발 편 우선, 없으면 가장 이른 편으로 강제 이동 (deadhead)
-            base = constraint["base_airport"]
-            base_unassigned = [f for f in unassigned if f["origin"] == base]
-            earliest = sorted(base_unassigned or unassigned, key=lambda x: x["dep_time"])[0]
-
-            if not state.get("pairing_start", False):
-                total_legs_sum += state.get("total_legs", 0) 
-                n_pairings += 1
-                n_deadheads += 1
-                # BASE_PENALTY, PAIRING_COST는 environment step()과 중복되지 않도록
-                # deadhead 강제이동 시에만 직접 차감
-                total_reward -= config.DEFAULT_CONSTRAINTS["pairing_cost"]
-                if state["current_airport"] != base:
-                    total_reward -= config.DEFAULT_CONSTRAINTS["base_penalty"]
-
-            state = {
-                "current_airport":    earliest["origin"],
-                "current_time":       earliest["dep_time"],
-                "duty_time":          0.0,
-                "duty_start_time":    earliest["dep_time"],
-                "legs":               0,
-                "total_legs":         0,
-                "remaining":          sum(1 for v in assigned.values() if not v),
-                "pairing_start":      True,
-                "duty_period":        0,
-                "pairing_start_time": earliest["dep_time"],
-                "is_resting":         False,
-                "rest_end_time":      None,
-            }
-            continue
+            # CPP에서 합법 action이 없으면 relocation하지 않고 미커버 상태로 종료함.
+            n_zero_mask += 1
+            break
 
         # decoder
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
@@ -205,7 +169,7 @@ _PAIRING_FIXED_COST  = config.IP_PAIRING_FIXED_COST
 
 
 def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
-    constraint = _prepare_training_constraint(flights, constraint)
+    constraint = _prepare_cpp_constraint(flights, constraint)
     assigned = {f["id"]: False for f in flights}
     flight_by_id = {f["id"]: f for f in flights}
     pairings = []
@@ -247,8 +211,6 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
     def base_start_candidates(candidates):
         base_flights = [f for f in candidates if f["origin"] == episode_base]
-        if not constraint.get("require_base_return"):
-            return base_flights
         # 수동 시작 flight도 decoder와 같은 복귀 가능성 검사를 통과해야 함.
         return [f for f in base_flights if can_reach_base(
             constraint["_base_reach"], f, f["dep_time"],
@@ -259,7 +221,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
     # Manually start the first flight -- prefer a base-departing leg
     unassigned   = [f for f in flights if not assigned[f["id"]]]
     base_flights = base_start_candidates(unassigned)
-    if constraint.get("require_base_return") and not base_flights:
+    if not base_flights:
         return pairings
     first        = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
     assigned[first["id"]] = True
@@ -285,43 +247,14 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
     while True:
         step_count += 1
         if step_count > max_steps:
-            if not constraint.get("require_base_return"):
-                flush_pairing(is_forced=False)
             break
 
         mask_list = get_mask(state, flights, assigned, constraint)
         mask      = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
-            unassigned = [f for f in flights if not assigned[f["id"]]]
-            if constraint.get("require_base_return"):
-                # strict pool에는 막다른 미복귀 pairing을 후보로 저장하지 않음.
-                break
-            if not unassigned:
-                flush_pairing(is_forced=False)
-                break
-            flush_pairing(is_forced=True)
-            base_flights = base_start_candidates(unassigned)
-            if constraint.get("require_base_return") and not base_flights:
-                break
-            nxt = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
-            assigned[nxt["id"]] = True
-            start_new(nxt)
-            state = {
-                "current_airport":    nxt["dest"],
-                "current_time":       nxt["arr_time"],
-                "duty_time":          nxt["arr_time"] - nxt["dep_time"],
-                "duty_start_time":    nxt["dep_time"],
-                "legs":               1,
-                "total_legs":         1,
-                "remaining":          sum(1 for v in assigned.values() if not v),
-                "pairing_start":      False,
-                "duty_period":        0,
-                "pairing_start_time": nxt["dep_time"],
-                "is_resting":         False,
-                "rest_end_time":      None,
-            }
-            continue
+            # 미복귀 partial pairing은 CPP column으로 저장하지 않음.
+            break
 
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         gap_bias  = flight_gap_bias(state, flights, constraint, device=DEVICE)
@@ -339,7 +272,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             if not unassigned:
                 break
             base_flights = base_start_candidates(unassigned)
-            if constraint.get("require_base_return") and not base_flights:
+            if not base_flights:
                 break
             nxt = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
             assigned[nxt["id"]] = True
@@ -373,7 +306,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
 
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
-    constraint = _prepare_training_constraint(flights, constraint)
+    constraint = _prepare_cpp_constraint(flights, constraint)
     # Exclude pairings that do not return to base -- the restricted LP of
     # Eq. (2) is defined over Omega(c), and its duals mu^cov/nu^exc (Eq. 9)
     # should not be computed from infeasible columns.
@@ -404,7 +337,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     restricted-master LP solve (Algorithm 1, line 6); dual_weight is
     w_dual(e), ramped up externally by run_phase2() (Algorithm 1, line 8-9).
     """
-    constraint = _prepare_training_constraint(flights, constraint)
+    constraint = _prepare_cpp_constraint(flights, constraint)
     assigned = {f["id"]: False for f in flights}
     state    = init_state(flights, constraint)
 
@@ -436,34 +369,9 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
                 break
-            if constraint.get("require_base_return"):
-                # dual 학습도 동일한 strict 행동 공간을 사용하고 임의 재시작을 금지함.
-                n_zero_mask += 1
-                break
-            base_unassigned = [f for f in unassigned if f["origin"] == base]
-            earliest = sorted(base_unassigned or unassigned, key=lambda x: x["dep_time"])[0]
-            if not state.get("pairing_start", False):
-                total_legs_sum += state.get("total_legs", 0)  # include this pairing's legs in avg_legs numerator even on a forced deadhead flush
-                n_pairings  += 1
-                n_deadheads += 1
-                total_reward -= config.DEFAULT_CONSTRAINTS["pairing_cost"]
-                if state["current_airport"] != base:
-                    total_reward -= config.DEFAULT_CONSTRAINTS["base_penalty"]
-            state = {
-                "current_airport":    earliest["origin"],
-                "current_time":       earliest["dep_time"],
-                "duty_time":          0.0,
-                "duty_start_time":    earliest["dep_time"],
-                "legs":               0,
-                "total_legs":         0,
-                "remaining":          sum(1 for v in assigned.values() if not v),
-                "pairing_start":      True,
-                "duty_period":        0,
-                "pairing_start_time": earliest["dep_time"],
-                "is_resting":         False,
-                "rest_end_time":      None,
-            }
-            continue
+            # dual 학습도 동일한 CPP action space에서 미커버 상태로 종료함.
+            n_zero_mask += 1
+            break
 
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         gap_bias  = flight_gap_bias(state, flights, constraint, device=DEVICE)
@@ -553,7 +461,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
 
         base_c   = constraint_sampler() if constraint_sampler else constraint
         c        = {**base_c, "base_airport": base_airport}
-        c        = _prepare_training_constraint(flights, c)
+        c        = _prepare_cpp_constraint(flights, c)
         c_tensor = constraint_to_tensor(c, device=DEVICE)
 
         with torch.no_grad():
@@ -686,7 +594,7 @@ def run_curriculum_stage(
             c = constraint_sampler() if constraint_sampler else constraint_override
 
         c = {**c, "base_airport": base_airport}  # 에피소드별 base 주입
-        c = _prepare_training_constraint(flights, c)
+        c = _prepare_cpp_constraint(flights, c)
         
         # 선택된 복원/샘플링 제약조건 사전(c)을 기반으로 정확히 텐서를 빌드하여 FiLM 정렬 유지
         c_tensor = constraint_to_tensor(c, device=DEVICE)
