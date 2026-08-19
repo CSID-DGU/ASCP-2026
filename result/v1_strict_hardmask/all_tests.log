@@ -1,11 +1,18 @@
 test_collect_pool_has_no_base_return_opt_out (test_evaluation_contract.CppEvaluationContractTest) ... ok
 test_evaluate_full_has_no_base_return_opt_out (test_evaluation_contract.CppEvaluationContractTest) ... ok
+test_incomplete_coverage_fails_instead_of_reporting_cpp_solution (test_evaluation_contract.CppEvaluationContractTest) ... ok
+test_turkish_has_no_cross_base_pairing_exception (test_evaluation_contract.CppEvaluationContractTest) ... ok
 test_cpp_end_pairing_requires_base_return (test_mask_contract.StrictMaskContractTest) ... ok
 test_cpp_requires_reachability (test_mask_contract.StrictMaskContractTest) ... ok
 test_cpp_start_never_uses_non_base_origin (test_mask_contract.StrictMaskContractTest) ... ok
+test_direct_end_pairing_cannot_bypass_mask (test_mask_contract.StrictMaskContractTest) ... ok
+test_direct_flight_action_cannot_bypass_mask (test_mask_contract.StrictMaskContractTest) ... ok
 test_legacy_flags_cannot_disable_cpp_contract (test_mask_contract.StrictMaskContractTest) ... ok
+test_missing_base_airport_is_configuration_error (test_mask_contract.StrictMaskContractTest) ... ok
+test_out_of_range_action_fails_before_state_mutation (test_mask_contract.StrictMaskContractTest) ... ok
 test_turkish_cpp_start_is_bound_to_episode_base (test_mask_contract.StrictMaskContractTest) ... ok
 test_unreachable_flight_is_masked_before_selection (test_mask_contract.StrictMaskContractTest) ... ok
+test_all_zero_at_base_does_not_emit_short_pairing (test_rollout_contract.StrictRolloutTest) ... ok
 test_batch_rollout_preserves_cpp_contract (test_rollout_contract.StrictRolloutTest) ... ok
 test_single_rollout_returns_only_base_to_base_pairing (test_rollout_contract.StrictRolloutTest) ... ok
 test_dual_episode_uses_same_strict_stop (test_training_contract.StrictTrainingTest) ... ok
@@ -16,6 +23,6 @@ test_stage_episode_stops_instead_of_arbitrary_restart (test_training_contract.St
 test_training_constraint_always_builds_cpp_reachability (test_training_contract.StrictTrainingTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 16 tests in 0.011s
+Ran 23 tests in 0.033s
 
 OK
