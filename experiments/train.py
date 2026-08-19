@@ -40,6 +40,7 @@ _CONSTRAINT_FN = {
     "turkish": get_turkish_constraints_hb,  # HB1/HB2 비대칭 종료 허용 (base_ids는 train()에서 주입)
 }
 from state import init_state
+from base_reach import build_base_reach, can_reach_base
 from utils import flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias
 import config
 
@@ -52,12 +53,25 @@ def _set_device(device_str: str):
     DEVICE = torch.device(device_str)
 
 
+def _prepare_training_constraint(flights, constraint):
+    """명시적으로 끄지 않은 학습 episode에 strict base 복귀 조건을 구성함."""
+    c = dict(constraint)
+    if not c.get("require_base_return", True):
+        return c
+    c["require_base_return"] = True
+    c["strict_base_start"] = True
+    base = c.get("base_airport", 0)
+    c["_base_reach"] = build_base_reach(flights, base, c)
+    return c
+
+
 def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     """
     Returns:
         total_reward, log_probs, entropies, metrics dict
         metrics: {n_pairings, n_deadheads, n_uncovered, coverage_pct}
     """
+    constraint = _prepare_training_constraint(flights, constraint)
     assigned = {f["id"]: False for f in flights}
     state = init_state(flights, constraint)
 
@@ -68,6 +82,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     n_deadheads = 0  # 강제 시작된 pairing 수 (connection 못 찾아서)
     n_end_duties = 0
     total_legs_sum = 0
+    n_zero_mask = 0
 
     max_steps = len(flights) * 20  # 무한루프 방지 (flight당 최대 20 step)
     step_count = 0
@@ -85,6 +100,10 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         if no_flight and no_end_duty and no_end_pairing:
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if len(unassigned) == 0:
+                break
+            if constraint.get("require_base_return"):
+                # strict 모드에서는 불법 pairing을 끊고 임의 공항에서 재시작하지 않음.
+                n_zero_mask += 1
                 break
 
             # base 출발 편 우선, 없으면 가장 이른 편으로 강제 이동 (deadhead)
@@ -170,6 +189,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         "coverage_pct": coverage_pct,
         "avg_legs":     total_legs_sum / n_pairings if n_pairings > 0 else 0.0,
         "avg_overnight": n_end_duties / n_pairings if n_pairings > 0 else 0.0,
+        "n_zero_mask": n_zero_mask,
     }
     return total_reward, log_probs, entropies, metrics
 
@@ -181,6 +201,7 @@ _PAIRING_FIXED_COST  = config.IP_PAIRING_FIXED_COST
 
 
 def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=False):
+    constraint = _prepare_training_constraint(flights, constraint)
     assigned = {f["id"]: False for f in flights}
     flight_by_id = {f["id"]: f for f in flights}
     pairings = []
@@ -220,9 +241,22 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
     episode_base = constraint.get("base_airport", 0)
 
+    def base_start_candidates(candidates):
+        base_flights = [f for f in candidates if f["origin"] == episode_base]
+        if not constraint.get("require_base_return"):
+            return base_flights
+        # 수동 시작 flight도 decoder와 같은 복귀 가능성 검사를 통과해야 함.
+        return [f for f in base_flights if can_reach_base(
+            constraint["_base_reach"], f, f["dep_time"],
+            constraint["max_pairing_days"], duty_period=0,
+            max_duty_periods=constraint["max_duty_periods"],
+        )]
+
     # Manually start the first flight -- prefer a base-departing leg
     unassigned   = [f for f in flights if not assigned[f["id"]]]
-    base_flights = [f for f in unassigned if f["origin"] == episode_base]
+    base_flights = base_start_candidates(unassigned)
+    if constraint.get("require_base_return") and not base_flights:
+        return pairings
     first        = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
     assigned[first["id"]] = True
     start_new(first)
@@ -247,7 +281,8 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
     while True:
         step_count += 1
         if step_count > max_steps:
-            flush_pairing(is_forced=False)
+            if not constraint.get("require_base_return"):
+                flush_pairing(is_forced=False)
             break
 
         mask_list = get_mask(state, flights, assigned, constraint)
@@ -255,11 +290,16 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
             unassigned = [f for f in flights if not assigned[f["id"]]]
+            if constraint.get("require_base_return"):
+                # strict pool에는 막다른 미복귀 pairing을 후보로 저장하지 않음.
+                break
             if not unassigned:
                 flush_pairing(is_forced=False)
                 break
             flush_pairing(is_forced=True)
-            base_flights = [f for f in unassigned if f["origin"] == episode_base]
+            base_flights = base_start_candidates(unassigned)
+            if constraint.get("require_base_return") and not base_flights:
+                break
             nxt = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
             assigned[nxt["id"]] = True
             start_new(nxt)
@@ -294,7 +334,9 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
                 break
-            base_flights = [f for f in unassigned if f["origin"] == episode_base]
+            base_flights = base_start_candidates(unassigned)
+            if constraint.get("require_base_return") and not base_flights:
+                break
             nxt = sorted(base_flights or unassigned, key=lambda f: f["dep_time"])[0]
             assigned[nxt["id"]] = True
             start_new(nxt)
@@ -357,6 +399,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     restricted-master LP solve (Algorithm 1, line 6); dual_weight is
     w_dual(e), ramped up externally by run_phase2() (Algorithm 1, line 8-9).
     """
+    constraint = _prepare_training_constraint(flights, constraint)
     assigned = {f["id"]: False for f in flights}
     state    = init_state(flights, constraint)
 
@@ -367,6 +410,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     n_deadheads   = 0
     n_end_duties  = 0
     total_legs_sum = 0
+    n_zero_mask    = 0
     base          = constraint["base_airport"]
 
     max_steps  = len(flights) * 20
@@ -386,6 +430,10 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
         if no_flight and no_end_duty and no_end_pairing:
             unassigned = [f for f in flights if not assigned[f["id"]]]
             if not unassigned:
+                break
+            if constraint.get("require_base_return"):
+                # dual 학습도 동일한 strict 행동 공간을 사용하고 임의 재시작을 금지함.
+                n_zero_mask += 1
                 break
             base_unassigned = [f for f in unassigned if f["origin"] == base]
             earliest = sorted(base_unassigned or unassigned, key=lambda x: x["dep_time"])[0]
@@ -460,6 +508,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
         "coverage_pct":  coverage_pct,
         "avg_legs":      total_legs_sum / n_pairings if n_pairings > 0 else 0.0,
         "avg_overnight": n_end_duties / n_pairings if n_pairings > 0 else 0.0,
+        "n_zero_mask":   n_zero_mask,
     }
 
 
