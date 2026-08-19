@@ -42,7 +42,6 @@ def strict_fixture():
         "min_conn": 0.5, "max_conn": 4.0, "min_rest": 8.0,
         "max_duty": 14.0, "max_legs": 4, "max_duty_periods": 2,
         "max_pairing_days": 2, "min_pairing_legs": 2,
-        "require_base_return": True, "strict_base_start": True,
     }
     rule["_base_reach"] = build_base_reach(flights, 0, rule)
     return flights, rule
@@ -69,10 +68,22 @@ class StrictRolloutTest(unittest.TestCase):
         self.assertTrue(pairings[0]["ends_at_base"])
         self.assertEqual(pairings[0]["true_start_airport"], 0)
 
-    def test_batch_rollout_rejects_strict_mode(self):
-        _, rule = strict_fixture()
-        with self.assertRaisesRegex(NotImplementedError, "strict hard mask"):
-            rollout.rollout_batch([], rule, None, None, None)
+    def test_batch_rollout_preserves_cpp_contract(self):
+        flights, rule = strict_fixture()
+        old_state_to_vec = rollout.state_to_vec
+        old_gap_bias = rollout.flight_gap_bias
+        rollout.state_to_vec = lambda *args, **kwargs: torch.zeros(78)
+        rollout.flight_gap_bias = lambda *args, **kwargs: torch.zeros(len(flights) + 2)
+        try:
+            results = rollout.rollout_batch(
+                flights, rule, None, GreedyLegalDecoder(), None, B=2, greedy=True
+            )
+        finally:
+            rollout.state_to_vec = old_state_to_vec
+            rollout.flight_gap_bias = old_gap_bias
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(len(items) == 1 for items in results))
+        self.assertTrue(all(items[0]["ends_at_base"] for items in results))
 
 
 if __name__ == "__main__":

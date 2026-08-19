@@ -13,9 +13,9 @@ from torch.distributions import Categorical
 
 import config
 import environment as _env_default
-from base_reach import build_base_reach
+from base_reach import build_base_reach, can_reach_base
 from turkish.environment_turkish import get_mask as _get_mask_turkish, step as _step_turkish
-from utils import state_to_vec, flight_gap_bias, flight_gap_bias_batch
+from utils import state_to_vec, flight_gap_bias
 
 get_mask, step = _env_default.get_mask, _env_default.step
 
@@ -45,30 +45,21 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 
     pairings = []
 
-    # ── Base-handling options ────────────────────────────────────────────────
-    # base_ids            : list of bases. Rotates to another base once the
-    #                        current base's unassigned departing legs are exhausted.
-    # strict_base_start   : once base-departing legs are all exhausted, end
-    #                        the rollout instead of starting a new pairing
-    #                        from an arbitrary airport (blocks pairings with no base at all).
-    # require_base_return : hard-mask base return (handled in environment.get_mask, Eq. 6).
+    # 모든 pairing은 허용 base에서 시작하고 해당 pairing의 base로 복귀해야 함.
     all_bases      = list(constraint.get("base_ids") or [constraint.get("base_airport", 0)])
-    strict_start   = bool(constraint.get("strict_base_start", False))
-    require_return = bool(constraint.get("require_base_return", False))
     min_rest         = constraint.get("min_rest", 10.0)
     min_pairing_legs = constraint.get("min_pairing_legs", 2)
 
     _reach_cache = {}
-    if require_return and constraint.get("_base_reach") is not None:
+    if constraint.get("_base_reach") is not None:
         # 호출부가 계산한 현재 base의 reachability를 재사용해 rollout별 중복 계산을 막음.
         _reach_cache[constraint.get("base_airport", 0)] = constraint["_base_reach"]
 
     def constraint_for(base):
         c = {**constraint, "base_airport": base}
-        if require_return:
-            if base not in _reach_cache:
-                _reach_cache[base] = build_base_reach(flights, base, constraint)
-            c["_base_reach"] = _reach_cache[base]
+        if base not in _reach_cache:
+            _reach_cache[base] = build_base_reach(flights, base, c)
+        c["_base_reach"] = _reach_cache[base]
         return c
 
     bad_starters = set()
@@ -206,7 +197,11 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         startable = [f for f in unassigned if f["id"] not in bad_starters]
         best = None
         for b in [episode_base] + [x for x in all_bases if x != episode_base]:
-            cands = [f for f in startable if f["origin"] == b]
+            c_b = constraint_for(b)
+            cands = [f for f in startable if f["origin"] == b and can_reach_base(
+                c_b["_base_reach"], f, f["dep_time"], c_b["max_pairing_days"],
+                duty_period=0, max_duty_periods=c_b["max_duty_periods"],
+            )]
             if not cands:
                 continue
             f = min(cands, key=lambda f: f["dep_time"])
@@ -216,13 +211,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
                 best = (b, f)
         if best is not None:
             return best
-        if strict_start:
-            return None, None
-        if not startable:
-            return None, None
-        f = min(startable, key=lambda f: f["dep_time"])
-        # legacy 재시작에서도 constraint 기준 base와 실제 출발 공항을 일치시킴.
-        return f["origin"], f
+        return None, None
 
     def begin_pairing():
         nonlocal state, episode_base, cur_c
@@ -265,7 +254,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         mask      = torch.tensor(mask_list, dtype=torch.float32).to(dev)
 
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
-            if require_return and state["current_airport"] != episode_base:
+            if state["current_airport"] != episode_base:
                 salvage_doomed()
             else:
                 flush_pairing(is_forced=any(not v for v in assigned.values()))
@@ -321,143 +310,15 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 
 def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                   greedy=False, device=None):
-    """Run B rollouts concurrently, using one batched decoder call per step."""
-    if constraint.get("require_base_return"):
-        # 배치 경로는 base 회전과 salvage를 지원하지 않아 strict 요청을 명시적으로 차단함.
-        raise NotImplementedError(
-            "rollout_batch는 strict hard mask를 지원하지 않습니다. "
-            "rollout_with_pairings 기반 경로를 사용하세요."
+    """CPP legality가 검증된 single rollout을 B회 실행해 동일한 반환 형식을 제공함."""
+    # 벡터화보다 correctness를 우선하며, 이후 동일 lifecycle을 보존한 최적화로 교체 가능함.
+    return [
+        rollout_with_pairings(
+            flights, constraint, encoder, decoder, encoded,
+            greedy=greedy, device=device,
         )
-    dev = device or torch.device("cpu")
-    n_flights    = len(flights)
-    episode_base = constraint.get("base_airport", 0)
-    flight_by_id = {f["id"]: f for f in flights}
-
-    assigned    = [{f["id"]: False for f in flights} for _ in range(B)]
-    states      = [None] * B
-    cur_legs    = [[] for _ in range(B)]
-    pair_dep    = [None] * B
-    pair_fly    = [0.0] * B
-    pair_arr    = [0.0] * B
-    pair_rest   = [0.0] * B
-    pair_duties = [1] * B   # number of duties in the current pairing
-    pairings    = [[] for _ in range(B)]
-    done        = [False] * B
-
-    def flush_env(i, forced=False):
-        if not cur_legs[i] or pair_dep[i] is None:
-            return
-        elapsed = pair_arr[i] - pair_dep[i]
-        fly     = pair_fly[i]
-        n_legs  = len(cur_legs[i])
-        dead    = max(elapsed - fly - pair_rest[i], 0.0)
-        cost    = (dead
-                   - config.IP_LEG_BONUS * max(n_legs - 1, 0)
-                   + (config.IP_DEADHEAD_PENALTY if forced else 0.0)
-                   + config.IP_PAIRING_FIXED_COST)
-        ends_at_base = (flight_by_id[cur_legs[i][0]]["origin"] == episode_base
-                        and flight_by_id[cur_legs[i][-1]]["dest"] == episode_base)
-        pairings[i].append({"legs": list(cur_legs[i]), "fly": fly, "elapsed": elapsed,
-                             "dead_time": dead, "cost": cost, "is_deadhead": forced,
-                             "n_legs": n_legs, "n_duties": pair_duties[i],
-                             "ends_at_base": ends_at_base})
-
-    def start_env(i, f):
-        assigned[i][f["id"]] = True
-        cur_legs[i]    = [f["id"]]
-        pair_dep[i]    = f["dep_time"]
-        pair_fly[i]    = f["arr_time"] - f["dep_time"]
-        pair_arr[i]    = f["arr_time"]
-        pair_rest[i]   = 0.0
-        pair_duties[i] = 1
-        states[i] = {
-            "current_airport":    f["dest"],
-            "current_time":       f["arr_time"],
-            "duty_time":          f["arr_time"] - f["dep_time"],
-            "duty_start_time":    f["dep_time"],
-            "legs":               1,
-            "remaining":          sum(1 for v in assigned[i].values() if not v),
-            "pairing_start":      False,
-            "duty_period":        0,
-            "pairing_start_time": f["dep_time"],
-            "is_resting":         False,
-            "rest_end_time":      None,
-            "base_airport":       episode_base,
-        }
-
-    base_fs = [f for f in flights if f["origin"] == episode_base]
-    first   = sorted(base_fs or flights, key=lambda f: f["dep_time"])[0]
-    for i in range(B):
-        start_env(i, first)
-
-    for _ in range(n_flights * 6):
-        active = [i for i in range(B) if not done[i]]
-        if not active:
-            break
-
-        normal, zero_mask = [], []
-        for i in active:
-            ml = get_mask(states[i], flights, assigned[i], constraint)
-            if sum(ml[:-2]) == 0 and ml[-2] == 0 and ml[-1] == 0:
-                zero_mask.append(i)
-            else:
-                normal.append((i, ml))
-
-        for i in zero_mask:
-            unassigned = [f for f in flights if not assigned[i][f["id"]]]
-            if not unassigned:
-                flush_env(i)
-                done[i] = True
-                continue
-            flush_env(i, forced=True)
-            bf = [f for f in unassigned if f["origin"] == episode_base]
-            start_env(i, sorted(bf or unassigned, key=lambda f: f["dep_time"])[0])
-
-        if not normal:
-            continue
-
-        idxs   = [i for i, _ in normal]
-        masks_t = torch.stack([
-            torch.tensor(ml, dtype=torch.float32) for _, ml in normal
-        ]).to(dev)
-        _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
-        svecs_t = torch.stack([
-            state_to_vec(states[i], encoder, constraint, device=dev, include_total_legs=_incl_total) for i in idxs
-        ]).to(dev)
-        gap_bias_t = flight_gap_bias_batch([states[i] for i in idxs], flights, constraint, device=dev)
-
-        probs = decoder(encoded, svecs_t, masks_t, gap_bias=gap_bias_t)
-        if greedy:
-            actions = probs.argmax(dim=-1).cpu().tolist()
-        else:
-            actions = Categorical(probs).sample().cpu().tolist()
-
-        for action, i in zip(actions, idxs):
-            if action == n_flights:            # EndDuty
-                pair_rest[i]   += constraint.get("min_rest", 10.0)
-                pair_duties[i] += 1
-                states[i], _, _ = step(states[i], action, flights, assigned[i], constraint)
-
-            elif action == n_flights + 1:      # EndPairing
-                flush_env(i)
-                unassigned = [f for f in flights if not assigned[i][f["id"]]]
-                if not unassigned:
-                    done[i] = True
-                    continue
-                bf = [f for f in unassigned if f["origin"] == episode_base]
-                start_env(i, sorted(bf or unassigned, key=lambda f: f["dep_time"])[0])
-
-            else:                              # select a flight leg
-                f = flights[action]
-                cur_legs[i].append(f["id"])
-                pair_fly[i] += f["arr_time"] - f["dep_time"]
-                pair_arr[i]  = f["arr_time"]
-                states[i], _, done_flag = step(states[i], action, flights, assigned[i], constraint)
-                if done_flag:
-                    flush_env(i)
-                    done[i] = True
-
-    return pairings
+        for _ in range(B)
+    ]
 
 
 def collect_pool(flights, constraint, encoder, decoder, encoded,
