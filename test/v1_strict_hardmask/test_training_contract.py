@@ -1,5 +1,6 @@
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,12 @@ class StrictTrainingTest(unittest.TestCase):
         self.assertTrue(prepared["require_base_return"])
         self.assertTrue(prepared["strict_base_start"])
         self.assertIn("_base_reach", prepared)
+
+    def test_prepared_constraint_reuses_reachability(self):
+        prepared = train._prepare_training_constraint(self.flights, rule())
+        with patch.object(train, "build_base_reach", side_effect=AssertionError("rebuild")):
+            reused = train._prepare_training_constraint(self.flights, prepared)
+        self.assertIs(reused["_base_reach"], prepared["_base_reach"])
 
     def test_explicit_legacy_mode_is_preserved(self):
         prepared = train._prepare_training_constraint(

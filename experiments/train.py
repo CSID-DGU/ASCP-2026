@@ -61,7 +61,11 @@ def _prepare_training_constraint(flights, constraint):
     c["require_base_return"] = True
     c["strict_base_start"] = True
     base = c.get("base_airport", 0)
+    if c.get("_base_reach") is not None and c.get("_base_reach_base") == base:
+        return c
+    # 같은 episode와 base에서 계산한 reachability는 sample/greedy rollout이 공유함.
     c["_base_reach"] = build_base_reach(flights, base, c)
+    c["_base_reach_base"] = base
     return c
 
 
@@ -369,6 +373,7 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
 
 
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
+    constraint = _prepare_training_constraint(flights, constraint)
     # Exclude pairings that do not return to base -- the restricted LP of
     # Eq. (2) is defined over Omega(c), and its duals mu^cov/nu^exc (Eq. 9)
     # should not be computed from infeasible columns.
@@ -548,6 +553,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
 
         base_c   = constraint_sampler() if constraint_sampler else constraint
         c        = {**base_c, "base_airport": base_airport}
+        c        = _prepare_training_constraint(flights, c)
         c_tensor = constraint_to_tensor(c, device=DEVICE)
 
         with torch.no_grad():
@@ -680,6 +686,7 @@ def run_curriculum_stage(
             c = constraint_sampler() if constraint_sampler else constraint_override
 
         c = {**c, "base_airport": base_airport}  # 에피소드별 base 주입
+        c = _prepare_training_constraint(flights, c)
         
         # 선택된 복원/샘플링 제약조건 사전(c)을 기반으로 정확히 텐서를 빌드하여 FiLM 정렬 유지
         c_tensor = constraint_to_tensor(c, device=DEVICE)
