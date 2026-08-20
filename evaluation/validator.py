@@ -127,6 +127,15 @@ def _check_connections_and_rest(duties, flights, constraint, violations):
                 violations.append(MAX_CONNECTION_FAILURE)
 
     # duty 간 (overnight) 공항 연속성 + rest 시간
+    #
+    # TODO(확인 필요): 지금 구조에서 MIN_REST_FAILURE는 사실상 발생할 수 없는 죽은
+    # 코드임 -- _split_into_duties()가 "gap >= min_rest"인 지점에서만 duty를 나누기
+    # 때문에 여기서 구한 duty 간 rest는 나누는 조건 자체가 이미 min_rest 이상이라서
+    # 항상 min_rest를 만족함 max_conn을 넘었지만 min_rest에는 못 미치는 "dead zone"
+    # gap은 같은 duty로 묶여서 MAX_CONNECTION_FAILURE로만 잡힌다(의미상 맞을 수도, 아닐
+    # 수도 있음). flat leg 목록만으로는 "duty 내 connection이었는지 실패한 rest였는지"를
+    # 구조적으로 구분할 방법이 없어서 -- pairing_record가 duty 경계를 명시적으로 주는
+    # 형태가 되면 그때 구현 지금은 TODO로 남기고 fixture도 안 만듦.
     for i in range(1, len(duties)):
         prev_last = flights[duties[i - 1][-1]]
         curr_first = flights[duties[i][0]]
