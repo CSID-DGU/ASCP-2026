@@ -14,9 +14,38 @@ constraint dict 포맷은 RL/config.py::DEFAULT_CONSTRAINTS와 동일한 키를 
 # 우선 진행함 -- RL/ 쪽(mask)에서도 이 코드가 필요해지면 공통 모듈로 옮기는 게 나을 수 있음
 """
 
+import hashlib
+import json
 from typing import Dict, List, Optional
 
 import config as _rl_config  # RL/ 이 sys.path에 있다고 가정 (evaluate_ip.py와 동일 관례)
+
+
+# C3 "ASCP 결과 JSON/CSV에 validator version과 constraint hash 기록",
+# 공통 column schema의 validator_version/constraint_hash와 이름 맞춤.
+# 검증 로직(violation code 종류나 판정 기준)이 바뀌면 이 값을 올려서, 과거에
+# 저장된 결과가 어느 버전 로직으로 검증됐는지 구분할 수 있게 한다.
+VALIDATOR_VERSION = "0.1.0"
+
+
+def constraint_hash(constraint: Optional[Dict]) -> Optional[str]:
+    """constraint dict 내용 기반 짧은 해시 -- "이 결과가 어떤 constraint로 검증됐는지"
+    provenance를 남기기 위함(v1.md C3, v2.md column schema). set 같은
+    JSON-직렬화 안 되는 값(예: allowed_return_bases)은 정렬된 리스트로 바꿔서
+    항상 같은 constraint에 대해 같은 해시가 나오게 한다.
+    """
+    if constraint is None:
+        return None
+
+    def _normalize(v):
+        if isinstance(v, (set, frozenset)):
+            return sorted(v)
+        if isinstance(v, dict):
+            return {k: _normalize(vv) for k, vv in sorted(v.items())}
+        return v
+
+    blob = json.dumps(_normalize(constraint), sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
 # ── Violation codes (공통 violation code 14개 그대로) ──────────
@@ -181,15 +210,18 @@ def validate_pairing(pairing_record: Dict, flights: Dict[int, Dict], constraint:
 
     반환: {"is_valid", "violation_codes", "invalid_flight_ids", "duplicate_flight_ids",
            "start_base", "end_airport", "n_duties"}  (v1.md §2 "Validator 결과 최소 필드")
+           + "validator_version", "constraint_hash" (v1.md C3 provenance 요구사항)
     """
     legs = pairing_record.get("legs", [])
     violations: List[str] = []
+    c_hash = constraint_hash(constraint)
 
     if not legs:
         return {
             "is_valid": False, "violation_codes": [UNKNOWN_FLIGHT],
             "invalid_flight_ids": [], "duplicate_flight_ids": [],
             "start_base": None, "end_airport": None, "n_duties": 0,
+            "validator_version": VALIDATOR_VERSION, "constraint_hash": c_hash,
         }
 
     ok = _check_time_order_and_unknown(legs, flights, violations)
@@ -217,6 +249,8 @@ def validate_pairing(pairing_record: Dict, flights: Dict[int, Dict], constraint:
         "start_base":          start_base,
         "end_airport":         end_airport,
         "n_duties":            n_duties,
+        "validator_version":   VALIDATOR_VERSION,
+        "constraint_hash":     c_hash,
     }
 
 

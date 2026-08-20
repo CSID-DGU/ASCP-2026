@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "evaluation"))
 
 from validator import (  # noqa: E402
     validate_pairing,
+    constraint_hash,
+    VALIDATOR_VERSION,
     UNKNOWN_FLIGHT,
     DUPLICATE_FLIGHT,
     INVALID_BASE_START,
@@ -57,6 +59,24 @@ def test_valid_pairing_passes():
     assert result["start_base"] == BASE
     assert result["end_airport"] == BASE
     assert result["n_duties"] == 1
+
+
+def test_provenance_fields_present_and_stable():
+    result = validate_pairing({"legs": [0, 1]}, FLIGHTS_VALID, CONSTRAINT)
+    assert result["validator_version"] == VALIDATOR_VERSION
+    assert result["constraint_hash"] == constraint_hash(CONSTRAINT)
+
+    # 같은 내용의 constraint면(딕셔너리 순서가 달라도) 같은 해시가 나와야 함
+    reordered = {"min_pairing_legs": 2, **CONSTRAINT}
+    assert constraint_hash(CONSTRAINT) == constraint_hash(reordered)
+
+    # constraint가 다르면 해시도 달라야 함
+    different = {**CONSTRAINT, "max_duty": 10.0}
+    assert constraint_hash(CONSTRAINT) != constraint_hash(different)
+
+    # constraint에 set(allowed_return_bases)이 섞여 있어도 안정적으로 해시돼야 함
+    with_set = {**CONSTRAINT, "allowed_return_bases": {BASE, OTHER}}
+    assert constraint_hash(with_set) == constraint_hash({**CONSTRAINT, "allowed_return_bases": {OTHER, BASE}})
 
 
 def test_non_base_return_is_caught():
@@ -206,6 +226,7 @@ def test_time_order_failure_is_caught():
 if __name__ == "__main__":
     test_fns = [
         test_valid_pairing_passes,
+        test_provenance_fields_present_and_stable,
         test_non_base_return_is_caught,
         test_cross_base_return_fails_by_default,
         test_cross_base_return_allowed_when_opted_in,

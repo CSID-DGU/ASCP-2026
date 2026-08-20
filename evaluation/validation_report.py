@@ -14,7 +14,12 @@ cost/dead_time 값을 그대로 믿지 않고, flights 데이터로부터 독립
 
 from typing import Dict, List, Optional, Tuple
 
-from validator import validate_pairing, find_cross_pairing_duplicates, _split_into_duties
+from validator import (
+    validate_pairing,
+    find_cross_pairing_duplicates,
+    _split_into_duties,
+    VALIDATOR_VERSION,
+)
 
 
 # pairing_record.source_type 값 -> 이 report의 집계 bucket 이름
@@ -114,6 +119,10 @@ def _aggregate(
     report["cross_bucket_duplicate_flight_ids"] = find_cross_pairing_duplicates(all_pairings)
     # policy_direct만 진짜 generator coverage로 쓴다는 원칙을 결과에도 명시.
     report["_direct_coverage_source"] = "policy_direct"
+    # C3 provenance 요구사항 -- 이 report가 어느 validator 버전으로 만들어졌는지.
+    # (constraint_hash는 pairing마다 다를 수 있어 여기(전체 report)엔 안 두고,
+    # 필요하면 validate_pairing() 개별 호출 결과의 constraint_hash를 참고.)
+    report["_validator_version"] = VALIDATOR_VERSION
     return report
 
 
