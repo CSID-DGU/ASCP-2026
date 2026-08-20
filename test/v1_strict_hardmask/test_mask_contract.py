@@ -126,5 +126,32 @@ class StrictMaskContractTest(unittest.TestCase):
         with self.assertRaises(IndexError):
             environment.step(make_state(), 2, [], {}, rule)
 
+    def test_turkish_cross_base_return_is_legal(self):
+        flights = [
+            {"id": 0, "origin": 0, "dest": 2, "dep_time": 1.0, "arr_time": 2.0},
+            {"id": 1, "origin": 2, "dest": 1, "dep_time": 3.0, "arr_time": 4.0},
+        ]
+        rule = make_constraint(
+            base_airport=0, base_ids=[0, 1], allow_cross_base_return=True
+        )
+        rule["_base_reaches"] = {
+            base: build_base_reach(flights, base, rule) for base in rule["base_ids"]
+        }
+        rule["_base_reach"] = rule["_base_reaches"][0]
+
+        start_mask = environment_turkish.get_mask(
+            make_state(), flights, {0: False, 1: False}, rule
+        )
+        self.assertEqual(start_mask[0], 1)
+
+        end_mask = environment_turkish.get_mask(
+            make_state(
+                current_airport=1, current_time=4.0, legs=2,
+                total_legs=2, pairing_start=False
+            ),
+            flights, {0: True, 1: True}, rule,
+        )
+        self.assertEqual(end_mask[-1], 1)
+
 if __name__ == "__main__":
     unittest.main()

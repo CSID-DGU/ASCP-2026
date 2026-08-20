@@ -129,3 +129,25 @@ def can_reach_base(reach, flight, pairing_start_time, max_pairing_days,
         if duty_period + c > max_duty_periods:
             return False
     return True
+
+def build_base_reaches(flights, base_airports, constraint):
+    """허용된 각 home base에 대한 reachability를 구성함."""
+    return {
+        base: build_base_reach(flights, base, constraint)
+        for base in dict.fromkeys(base_airports)
+    }
+
+
+def can_reach_any_base(reaches, flight, pairing_start_time, max_pairing_days,
+                       duty_period=None, max_duty_periods=None):
+    """동일한 resource budget으로 허용 home base 중 하나에 복귀 가능한지 확인함."""
+    if not reaches:
+        return False
+    return any(
+        can_reach_base(
+            reach, flight, pairing_start_time, max_pairing_days,
+            duty_period=duty_period,
+            max_duty_periods=max_duty_periods,
+        )
+        for reach in reaches.values()
+    )

@@ -20,10 +20,10 @@ class CppEvaluationContractTest(unittest.TestCase):
         self.assertNotIn("require_base_return", params)
 
 
-    def test_turkish_has_no_cross_base_pairing_exception(self):
+    def test_turkish_cross_base_pairing_exception_is_preserved(self):
         source = inspect.getsource(evaluate_ip.collect_pool_full)
-        self.assertNotIn("HB1->HB2", source)
-        self.assertIn("return p[\"ends_at_base\"]", source)
+        self.assertIn("HB1→HB2", source)
+        self.assertIn("last[\"dest\"] in base_id_set", source)
 
     def test_incomplete_coverage_fails_instead_of_reporting_cpp_solution(self):
         source = inspect.getsource(evaluate_ip.evaluate_full)

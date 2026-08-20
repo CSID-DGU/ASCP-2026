@@ -48,13 +48,13 @@ _GET_CONSTRAINT = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints_hb,  # same-base CPP contract
+    "turkish": get_turkish_constraints_hb,  # HB1/HB2 cross-base return contract
 }
 from model import FlightEncoder, PointerDecoder
 from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings, set_environment
-from base_reach import build_base_reach
+from base_reach import build_base_reaches
 import config
 
 
@@ -275,8 +275,8 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
     included in at least one rollout (guaranteeing 100% coverage
     opportunity) while preserving the same connectivity density seen during training.
 
-    Turkish도 rollout마다 선택된 episode base에서 시작해 동일 base로 복귀함.
-    base_ids는 chunk 구성과 episode base 선택 후보로만 사용함.
+    Turkish는 선택된 HB1/HB2 중 하나에서 시작하고 두 home base 중 어느 쪽으로든 복귀 가능함.
+    일반 항공사는 pairing이 출발한 동일 base로 복귀함.
     """
     pool = {}
     covered_global = set()
@@ -314,16 +314,28 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         for c_idx, chunk in enumerate(chunks):
             for local_id, f in enumerate(chunk):
                 f["local_id"] = local_id
-            def _pairing_valid(p):
-                # 항공사와 무관하게 출발한 동일 base로 복귀한 pairing만 사용함.
-                return p["ends_at_base"]
+            chunk_by_gid = {f["global_id"]: f for f in chunk}
+
+            def _pairing_valid(p, _chunk_by_gid=chunk_by_gid):
+                if airline != "turkish":
+                    return p["ends_at_base"]
+                # Turkish는 HB1→HB2와 HB2→HB1 교차 home-base 복귀도 유효함.
+                first = _chunk_by_gid.get(p["legs"][0])
+                last = _chunk_by_gid.get(p["legs"][-1])
+                return (
+                    first is not None and last is not None
+                    and first["origin"] in base_id_set
+                    and last["dest"] in base_id_set
+                )
 
             base_id = random.choice(base_ids)
             c_b = {**constraint, "base_airport": base_id}
             c_b["base_ids"] = base_ids
             # local ID 기준 reachability를 모든 CPP rollout에 필수로 구성함.
             _local_flights = [{**f, "id": f["local_id"]} for f in chunk]
-            c_b["_base_reach"] = build_base_reach(_local_flights, base_id, c_b)
+            return_bases = base_ids if c_b.get("allow_cross_base_return") else [base_id]
+            c_b["_base_reaches"] = build_base_reaches(_local_flights, return_bases, c_b)
+            c_b["_base_reach"] = c_b["_base_reaches"][base_id]
 
             for _ in range(n_rollouts_per_chunk):
                 try:
@@ -507,8 +519,7 @@ def evaluate_full(
 
     print("\n[base-return] CPP hard constraint ON (includes reachability pruning)", flush=True)
     if airline == "turkish":
-        print("  [note] Turkish도 pairing별 출발 base로 복귀하는 same-base 조건을 적용합니다.",
-              flush=True)
+        print("  [note] Turkish는 HB1/HB2 교차 home-base 복귀를 허용합니다.", flush=True)
 
     print(f"\nCollecting pool (rollouts/chunk={n_rollouts_per_chunk}, subset={subset_size})...", flush=True)
     with torch.no_grad():

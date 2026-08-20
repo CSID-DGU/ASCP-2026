@@ -102,5 +102,42 @@ class StrictRolloutTest(unittest.TestCase):
         )
         self.assertEqual(pairings, [])
 
+    def test_turkish_rollout_allows_cross_base_return(self):
+        flights = [
+            {"id": 0, "origin": 0, "dest": 2, "dep_time": 1.0, "arr_time": 2.0},
+            {"id": 1, "origin": 2, "dest": 1, "dep_time": 3.0, "arr_time": 4.0},
+        ]
+        rule = {
+            "base_airport": 0, "base_ids": [0, 1],
+            "allow_cross_base_return": True,
+            "min_conn": 0.5, "max_conn": 4.0, "min_rest": 8.0,
+            "max_duty": 14.0, "max_legs": 4, "max_duty_periods": 2,
+            "max_pairing_days": 2, "min_pairing_legs": 2,
+        }
+        rule["_base_reaches"] = {
+            base: build_base_reach(flights, base, rule) for base in rule["base_ids"]
+        }
+        rule["_base_reach"] = rule["_base_reaches"][0]
+
+        old_state_to_vec = rollout.state_to_vec
+        old_gap_bias = rollout.flight_gap_bias
+        rollout.state_to_vec = lambda *args, **kwargs: torch.zeros(78)
+        rollout.flight_gap_bias = lambda *args, **kwargs: torch.zeros(len(flights) + 2)
+        rollout.set_environment("turkish")
+        try:
+            pairings = rollout.rollout_with_pairings(
+                flights, rule, None, GreedyLegalDecoder(), None, greedy=True
+            )
+        finally:
+            rollout.set_environment("delta")
+            rollout.state_to_vec = old_state_to_vec
+            rollout.flight_gap_bias = old_gap_bias
+
+        self.assertEqual(len(pairings), 1)
+        self.assertEqual(pairings[0]["legs"], [0, 1])
+        self.assertEqual(pairings[0]["true_start_airport"], 0)
+        self.assertEqual(pairings[0]["true_end_airport"], 1)
+        self.assertTrue(pairings[0]["ends_at_base"])
+
 if __name__ == "__main__":
     unittest.main()

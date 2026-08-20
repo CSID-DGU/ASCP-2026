@@ -1,6 +1,6 @@
 import numpy as np
 import config
-from base_reach import can_reach_base
+from base_reach import can_reach_any_base
 
 # flight dict keys: "origin", "dest", "dep_time", "arr_time", "id"
 
@@ -40,13 +40,14 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     duty_start_time  = state.get("duty_start_time", state["current_time"])
     pairing_start_time = state.get("pairing_start_time", state["current_time"])
 
-    # Turkish pairing도 첫 flight를 episode에 지정된 base에서 시작함.
+    # 첫 flight는 episode base에서 시작하되 HB1/HB2 중 어느 home base로든 복귀 가능함.
     base_ap = c["base_airport"]
-    # Turkish CPP도 episode의 출발 base로 복귀 가능한 action만 허용함.
-    base_reach = c.get("_base_reach")
-    if base_reach is None:
-        # CPP 실행에는 base 복귀 가능성 자료가 필수이며 누락은 구성 오류로 처리함.
-        raise ValueError("CPP constraint에는 _base_reach가 필요합니다.")
+    base_id_set = set(c.get("base_ids") or [base_ap])
+    base_reaches = c.get("_base_reaches")
+    if base_reaches is None and c.get("_base_reach") is not None:
+        base_reaches = {base_ap: c["_base_reach"]}
+    if not base_reaches:
+        raise ValueError("Turkish CPP constraint에는 _base_reaches가 필요합니다.")
     max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
     for i, f in enumerate(flights):
@@ -95,8 +96,8 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         # 5. Base 복귀 가능성
         if valid:
             ps_time = f["dep_time"] if pairing_start else pairing_start_time
-            if not can_reach_base(
-                base_reach, f, ps_time, max_pd,
+            if not can_reach_any_base(
+                base_reaches, f, ps_time, max_pd,
                 duty_period=duty_period, max_duty_periods=max_duty_periods,
             ):
                 valid = False
@@ -123,8 +124,8 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         state.get("total_legs", 0) >= min_pairing_legs
         and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
-    # CPP pairing은 episode의 출발 base에서만 종료 가능함.
-    if state["current_airport"] != base_ap:
+    # Turkish pairing은 HB1/HB2 중 어느 home base에서도 종료 가능함.
+    if state["current_airport"] not in base_id_set:
         can_end_pairing = False
     if can_end_pairing:
         mask[config.END_PAIRING] = 1
@@ -179,6 +180,7 @@ def step(state, action, flights, assigned, constraint=None):
         p_cost = c.get("pairing_cost", config.DEFAULT_CONSTRAINTS["pairing_cost"])
         # constraint["base_airport"] is injected per episode
         base = c["base_airport"]
+        base_id_set = set(c.get("base_ids") or [base])
 
         total_legs = state.get("total_legs", 0)
         reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
@@ -191,9 +193,9 @@ def step(state, action, flights, assigned, constraint=None):
             # All flights covered -> end the episode
             return state, reward, True
         # Unassigned flights remain -> start a new pairing
-        # 다음 pairing도 현재 episode에 지정된 동일 base에서 시작함.
-        restart_base = base
-        base_unassigned = [f for f in unassigned if f["origin"] == base]
+        # 도착한 Turkish home base에서 다음 pairing을 시작함.
+        restart_base = state["current_airport"] if state["current_airport"] in base_id_set else base
+        base_unassigned = [f for f in unassigned if f["origin"] == restart_base]
         next_time = min(f["dep_time"] for f in base_unassigned) if base_unassigned else min(f["dep_time"] for f in unassigned)
         next_state = {
             **state,

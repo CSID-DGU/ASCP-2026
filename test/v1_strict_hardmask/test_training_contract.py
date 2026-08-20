@@ -40,7 +40,7 @@ class StrictTrainingTest(unittest.TestCase):
 
     def test_prepared_constraint_reuses_reachability(self):
         prepared = train._prepare_cpp_constraint(self.flights, rule())
-        with patch.object(train, "build_base_reach", side_effect=AssertionError("rebuild")):
+        with patch.object(train, "build_base_reaches", side_effect=AssertionError("rebuild")):
             reused = train._prepare_cpp_constraint(self.flights, prepared)
         self.assertIs(reused["_base_reach"], prepared["_base_reach"])
 
@@ -75,6 +75,21 @@ class StrictTrainingTest(unittest.TestCase):
         )
         self.assertEqual(pairings, [])
 
+
+    def test_turkish_constraint_builds_reachability_for_both_home_bases(self):
+        flights = [
+            {"id": 0, "origin": 0, "dest": 2, "dep_time": 1.0, "arr_time": 2.0},
+            {"id": 1, "origin": 2, "dest": 1, "dep_time": 3.0, "arr_time": 4.0},
+        ]
+        prepared = train._prepare_cpp_constraint(
+            flights,
+            rule(
+                base_airport=0, base_ids=[0, 1],
+                allow_cross_base_return=True,
+            ),
+        )
+        self.assertEqual(set(prepared["_base_reaches"]), {0, 1})
+        self.assertIs(prepared["_base_reach"], prepared["_base_reaches"][0])
 
 if __name__ == "__main__":
     unittest.main()

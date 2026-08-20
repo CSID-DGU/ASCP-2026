@@ -13,7 +13,7 @@ from torch.distributions import Categorical
 
 import config
 import environment as _env_default
-from base_reach import build_base_reach, can_reach_base
+from base_reach import build_base_reach, can_reach_any_base
 from turkish.environment_turkish import get_mask as _get_mask_turkish, step as _step_turkish
 from utils import state_to_vec, flight_gap_bias
 
@@ -22,7 +22,7 @@ get_mask, step = _env_default.get_mask, _env_default.step
 
 def set_environment(airline):
     """Switch to the get_mask/step implementation for the given airline
-    (Turkish에도 동일 base 복귀 계약 적용). Rebinds this module's
+    (Turkish는 HB1/HB2 교차 복귀 허용). Rebinds this module's
     get_mask/step globals, so all callers that reference them (e.g.
     collect_pool_full, rollout_subset_global) pick up the change immediately."""
     global get_mask, step
@@ -57,9 +57,12 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
 
     def constraint_for(base):
         c = {**constraint, "base_airport": base}
-        if base not in _reach_cache:
-            _reach_cache[base] = build_base_reach(flights, base, c)
+        return_bases = all_bases if c.get("allow_cross_base_return") else [base]
+        for target in return_bases:
+            if target not in _reach_cache:
+                _reach_cache[target] = build_base_reach(flights, target, c)
         c["_base_reach"] = _reach_cache[base]
+        c["_base_reaches"] = {target: _reach_cache[target] for target in return_bases}
         return c
 
     bad_starters = set()
@@ -84,9 +87,11 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         elapsed   = pairing_last_arr - pairing_dep
         fly       = pairing_fly
         n_legs    = len(current_legs)
-        # CPP column은 동일 base 복귀·최소 leg·최대 기간을 모두 만족할 때만 저장함.
-        if pairing_start_ap != flight_by_id[current_legs[-1]]["dest"]:
-            raise ValueError("base로 복귀하지 않은 pairing은 저장할 수 없습니다.")
+        # 일반 항공사는 동일 base, Turkish는 HB1/HB2 home-base 집합 복귀를 요구함.
+        allowed_returns = set(cur_c.get("base_ids") or [pairing_start_ap]) \
+            if cur_c.get("allow_cross_base_return") else {pairing_start_ap}
+        if flight_by_id[current_legs[-1]]["dest"] not in allowed_returns:
+            raise ValueError("허용 home base로 복귀하지 않은 pairing은 저장할 수 없습니다.")
         if n_legs < min_pairing_legs:
             raise ValueError("최소 leg 수를 충족하지 않은 pairing은 저장할 수 없습니다.")
         if elapsed / 24.0 > cur_c["max_pairing_days"]:
@@ -115,6 +120,7 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "inter_duty_excess": pairing_inter_excess,
             "ends_at_base":      ends_at_base,
             "true_start_airport": pairing_start_ap,
+            "true_end_airport":   flight_by_id[current_legs[-1]]["dest"],
         })
 
     def emit_prefix(recs, end_ap, start_ap):
@@ -163,14 +169,18 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         only the longest prefix ending at base as a valid pairing, and
         return the remaining tail legs to unassigned so other pairings can reuse them."""
         k = 0
+        prefix_end_ap = None
+        allowed_returns = set(cur_c.get("base_ids") or [episode_base]) \
+            if cur_c.get("allow_cross_base_return") else {episode_base}
         for i, r in enumerate(leg_recs):
             elapsed_days = (r["arr"] - leg_recs[0]["dep"]) / 24.0
-            if (r["dest"] == episode_base
+            if (r["dest"] in allowed_returns
                     and i + 1 >= min_pairing_legs
                     and elapsed_days <= cur_c["max_pairing_days"]):
                 k = i + 1
+                prefix_end_ap = r["dest"]
         if k > 0:
-            emit_prefix(leg_recs[:k], episode_base, pairing_start_ap)
+            emit_prefix(leg_recs[:k], prefix_end_ap, pairing_start_ap)
             tail = leg_recs[k:]
         else:
             tail = list(leg_recs)
@@ -205,8 +215,8 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         best = None
         for b in [episode_base] + [x for x in all_bases if x != episode_base]:
             c_b = constraint_for(b)
-            cands = [f for f in startable if f["origin"] == b and can_reach_base(
-                c_b["_base_reach"], f, f["dep_time"], c_b["max_pairing_days"],
+            cands = [f for f in startable if f["origin"] == b and can_reach_any_base(
+                c_b["_base_reaches"], f, f["dep_time"], c_b["max_pairing_days"],
                 duty_period=0, max_duty_periods=c_b["max_duty_periods"],
             )]
             if not cands:

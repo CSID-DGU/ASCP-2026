@@ -36,10 +36,10 @@ _CONSTRAINT_FN = {
     "delta":   get_delta_constraints,
     "alaska":  get_alaska_constraints,
     "jetblue": get_jetblue_constraints,
-    "turkish": get_turkish_constraints_hb,  # Turkish 규정값 사용, CPP 동일 base 복귀 계약 유지
+    "turkish": get_turkish_constraints_hb,  # Turkish 규정값 및 HB1/HB2 교차 복귀 유지
 }
 from state import init_state
-from base_reach import build_base_reach, can_reach_base
+from base_reach import build_base_reaches, can_reach_any_base
 from utils import flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias, set_skip_decoder_constraint
 import config
 
@@ -53,14 +53,18 @@ def _set_device(device_str: str):
 
 
 def _prepare_cpp_constraint(flights, constraint):
-    """모든 학습 episode에 CPP base 복귀 조건과 reachability를 구성함."""
+    """일반 base 또는 Turkish HB1/HB2 집합에 대한 reachability를 구성함."""
     c = dict(constraint)
     base = c["base_airport"]
-    if c.get("_base_reach") is not None and c.get("_base_reach_base") == base:
+    return_bases = list(c.get("base_ids") or [base]) \
+        if c.get("allow_cross_base_return") else [base]
+    cache_key = tuple(return_bases)
+    if c.get("_base_reaches") is not None and c.get("_base_reach_bases") == cache_key:
         return c
-    # 같은 episode와 base에서 계산한 reachability는 sample/greedy rollout이 공유함.
-    c["_base_reach"] = build_base_reach(flights, base, c)
+    c["_base_reaches"] = build_base_reaches(flights, return_bases, c)
+    c["_base_reach"] = c["_base_reaches"][base]
     c["_base_reach_base"] = base
+    c["_base_reach_bases"] = cache_key
     return c
 
 
@@ -184,10 +188,12 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             return
         elapsed   = pairing_last_arr - pairing_dep
         n_legs    = len(current_legs)
-        # dual pool에도 완결된 CPP pairing만 column으로 저장함.
+        # 일반 항공사는 동일 base, Turkish는 HB1/HB2 home-base 집합 복귀를 허용함.
+        allowed_returns = set(constraint.get("base_ids") or [episode_base]) \
+            if constraint.get("allow_cross_base_return") else {episode_base}
         if flight_by_id[current_legs[0]]["origin"] != episode_base \
-                or flight_by_id[current_legs[-1]]["dest"] != episode_base:
-            raise ValueError("base로 복귀하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
+                or flight_by_id[current_legs[-1]]["dest"] not in allowed_returns:
+            raise ValueError("허용 home base로 복귀하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
         if n_legs < constraint["min_pairing_legs"]:
             raise ValueError("최소 leg 수를 충족하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
         if elapsed / 24.0 > constraint["max_pairing_days"]:
@@ -219,8 +225,8 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
     def base_start_candidates(candidates):
         base_flights = [f for f in candidates if f["origin"] == episode_base]
         # 수동 시작 flight도 decoder와 같은 복귀 가능성 검사를 통과해야 함.
-        return [f for f in base_flights if can_reach_base(
-            constraint["_base_reach"], f, f["dep_time"],
+        return [f for f in base_flights if can_reach_any_base(
+            constraint["_base_reaches"], f, f["dep_time"],
             constraint["max_pairing_days"], duty_period=0,
             max_duty_periods=constraint["max_duty_periods"],
         )]
@@ -715,7 +721,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
         n_airports = len(airport_map)
         print(f"airports: {n_airports}개, airline: {config.AIRLINE}, bases: {airline_bases}")
         if config.AIRLINE == "turkish":
-            # 두 Istanbul base 중 episode base를 선택하되 pairing은 동일 base로 복귀함
+            # 두 Istanbul base 중 하나에서 시작하고 HB1/HB2 어느 쪽으로든 복귀함
             _CONSTRAINT_FN["turkish"] = lambda b, _hb=base_ids: get_turkish_constraints_hb(b, base_ids=_hb)
 
     encoder = FlightEncoder(
