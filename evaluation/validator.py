@@ -89,8 +89,10 @@ def _check_base(legs, flights, constraint, violations):
     # 주어졌을 때만 이 예외를 적용한다 -- base_ids만으로는(Delta도 여러 base를 갖고
     # 있어서) 항공사를 구분할 수 없으므로 반드시 별도 필드로 명시적으로 opt-in해야 함
     #
-    # TODO(추후 확인 필요): `allowed_return_bases` 필드명·주입 위치(Turkish constraint
-    # 모듈 쪽에서 채워줘야 함) 확정 필요 -- 지금은 이 이름으로 가정하고 구현함.
+    # "Turkish HB1/HB2를 allowed-return-base 규칙으로 표현"하라고 이미
+    # 합의돼 있음 -- 이 접근 자체는 확정. TODO로 남는 건 두 가지:
+    # (1) 실제 필드명이 `allowed_return_bases`가 맞는지, (2) Turkish constraint
+    # 모듈(RL/turkish/constraints_turkish.py 등)이 실제로 이 필드를 채워줄지.
     base = constraint.get("base_airport")
     allowed_return_bases = constraint.get("allowed_return_bases")
     first, last = flights[legs[0]], flights[legs[-1]]
