@@ -10,12 +10,15 @@ instead computes FiLM.mlp(constraint) -> gamma, beta directly per airline and me
 how far each deviates from identity (gamma=1, beta=0), and how much airlines differ
 from one another.
 """
+import os
 import sys
 import argparse
 
 import torch
 
-sys.path.insert(0, "RL")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder
 from constraints import (

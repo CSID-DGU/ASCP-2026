@@ -23,6 +23,6 @@ test_stage_episode_stops_instead_of_arbitrary_restart (test_training_contract.St
 test_training_constraint_always_builds_cpp_reachability (test_training_contract.StrictTrainingTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 23 tests in 0.033s
+Ran 23 tests in 0.011s
 
 OK

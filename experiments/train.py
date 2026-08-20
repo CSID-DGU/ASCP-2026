@@ -40,7 +40,7 @@ _CONSTRAINT_FN = {
 }
 from state import init_state
 from base_reach import build_base_reach, can_reach_base
-from utils import flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias
+from utils import flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias, set_skip_decoder_constraint
 import config
 
 DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
@@ -434,18 +434,13 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
-               constraint_sampler=None, init_best=float("inf")):
-    """Phase II: LP-dual-guided policy refinement (Algorithm 1).
-
-    Every config.PHASE2_LP_INTERVAL (H_LP) episodes: generate and deduplicate
-    a candidate pool with the current policy (Algorithm 1 lines 3-4), solve
-    the restricted master LP over that pool (Eq. 2, line 5), and cache the
-    coverage/excess-coverage duals mu^cov, nu^exc (line 6). Every episode:
-    compute delta_i = mu_i^cov - nu_i^exc (line 8), roll out with the
-    net-dual-augmented reward of Eq. (10) (line 9), and update the policy
-    with self-critical REINFORCE (line 10).
-    """
-    from set_partition import solve_lp_relaxation
+               constraint_sampler=None, init_best=float("inf"), dual_weight_override=None,
+               dual_mode="net"):
+    # dual_mode: "net"(기본, 기존 동작) = π^cov - ν^exc를 그대로 씀.
+    # "coverage_only" = ν^exc(deadhead dual)를 0으로 고정 — coverage dual(π^cov)만 반영.
+    # dual-ablation 3분할(off/coverage_only/net) 중 off는 기존 --dual-weight 0으로 이미 커버됨.
+    assert dual_mode in ("net", "coverage_only"), f"unknown dual_mode: {dual_mode}"
+    from evaluation.set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
     best_avg_pairings = init_best
@@ -480,10 +475,13 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 lp_result = solve_lp_relaxation(pool)
                 if lp_result is not None:
                     dual_vars    = lp_result["dual_vars"]
-                    dh_dual_vars = lp_result["dh_dual_vars"]
+                    # coverage_only 모드: deadhead dual(ν^exc)을 아예 안 받아옴 → 아래
+                    # run_episode_with_dual의 _nu_exc가 항상 0이 되어 π^cov만 반영됨.
+                    dh_dual_vars = lp_result["dh_dual_vars"] if dual_mode == "net" else {}
                     lp_value     = lp_result["lp_value"]
 
-        _eff_dw = config.PHASE2_DUAL_WEIGHT * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
+        _base_dw = dual_weight_override if dual_weight_override is not None else config.PHASE2_DUAL_WEIGHT
+        _eff_dw = _base_dw * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
         encoded_train = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
         reward_s, log_probs, entropies, metrics_s = run_episode_with_dual(
             flights, c, encoder, decoder, encoded_train, dual_vars, dual_weight=_eff_dw, dh_dual_vars=dh_dual_vars
@@ -676,8 +674,14 @@ def run_curriculum_stage(
     return best_avg_pairings
 
 
-def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None, from_stage2=False, turkish_files=None):
+def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_constraint=False,
+          ckpt_dir=None, from_stage2=False, turkish_files=None, dual_weight=None, dual_mode="net"):
     WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
+
+    # 2x2 FiLM 인과성 실험(C/D/C'/D') — 디코더의 constraint 직접 concat 경로를
+    # 원천 차단할지 여부. 이 프로세스 안에서 학습·rollout 전체(train.py, rollout.py
+    # 둘 다 동일한 RL/utils.py를 import하므로)에 즉시 반영된다.
+    set_skip_decoder_constraint(skip_decoder_constraint)
 
     _select_environment("multi" if multi_airline else config.AIRLINE)
 
@@ -737,6 +741,9 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
 
     tag = "multi-airline" if multi_airline else config.AIRLINE
     tag += "-nofilm" if skip_film else ""
+    tag += "-nodecoderc" if skip_decoder_constraint else ""
+    tag += "-nodual" if dual_weight == 0 else ""
+    tag += "-covonly" if dual_mode == "coverage_only" else ""
     run_name = "phase2-only" if phase2_only else tag
     wandb.init(
         project="ASCP-2026-paper",
@@ -747,10 +754,13 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             "window_days":        WINDOW_DAYS,
             "phase2_lp_interval": config.PHASE2_LP_INTERVAL,
             "phase2_pool_rollouts": config.PHASE2_POOL_ROLLOUTS,
-            "phase2_dual_weight": config.PHASE2_DUAL_WEIGHT,
+            "phase2_dual_weight": dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT,
+            "phase2_dual_mode":   dual_mode,
             "phase2_n_episodes":  config.PHASE2_N_EPISODES,
             "lr":                 1e-4,
             "device":             str(DEVICE),
+            "skip_film":              skip_film,
+            "skip_decoder_constraint": skip_decoder_constraint,
         },
         resume="allow",
     )
@@ -906,7 +916,10 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
             print(f"stage2_best.pt 로드: {_s2_ckpt_path} → Stage 3부터 실행")
         else:
             # ── Stage 1: 단일 duty (overnight 없음) ──────────────────────────
-            stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1}
+            # base_penalty는 stage1/2에서 5.0(원래값) 고정 — stage3/phase2부터 config.py의
+            # 현재값(500.0)을 그대로 물려받는다. x2gcdva5(stage1/2, p5)를 이어받는 기존
+            # run들과 동일 조건을 신규 seed에서도 재현하기 위함.
+            stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1, "base_penalty": 5.0}
             run_curriculum_stage(1, encoder, decoder, optimizer,
                                  n_episodes=1000, constraint_override=stage1_c,
                                  save_dir=save_dir, flight_sampler=flight_sampler,
@@ -914,7 +927,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                                  entropy_start=0.30, entropy_end=0.005)
 
             # ── Stage 2: full multi-day ───────────────────────────────────────
-            stage2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+            stage2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1, "base_penalty": 5.0}
             run_curriculum_stage(2, encoder, decoder, optimizer,
                                  n_episodes=2000, constraint_override=stage2_c,
                                  save_dir=save_dir, flight_sampler=flight_sampler,
@@ -1032,7 +1045,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, ckpt_dir=None
                save_dir=save_dir,
                flight_sampler=flight_sampler,
                global_step_offset=phase2_offset,
-               constraint_sampler=sample_constraint)
+               constraint_sampler=sample_constraint,
+               dual_weight_override=dual_weight, dual_mode=dual_mode)
 
     # ── FiLM 최종 검증: stage3_best.pt 기준 ───────────────────────────
     # (Phase 2가 FiLM 가중치를 덮어썼을 수 있으므로 검증만 stage3_best로 임시 복원해서 확인)
@@ -1089,6 +1103,10 @@ if __name__ == "__main__":
                         help="Delta/Alaska/JetBlue 세 항공사 데이터로 동시 학습 (통합 airport_map 사용)")
     parser.add_argument("--skip-film", action="store_true",
                         help="FiLM 비활성화 (use_film_before=False, use_film_after=False) — ablation B/D용")
+    parser.add_argument("--skip-decoder-constraint", action="store_true",
+                        help="디코더가 매 step 직접 보는 constraint_vec(7)을 0으로 고정 — "
+                             "2x2 FiLM 인과성 실험(C'/D')용. state_to_vec 차원은 그대로 유지되어 "
+                             "체크포인트 구조는 C/D와 동일하게 호환된다.")
     parser.add_argument("--airline", default=None,
                         help="단일 항공사 지정 (delta/alaska/jetblue/turkish). 미지정 시 config.AIRLINE 사용")
     parser.add_argument("--turkish-files", default=None,
@@ -1097,6 +1115,13 @@ if __name__ == "__main__":
     parser.add_argument("--use-utc", action="store_true",
                         help="dep_time을 UTC 절대시간으로 앵커링. 새로 이 옵션으로 학습한 모델만 "
                              "이 옵션 켠 채로 평가해야 함 — 기존 체크포인트에 켜면 OOD")
+    parser.add_argument("--dual-weight", type=float, default=None,
+                        help="Phase2 CG dual reward 가중치를 config.PHASE2_DUAL_WEIGHT(기본 0.6) 대신 "
+                             "이 값으로 덮어씀. 0을 주면 CG-dual 완전히 비활성화.")
+    parser.add_argument("--dual-mode", default="net", choices=["net", "coverage_only"],
+                        help="CG-dual ablation 3분할용. net(기본) = coverage dual(π^cov) - "
+                             "deadhead dual(ν^exc) 그대로 사용(현재 버전). coverage_only = "
+                             "ν^exc를 0으로 고정해 π^cov만 반영. off는 --dual-weight 0으로 커버.")
     parser.add_argument("--data-path", default=None,
                         help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
                              "delta-small 등 대체 데이터셋으로 학습/이어받기할 때 지정")
@@ -1114,4 +1139,6 @@ if __name__ == "__main__":
     print(f"log: {args.log}")
     _turkish_files = [f.strip() for f in args.turkish_files.split(",")] if args.turkish_files else None
     train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,
-          ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2, turkish_files=_turkish_files)
+          skip_decoder_constraint=args.skip_decoder_constraint,
+          ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2, turkish_files=_turkish_files,
+          dual_weight=args.dual_weight, dual_mode=args.dual_mode)

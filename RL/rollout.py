@@ -1,5 +1,5 @@
 # rollout.py -- run RL rollouts and collect pairing structs (shared by
-# evaluate_ip.py and train.py's Phase 2)
+# evaluation/evaluate_ip.py and experiments/train.py's Phase 2)
 #
 # rollout_with_pairings: run one rollout -> return a list of pairings
 # rollout_batch: run B rollouts in a batch

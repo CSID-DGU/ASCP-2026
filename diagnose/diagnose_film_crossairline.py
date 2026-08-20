@@ -2,19 +2,21 @@
 diagnose_film_crossairline.py -- swap in the full delta/alaska/jetblue constraint sets
 on the same delta flight data to check whether pairing behavior actually changes.
 
-diagnose_film_overnight.py only perturbed a single max_duty_periods component within
-delta, which cannot validate FiLM's purpose (generalizing across airlines) -- the whole
-airline constraint set needs to be swapped and compared, not just one component. This
-only makes sense for a multi-airline checkpoint (168-airport unified embedding) --
-feeding alaska/jetblue constraints into a delta-only checkpoint is meaningless since the
-airport IDs only coincidentally overlap (see the n_airports>145 branch in evaluate_ip.py).
+diagnose_film_overnight.py는 delta 안에서 max_duty_periods 성분 하나만 흔들었는데,
+이건 FiLM의 존재 목적(항공사 간 일반화)을 검증 못 한다 — 성분 하나가 아니라 항공사
+전체 constraint 세트를 통째로 바꿔서 비교해야 함. multi-airline 체크포인트(168 공항
+통합 임베딩)에만 의미 있음 — delta 단독 체크포인트에 alaska/jetblue를 넣으면 airport
+ID가 우연히 겹칠 뿐이라 무의미(evaluation/evaluate_ip.py의 n_airports>145 분기 참고).
 """
+import os
 import sys
 import argparse
 
 import torch
 
-sys.path.insert(0, "RL")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder, PointerDecoder
 from loader import build_airport_map, bases_to_ids, load_flights_rolling
@@ -25,7 +27,7 @@ from constraints import (
 from utils import flights_to_tensors, constraint_to_tensor
 import config
 
-sys.path.insert(0, "experiments")
+sys.path.insert(0, os.path.join(REPO_ROOT, "experiments"))
 import train as train_mod
 from train import run_episode
 

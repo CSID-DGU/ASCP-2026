@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "RL"))
 
-import evaluate_ip
+from evaluation import evaluate_ip
 
 
 class CppEvaluationContractTest(unittest.TestCase):
