@@ -14,7 +14,7 @@ flight/constraint dict 포맷은 evaluation/validator.py와 동일함.
 """
 
 from collections import Counter, deque
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 import config as _rl_config  # RL/ 이 sys.path에 있다고 가정 (evaluation/validator.py와 동일 관례)
 
@@ -115,10 +115,17 @@ def _compute_cost(legs: List[int], flights: Dict[int, Dict], min_rest: float) ->
     rest = min_rest * n_rest
     dead_time = max(elapsed - fly - rest, 0.0)
     n_legs = len(legs)
-    return (dead_time
+    cost = (dead_time
             - _rl_config.IP_LEG_BONUS * max(n_legs - 1, 0)
             + _rl_config.IP_DEADHEAD_PENALTY
             + _rl_config.IP_PAIRING_FIXED_COST)
+    # leg 수가 많고 dead_time이 거의 0이면(연결이 전부 타이트함) 이 공식이 음수를
+    # 낼 수 있음 -- make_rescue_candidate()는 cost>=0을 요구하므로(full_flight_master.py
+    # 계약) 그대로 두면 RescueCandidateError가 조합 루프 밖으로 새어나가 이 target뿐
+    # 아니라 전체 generate_rescue_candidates() 호출이 죽는다. 기본 max_prefix_legs/
+    # max_suffix_legs(각 4)에서는 실제로 음수가 나오지 않지만, 그 값을 늘리면 나올 수
+    # 있으므로 방어적으로 0에서 clamp.
+    return max(cost, 0.0)
 
 
 def generate_rescue_candidates(
