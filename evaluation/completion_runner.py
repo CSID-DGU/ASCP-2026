@@ -25,6 +25,9 @@ def merge_rescue_columns(
             raise FullFlightInputError(f"{rescue['column_id']}: repair_target_flights가 비어 있음")
         if not targets.issubset(set(rescue.get("legs", []))):
             raise FullFlightInputError(f"{rescue['column_id']}: target flight가 legs에 없음")
+        for field in ("validator_version", "constraint_hash"):
+            if not rescue.get(field):
+                raise FullFlightInputError(f"{rescue['column_id']}: {field}가 필요함")
         key = tuple(rescue.get("legs", []))
         if key in seen_legs:
             continue

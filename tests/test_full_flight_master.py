@@ -201,6 +201,11 @@ class RescueInterfaceTests(unittest.TestCase):
         merged = merge_rescue_columns([policy], [rescue, duplicate], [10, 20])
         self.assertEqual([column["column_id"] for column in merged], ["p", "r"])
 
+    def test_rescue_requires_validator_provenance(self):
+        rescue = _column("r", [20], source_type="rescue", repair_target_flights=[20])
+        with self.assertRaisesRegex(FullFlightInputError, "validator_version"):
+            merge_rescue_columns([], [rescue], [20])
+
     def test_rescue_target_must_be_present_in_legs(self):
         rescue = _column("r", [20], source_type="rescue", repair_target_flights=[30])
         with self.assertRaisesRegex(FullFlightInputError, "target flight"):

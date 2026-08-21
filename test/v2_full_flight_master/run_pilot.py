@@ -32,7 +32,7 @@ def main():
         column("reposition-3", [3], 20, "reposition", is_legal=False),
     ]
     rescue = [
-        column("rescue-2", [2], 5, "rescue", repair_target_flights=[2]),
+        column("rescue-2", [2], 5, "rescue", repair_target_flights=[2], validator_version="0.1.0", constraint_hash="pilot"),
     ]
     result = solve_pool_completion(
         pool, 6, lambda_excess=1,
