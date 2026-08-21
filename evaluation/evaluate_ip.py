@@ -504,18 +504,26 @@ def evaluate_full(
     set_environment(airline)
 
     wandb_run = None
+    # C3 "기존 checkpoint 평가와 신규 strict 평가를 서로 다른 mode 이름으로
+    # 저장" -- evaluate_ip.py엔 JSON/CSV 저장 기능이 따로 없고 wandb가 유일한 영구
+    # 저장 수단이라, run 이름/config에 이 mode를 반영하는 걸로 대신함. eval_mode
+    # 자체는 --strict-validation과 무관하게(그 값과 상관없이) 항상 명시해서, 이
+    # 필드가 있으면 새 파이프라인(독립 validator가 붙은 버전)으로 평가됐다는 걸
+    # wandb에서 구분할 수 있게 한다.
+    eval_mode = "strict" if strict_validation else "legacy"
     if use_wandb:
         import wandb
         wandb_run = wandb.init(
             project=wandb_project,
             job_type="eval",
-            name=f"eval-{airline}-{os.path.basename(checkpoint_path)}",
+            name=f"eval-{eval_mode}-{airline}-{os.path.basename(checkpoint_path)}",
             config=dict(
                 checkpoint=checkpoint_path, airline=airline,
                 subset_size=subset_size, window_days=window_days,
                 n_rollouts_per_chunk=n_rollouts_per_chunk,
                 ip_time_limit=ip_time_limit, lambda_dh=lambda_dh,
-                use_utc=use_utc,
+                use_utc=use_utc, eval_mode=eval_mode,
+                strict_validation=strict_validation,
             ),
         )
 
@@ -679,10 +687,14 @@ def evaluate_full(
             "avg_duties":       avg_duties,
             "ip_status":        result["status"],
             "gap_pct":          gap_pct,
+            "eval_mode":        eval_mode,
+            "n_invalid_selected": validation_report["n_invalid_selected"],
+            "validator_version": validation_report["validator_version"],
         })
         wandb.finish()
 
     result["gap_pct"] = gap_pct
+    result["eval_mode"] = eval_mode
     result["validation_report"] = validation_report
     return result
 
