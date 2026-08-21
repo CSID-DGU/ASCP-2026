@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Sequence
 
-from evaluation.full_flight_master import FullFlightInputError, solve_full_flight_master, validate_master_inputs
+from evaluation.full_flight_master import FullFlightInputError, calibrate_completion_penalties, solve_full_flight_master, validate_master_inputs
 
 
 
@@ -50,6 +50,11 @@ def solve_completion_stages(
     """동일 universe에서 허용 source와 completion 수단을 누적하며 실행함."""
     universe = tuple(all_flight_ids)
     universe_set = set(universe)
+    calibrated = calibrate_completion_penalties(columns)
+    options = dict(master_options)
+    for key, value in calibrated.items():
+        if options.get(key) is None:
+            options[key] = value
     results = []
     previous_candidate_covered = set()
 
@@ -69,7 +74,7 @@ def solve_completion_stages(
             allow_reposition=allow_reposition,
             allow_reserve=allow_reserve,
             allow_artificial=allow_artificial,
-            **master_options,
+            **options,
         )
         result["stage"] = stage_name
         result["allowed_sources"] = sorted(sources)

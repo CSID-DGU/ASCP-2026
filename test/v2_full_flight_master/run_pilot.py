@@ -35,7 +35,7 @@ def main():
         column("rescue-2", [2], 5, "rescue", repair_target_flights=[2]),
     ]
     result = solve_pool_completion(
-        pool, 6, lambda_excess=1, artificial_penalty=100,
+        pool, 6, lambda_excess=1,
         rescue_columns=rescue, report_path=args.output,
     )
     report = result["completion_report"]

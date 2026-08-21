@@ -416,8 +416,8 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
 
 def solve_pool_completion(
     pool, n_total, *, lambda_excess=1.0, time_limit=300,
-    reposition_penalty=1000.0, reserve_penalty=10000.0,
-    artificial_penalty=1000000.0, report_path=None, rescue_columns=None, verbose=False,
+    reposition_penalty=None, reserve_penalty=None,
+    artificial_penalty=None, report_path=None, rescue_columns=None, verbose=False,
 ):
     """수집된 pool을 V2 단계별 master로 풀고 legacy 출력 호환 필드를 추가함."""
     if rescue_columns:
@@ -462,9 +462,9 @@ def evaluate_full(
     full_flight_master=False,
     completion_report_path=None,
     rescue_pool_path=None,
-    reposition_penalty=1000.0,
-    reserve_penalty=10000.0,
-    artificial_penalty=1000000.0,
+    reposition_penalty=None,
+    reserve_penalty=None,
+    artificial_penalty=None,
     seed=None,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
@@ -727,9 +727,9 @@ if __name__ == "__main__":
                         help="찬주 generator가 저장한 rescue column JSON 경로")
     parser.add_argument("--completion-report-path", default=None,
                         help="V2 completion JSON 저장 경로")
-    parser.add_argument("--reposition-penalty", type=float, default=1000.0)
-    parser.add_argument("--reserve-penalty", type=float, default=10000.0)
-    parser.add_argument("--artificial-penalty", type=float, default=1000000.0)
+    parser.add_argument("--reposition-penalty", type=float, default=None)
+    parser.add_argument("--reserve-penalty", type=float, default=None)
+    parser.add_argument("--artificial-penalty", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None,
                         help="Fix the random/torch RNG -- set this to run a paired comparison of "
                              "multiple checkpoints against the same evaluation instance (e.g. the "

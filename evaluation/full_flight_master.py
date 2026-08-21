@@ -80,6 +80,24 @@ def _solver(time_limit: int, use_gurobi: bool, verbose: bool):
     return pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=int(verbose))
 
 
+def calibrate_completion_penalties(columns: Sequence[Dict]) -> Dict[str, float]:
+    """현재 pool cost scale을 기준으로 completion penalty 초기값을 산정함."""
+    finite_costs = []
+    for column in columns:
+        try:
+            cost = float(column.get("cost", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(cost) and cost >= 0:
+            finite_costs.append(cost)
+    scale = max([1.0] + finite_costs)
+    return {
+        "reposition_penalty": scale * 10.0,
+        "reserve_penalty": scale * 100.0,
+        "artificial_penalty": scale * 1000.0,
+    }
+
+
 def solve_full_flight_master(
     columns: Sequence[Dict],
     all_flight_ids: Iterable[int],
@@ -88,9 +106,9 @@ def solve_full_flight_master(
     allow_reposition: bool = False,
     allow_reserve: bool = False,
     allow_artificial: bool = False,
-    reposition_penalty: float = 1000.0,
-    reserve_penalty: float = 10000.0,
-    artificial_penalty: float = 1000000.0,
+    reposition_penalty: float | None = None,
+    reserve_penalty: float | None = None,
+    artificial_penalty: float | None = None,
     reposition_flight_ids: Iterable[int] | None = None,
     reserve_flight_ids: Iterable[int] | None = None,
     time_limit: int = 300,
@@ -99,6 +117,10 @@ def solve_full_flight_master(
 ) -> Dict:
     """전체 flight를 legal·operational·artificial 중 하나로 명시 처리함."""
     normalized, universe = validate_master_inputs(columns, all_flight_ids)
+    calibrated = calibrate_completion_penalties(normalized)
+    reposition_penalty = calibrated["reposition_penalty"] if reposition_penalty is None else reposition_penalty
+    reserve_penalty = calibrated["reserve_penalty"] if reserve_penalty is None else reserve_penalty
+    artificial_penalty = calibrated["artificial_penalty"] if artificial_penalty is None else artificial_penalty
     penalties = {
         "lambda_excess": lambda_excess,
         "reposition_penalty": reposition_penalty,
@@ -134,6 +156,7 @@ def solve_full_flight_master(
             "completion_coverage": 1.0, "excess_flight_ids": [], "excess_count": 0,
             "reposition_flight_ids": [], "reserve_flight_ids": [],
             "artificial_flight_ids": [], "artificial_count": 0,
+            "penalties": penalties,
             "selected_count_by_source": {}, "selected_cost_by_source": {},
             "objective_breakdown": {"pairing": 0.0, "excess": 0.0, "reposition": 0.0, "reserve": 0.0, "artificial": 0.0},
         }
@@ -232,6 +255,7 @@ def solve_full_flight_master(
         "covered_flight_ids": sorted(legal_covered),
         "operational_covered_flight_ids": sorted(operational_covered),
         "uncovered_flight_ids": sorted(universe_set - completed),
+        "penalties": penalties,
         "selected_count_by_source": selected_count_by_source,
         "selected_cost_by_source": selected_cost_by_source,
         "objective_breakdown": objective_breakdown,

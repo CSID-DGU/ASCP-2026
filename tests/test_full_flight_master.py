@@ -2,7 +2,7 @@
 
 import unittest
 
-from evaluation.full_flight_master import FullFlightInputError, solve_full_flight_master, validate_master_inputs
+from evaluation.full_flight_master import FullFlightInputError, calibrate_completion_penalties, solve_full_flight_master, validate_master_inputs
 from evaluation.completion_runner import merge_rescue_columns, solve_completion_stages
 
 
@@ -205,6 +205,21 @@ class RescueInterfaceTests(unittest.TestCase):
         rescue = _column("r", [20], source_type="rescue", repair_target_flights=[30])
         with self.assertRaisesRegex(FullFlightInputError, "target flight"):
             merge_rescue_columns([], [rescue], [20, 30])
+
+
+
+
+class PenaltyCalibrationTests(unittest.TestCase):
+    def test_penalties_follow_pool_cost_scale_and_strict_order(self):
+        penalties = calibrate_completion_penalties([_column(cost=25)])
+        self.assertEqual(penalties["reposition_penalty"], 250)
+        self.assertEqual(penalties["reserve_penalty"], 2500)
+        self.assertEqual(penalties["artificial_penalty"], 25000)
+
+    def test_auto_penalties_are_recorded_in_result(self):
+        result = solve_full_flight_master([], [10], allow_artificial=True)
+        self.assertEqual(result["penalties"]["artificial_penalty"], 1000)
+        self.assertEqual(result["artificial_cost"], 1000)
 
 
 if __name__ == "__main__":
