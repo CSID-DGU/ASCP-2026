@@ -14,12 +14,22 @@ cost/dead_time 값을 그대로 믿지 않고, flights 데이터로부터 독립
 
 from typing import Dict, List, Optional, Tuple
 
-from validator import (
-    validate_pairing,
-    find_cross_pairing_duplicates,
-    _split_into_duties,
-    VALIDATOR_VERSION,
-)
+try:
+    from validator import (
+        validate_pairing,
+        find_cross_pairing_duplicates,
+        _split_into_duties,
+        VALIDATOR_VERSION,
+    )
+except ModuleNotFoundError:
+    # evaluate_ip.py 등 evaluation/ 패키지를 sys.path에 직접 추가하지 않고
+    # `from evaluation.xxx import ...` 식으로 부르는 호출부를 위한 fallback
+    from evaluation.validator import (
+        validate_pairing,
+        find_cross_pairing_duplicates,
+        _split_into_duties,
+        VALIDATOR_VERSION,
+    )
 
 
 # pairing_record.source_type 값 -> 이 report의 집계 bucket 이름

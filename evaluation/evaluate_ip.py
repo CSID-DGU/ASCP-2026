@@ -52,6 +52,8 @@ _GET_CONSTRAINT = {
 }
 from model import FlightEncoder, PointerDecoder
 from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
+from evaluation.validator import validate_pairing, VALIDATOR_VERSION
+from evaluation.validation_report import aggregate_by_source_per_chunk
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings, set_environment
 from base_reach import build_base_reaches
@@ -351,6 +353,11 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                     # be filtered the same way.
                     if not _pairing_valid(p):
                         continue
+                    # C3: 이 pairing이 실제로 어느 base_airport로 생성됐는지 남겨둠 --
+                    # 최종 selected pairing을 독립 재검증할 때(evaluate_full()) 그
+                    # pairing이 실제로 생성될 때 쓰인 constraint를 복원하는 데 필요함
+                    # (chunk마다 base_id가 랜덤으로 다시 뽑히므로).
+                    p["_gen_base_airport"] = base_id
                     key = tuple(sorted(p["legs"]))
                     if key not in pool or p["cost"] < pool[key]["cost"]:
                         pool[key] = p
@@ -366,6 +373,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
             for p in pairings:
                 if not _pairing_valid(p):
                     continue
+                p["_gen_base_airport"] = base_id
                 key = tuple(sorted(p["legs"]))
                 if key not in pool or p["cost"] < pool[key]["cost"]:
                     pool[key] = p
@@ -397,6 +405,53 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
     return list(pool.values()), covered_global
 
 
+# ── 4-1. C3: 최종 selected pairing 독립 재검증 ────────────────────────────────
+
+def validate_selected_pairings(selected, flights_by_id, constraint, base_ids,
+                                n_total_flights, strict=False):
+    """C3 -- solve_set_covering()이 고른 최종 pairing을 생성 시 hard mask와
+    무관하게 evaluation/validator.py로 독립 재검증하고, source_type별로 분리 집계한다.
+
+    각 pairing은 collect_pool_full()에서 남겨둔 `_gen_base_airport`(그 pairing이
+    생성될 때 실제로 쓰인 base) 기준으로 자기 constraint를 복원해서 검증한다 --
+    chunk마다 base_id가 랜덤으로 다시 뽑히므로, 전부 하나의 constraint로 검증하면
+    다른 base에서 생성된 pairing이 잘못 invalid로 잡힐 수 있다
+
+    strict=True면 invalid가 하나라도 있을 때 RuntimeError를 던져서, 이 결과를
+    legal한 solution으로 잘못 보고하지 않게 한다.
+    """
+    base_template = {**constraint, "base_ids": base_ids}
+
+    by_base = {}
+    for p in selected:
+        b = p.get("_gen_base_airport", base_ids[0])
+        by_base.setdefault(b, []).append(p)
+    chunks = [
+        (pairings, {**base_template, "base_airport": b})
+        for b, pairings in by_base.items()
+    ]
+    report = aggregate_by_source_per_chunk(chunks, flights_by_id, n_total_flights=n_total_flights)
+
+    invalid = []
+    for p in selected:
+        b = p.get("_gen_base_airport", base_ids[0])
+        c = {**base_template, "base_airport": b}
+        result = validate_pairing(p, flights_by_id, c)
+        if not result["is_valid"]:
+            invalid.append({"legs": p["legs"], "violation_codes": result["violation_codes"]})
+
+    report["validator_version"] = VALIDATOR_VERSION
+    report["n_invalid_selected"] = len(invalid)
+    report["invalid_selected"] = invalid
+
+    if strict and invalid:
+        raise RuntimeError(
+            f"[strict-validation] 선택된 pairing {len(invalid)}개가 independent "
+            f"validator 기준으로 invalid입니다 (예: {invalid[0]})."
+        )
+    return report
+
+
 # ── 5. Main evaluation function ──────────────────────────────────────────────
 
 def evaluate_full(
@@ -416,6 +471,7 @@ def evaluate_full(
     wandb_project="ASCP-2026-paper",
     compute_gap=False,
     seed=None,
+    strict_validation=False,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
 
@@ -514,6 +570,8 @@ def evaluate_full(
     else:
         windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days, use_utc=use_utc)
     print(f"total {n_total} legs, {len(windows)} windows", flush=True)
+    # C3: global_id -> flight dict, independent validator가 pairing legs를 조회하는 데 씀
+    flights_by_id = {f["global_id"]: f for w in windows for f in w}
 
     connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
 
@@ -534,6 +592,17 @@ def evaluate_full(
     print(f"\nSolving IP (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
     result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh, verbose=True)
     print("IP solve complete", flush=True)
+
+    validation_report = validate_selected_pairings(
+        result["selected"], flights_by_id, constraint, base_ids, n_total,
+        strict=strict_validation,
+    )
+    print(
+        f"\n[validator] independent re-check: "
+        f"{validation_report['n_invalid_selected']} invalid selected pairing(s) "
+        f"(validator_version={validation_report['validator_version']})",
+        flush=True,
+    )
 
     gap_pct = None
     if compute_gap:
@@ -612,6 +681,7 @@ def evaluate_full(
         wandb.finish()
 
     result["gap_pct"] = gap_pct
+    result["validation_report"] = validation_report
     return result
 
 
@@ -654,6 +724,11 @@ if __name__ == "__main__":
                         help="Fix the random/torch RNG -- set this to run a paired comparison of "
                              "multiple checkpoints against the same evaluation instance (e.g. the "
                              "same seed for every ON/OFF checkpoint)")
+    parser.add_argument("--strict-validation", action="store_true",
+                        help="Raise if evaluation/validator.py finds any independently-invalid "
+                             "pairing among the selected solution (v1.md C3) -- off by default so "
+                             "a single unexpected invalid doesn't kill a long eval run; the count "
+                             "is always printed and returned in result['validation_report'] either way.")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -678,4 +753,5 @@ if __name__ == "__main__":
         wandb_project=args.wandb_project,
         compute_gap=args.compute_gap,
         seed=args.seed,
+        strict_validation=args.strict_validation,
     )
