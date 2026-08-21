@@ -18,8 +18,8 @@ Notes:
 
 import sys
 import os
-import math
 import json
+import math
 import random
 import argparse
 
@@ -56,6 +56,7 @@ from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
 from evaluation.completion_runner import merge_rescue_columns, solve_completion_stages
 from evaluation.completion_report import build_completion_report, render_completion_table, save_completion_report
 from evaluation.validator import validate_pairing
+from evaluation.validation_report import aggregate_by_source_per_chunk
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings, set_environment
 from base_reach import build_base_reaches
@@ -362,6 +363,11 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                     # be filtered the same way.
                     if not _pairing_valid(p):
                         continue
+                    # C3: 이 pairing이 실제로 어느 base_airport로 생성됐는지 남겨둠 --
+                    # 최종 selected pairing을 독립 재검증할 때(evaluate_full()) 그
+                    # pairing이 실제로 생성될 때 쓰인 constraint를 복원하는 데 필요함
+                    # (chunk마다 base_id가 랜덤으로 다시 뽑히므로).
+                    p["_gen_base_airport"] = base_id
                     key = tuple(sorted(p["legs"]))
                     if key not in pool or p["cost"] < pool[key]["cost"]:
                         pool[key] = p
@@ -377,6 +383,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
             for p in pairings:
                 if not _pairing_valid(p):
                     continue
+                p["_gen_base_airport"] = base_id
                 key = tuple(sorted(p["legs"]))
                 if key not in pool or p["cost"] < pool[key]["cost"]:
                     pool[key] = p
@@ -440,6 +447,102 @@ def solve_pool_completion(
     result["total_cost"] = result["pairing_cost"]
     result["n_pairings"] = len(result["selected"])
     return result
+# ── 4-1. C3: 최종 selected pairing 독립 재검증 ────────────────────────────────
+
+def validate_selected_pairings(selected, flights_by_id, constraint, base_ids,
+                                n_total_flights, strict=False):
+    """C3 -- solve_set_covering()이 고른 최종 pairing을 생성 시 hard mask와
+    무관하게 evaluation/validator.py로 독립 재검증하고, source_type별로 분리 집계한다.
+
+    각 pairing은 collect_pool_full()에서 남겨둔 `_gen_base_airport`(그 pairing이
+    생성될 때 실제로 쓰인 base) 기준으로 자기 constraint를 복원해서 검증한다 --
+    chunk마다 base_id가 랜덤으로 다시 뽑히므로, 전부 하나의 constraint로 검증하면
+    다른 base에서 생성된 pairing이 잘못 invalid로 잡힐 수 있다
+
+    strict=True면 invalid가 하나라도 있을 때 RuntimeError를 던져서, 이 결과를
+    legal한 solution으로 잘못 보고하지 않게 한다.
+    """
+    base_template = {**constraint, "base_ids": base_ids}
+
+    by_base = {}
+    for p in selected:
+        b = p.get("_gen_base_airport", base_ids[0])
+        by_base.setdefault(b, []).append(p)
+    chunks = [
+        (pairings, {**base_template, "base_airport": b})
+        for b, pairings in by_base.items()
+    ]
+    report = aggregate_by_source_per_chunk(chunks, flights_by_id, n_total_flights=n_total_flights)
+
+    # aggregate_by_source_per_chunk()가 bucket별로 이미 validate_pairing()을 돌려서
+    # invalid_pairings(violation_codes 포함)를 남겨두므로, 여기서 또 재검증하지 않고
+    # 그 결과를 그대로 모아 쓴다(bucket 딕셔너리만 골라내고, cross_bucket_duplicate_
+    # flight_ids/_direct_coverage_source/validator_version 같은 report 레벨 메타
+    # 항목은 건너뜀).
+    invalid = [
+        entry
+        for bucket in report.values()
+        if isinstance(bucket, dict) and bucket.get("invalid_pairings")
+        for entry in bucket["invalid_pairings"]
+    ]
+
+    report["n_invalid_selected"] = len(invalid)
+    report["invalid_selected"] = invalid
+
+    if strict and invalid:
+        raise RuntimeError(
+            f"[strict-validation] 선택된 pairing {len(invalid)}개가 independent "
+            f"validator 기준으로 invalid입니다 (예: {invalid[0]})."
+        )
+    return report
+
+
+# ── 4-2. C3/C4: 최종 selected pairing을 flight ID까지 포함해서 JSON으로 저장 ───
+
+def default_save_json_path(checkpoint_path, airline, eval_mode):
+    """`--save-json`/`--no-save-json` 둘 다 안 줬을 때 자동으로 쓰는 저장 경로.
+    checkpoint 파일명 + airline + eval_mode로 구성해서, 같은 checkpoint를
+    strict/legacy 두 모드로 각각 평가해도 서로 덮어쓰지 않게 한다.
+    """
+    ckpt_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
+    return f"log/eval_json/{eval_mode}_{airline}_{ckpt_name}.json"
+
+
+def save_result_json(path, result, checkpoint_path, airline, eval_mode):
+    """v1.md C3 "ASCP 결과 JSON/CSV에 validator version과 constraint hash 기록".
+
+    지금까지는 이 저장 코드 자체가 없어서 evaluate_ip.py가 화면에 찍는 요약
+    통계(coverage/ManDays/FTC 등)만 log 파일로 남았고, 실제 선택된 pairing이
+    어떤 flight(legs)로 구성됐는지는 어디에도 저장되지 않았음 -- log/ 전체를 확인해서
+    검증함). 이 함수가 그 공백을 메움-- 이후로 이 형식으로 저장된 파일은
+    evaluation/ascp_output_adapter.py로 다시 읽어서 재검증 가능
+    """
+    payload = {
+        "checkpoint": checkpoint_path,
+        "airline": airline,
+        "eval_mode": eval_mode,
+        "n_pairings": result["n_pairings"],
+        "coverage": result["coverage"],
+        "uncoverable": result["uncoverable"],
+        "deadhead_count": result["deadhead_count"],
+        "mip_obj": result.get("mip_obj"),
+        "status": result["status"],
+        "validation_report": result["validation_report"],
+        "completion_report": result.get("completion_report"),
+        "pairings": [
+            {
+                "legs": p["legs"],
+                "source_type": p.get("source_type", "policy"),
+                "duty_break_indices": p.get("duty_break_indices"),
+                "_gen_base_airport": p.get("_gen_base_airport"),
+            }
+            for p in result["selected"]
+        ],
+    }
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+
 
 # ── 5. Main evaluation function ──────────────────────────────────────────────
 
@@ -466,6 +569,9 @@ def evaluate_full(
     reserve_penalty=None,
     artificial_penalty=None,
     seed=None,
+    strict_validation=False,
+    save_json_path=None,
+    no_save_json=False,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
 
@@ -496,18 +602,32 @@ def evaluate_full(
     set_environment(airline)
 
     wandb_run = None
+    # C3 "기존 checkpoint 평가와 신규 strict 평가를 서로 다른 mode 이름으로 저장" --
+    # wandb run 이름/config에도 반영하고(아래), 실제 JSON 파일 저장(save_result_json)
+    # 경로에도 이 이름을 씀. eval_mode 자체는 --strict-validation과 무관하게(그
+    # 값과 상관없이) 항상 명시해서, 새 파이프라인(독립 validator가 붙은 버전)으로
+    # 평가됐다는 걸 구분할 수 있게 한다.
+    eval_mode = "strict" if strict_validation else "legacy"
+    if full_flight_master:
+        eval_mode = f"full_{eval_mode}"
+
+    # 명시적으로 --no-save-json을 주지 않는 한 항상 저장하고, 경로만
+    # 기본값(checkpoint/airline/eval_mode 기반)을 자동 생성한다.
+    if save_json_path is None and not no_save_json:
+        save_json_path = default_save_json_path(checkpoint_path, airline, eval_mode)
     if use_wandb:
         import wandb
         wandb_run = wandb.init(
             project=wandb_project,
             job_type="eval",
-            name=f"eval-{airline}-{os.path.basename(checkpoint_path)}",
+            name=f"eval-{eval_mode}-{airline}-{os.path.basename(checkpoint_path)}",
             config=dict(
                 checkpoint=checkpoint_path, airline=airline,
                 subset_size=subset_size, window_days=window_days,
                 n_rollouts_per_chunk=n_rollouts_per_chunk,
                 ip_time_limit=ip_time_limit, lambda_dh=lambda_dh,
-                use_utc=use_utc,
+                use_utc=use_utc, eval_mode=eval_mode,
+                strict_validation=strict_validation,
             ),
         )
 
@@ -564,6 +684,8 @@ def evaluate_full(
     else:
         windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days, use_utc=use_utc)
     print(f"total {n_total} legs, {len(windows)} windows", flush=True)
+    # C3: global_id -> flight dict, independent validator가 pairing legs를 조회하는 데 씀
+    flights_by_id = {f["global_id"]: {**f, "id": f["global_id"]} for w in windows for f in w}
 
     connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
 
@@ -602,6 +724,17 @@ def evaluate_full(
             lambda_dh=lambda_dh, verbose=True,
         )
     print("IP solve complete", flush=True)
+
+    validation_report = validate_selected_pairings(
+        result["selected"], flights_by_id, constraint, base_ids, n_total,
+        strict=strict_validation,
+    )
+    print(
+        f"\n[validator] independent re-check: "
+        f"{validation_report['n_invalid_selected']} invalid selected pairing(s) "
+        f"(validator_version={validation_report['validator_version']})",
+        flush=True,
+    )
 
     gap_pct = None
     if compute_gap and not full_flight_master:
@@ -679,10 +812,20 @@ def evaluate_full(
             "avg_duties":       avg_duties,
             "ip_status":        result["status"],
             "gap_pct":          gap_pct,
+            "eval_mode":        eval_mode,
+            "n_invalid_selected": validation_report["n_invalid_selected"],
+            "validator_version": validation_report["validator_version"],
         })
         wandb.finish()
 
     result["gap_pct"] = gap_pct
+    result["eval_mode"] = eval_mode
+    result["validation_report"] = validation_report
+
+    if save_json_path:
+        save_result_json(save_json_path, result, checkpoint_path, airline, eval_mode)
+        print(f"\n[save] selected pairings + validation report -> {save_json_path}", flush=True)
+
     return result
 
 
@@ -734,6 +877,19 @@ if __name__ == "__main__":
                         help="Fix the random/torch RNG -- set this to run a paired comparison of "
                              "multiple checkpoints against the same evaluation instance (e.g. the "
                              "same seed for every ON/OFF checkpoint)")
+    parser.add_argument("--strict-validation", action="store_true",
+                        help="Raise if evaluation/validator.py finds any independently-invalid "
+                             "pairing among the selected solution (v1.md C3) -- off by default so "
+                             "a single unexpected invalid doesn't kill a long eval run; the count "
+                             "is always printed and returned in result['validation_report'] either way.")
+    parser.add_argument("--save-json", default=None,
+                        help="Save selected pairings (incl. flight-ID legs) + validation report "
+                             "to this JSON path (v1.md C3). Saved by default even without this "
+                             "flag (path auto-derived from checkpoint/airline/eval_mode under "
+                             "log/eval_json/) -- needed for evaluation/ascp_output_adapter.py to "
+                             "re-score a past run later; pass --no-save-json to opt out.")
+    parser.add_argument("--no-save-json", action="store_true",
+                        help="Skip saving the JSON result entirely (by default it's always saved).")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -764,4 +920,7 @@ if __name__ == "__main__":
         reserve_penalty=args.reserve_penalty,
         artificial_penalty=args.artificial_penalty,
         seed=args.seed,
+        strict_validation=args.strict_validation,
+        save_json_path=args.save_json,
+        no_save_json=args.no_save_json,
     )

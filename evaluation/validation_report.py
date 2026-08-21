@@ -3,7 +3,7 @@ evaluation/validation_report.py -- source_type별 결과 분리 집계 (F1/V1 C2
 
 policy가 정상 생성한 pairing과 salvage/repair/forced로 보완된 pairing을 섞어서 보고하면
 "generator가 진짜로 얼마나 잘 만들었는지"가 왜곡된다 -- 이 모듈은 pairing_record의
-source_type(policy|salvage|repair|forced, v1.md §2 스키마)별로 나눠서 각각 따로 집계한다.
+source_type(policy|salvage|repair|forced)별로 나눠서 각각 따로 집계한다.
 `policy_direct`만 실제 generator direct coverage로 쓰고, 나머지는 별도 completion
 결과로만 쓴다.
 
@@ -14,12 +14,22 @@ cost/dead_time 값을 그대로 믿지 않고, flights 데이터로부터 독립
 
 from typing import Dict, List, Optional, Tuple
 
-from validator import (
-    validate_pairing,
-    find_cross_pairing_duplicates,
-    _split_into_duties,
-    VALIDATOR_VERSION,
-)
+try:
+    from validator import (
+        validate_pairing,
+        find_cross_pairing_duplicates,
+        _split_into_duties,
+        VALIDATOR_VERSION,
+    )
+except ModuleNotFoundError:
+    # evaluate_ip.py 등 evaluation/ 패키지를 sys.path에 직접 추가하지 않고
+    # `from evaluation.xxx import ...` 식으로 부르는 호출부를 위한 fallback
+    from evaluation.validator import (
+        validate_pairing,
+        find_cross_pairing_duplicates,
+        _split_into_duties,
+        VALIDATOR_VERSION,
+    )
 
 
 # pairing_record.source_type 값 -> 이 report의 집계 bucket 이름
@@ -73,6 +83,9 @@ def _aggregate(
     for bucket_name, bucket_pairs in buckets.items():
         covered = set()
         invalid_count = 0
+        invalid_pairings = []  # {"legs", "violation_codes"} -- validate_pairing()을 여기서
+        # 한 번만 돌려서 호출부(evaluate_ip.py::validate_selected_pairings() 등)가
+        # invalid 목록(violation_codes 포함)이 따로 필요할 때 재검증을 또 안 해도 되게 함
         any_constraint_given = False
         deadhead_count = 0
         total_fly = 0.0
@@ -89,6 +102,10 @@ def _aggregate(
                 result = validate_pairing(p, flights, c)
                 if not result["is_valid"]:
                     invalid_count += 1
+                    invalid_pairings.append({
+                        "legs": legs,
+                        "violation_codes": result["violation_codes"],
+                    })
 
             if p.get("is_deadhead"):
                 deadhead_count += 1
@@ -109,6 +126,7 @@ def _aggregate(
             "pairing_count":                 len(bucket_pairs),
             "covered_flights":               len(covered),
             "invalid_count":                 invalid_count if any_constraint_given else None,
+            "invalid_pairings":              invalid_pairings if any_constraint_given else None,
             "internal_duplicate_flight_ids": find_cross_pairing_duplicates(bucket_pairings_only),
             "direct_coverage_ratio":         (len(covered) / denom) if denom else 0.0,
             "deadhead_count":                deadhead_count,
@@ -120,14 +138,17 @@ def _aggregate(
 
     all_pairings = [p for p, _ in pairing_constraint_pairs]
     # 최종 selection 기준(모든 bucket 합산) duplicate -- policy가 커버한 flight를
-    # salvage/repair/forced가 또 커버한 경우도 여기서 잡힘.
+    # salvage/repair/forced가 또 커버한 경우도 여기서 잡힘 (find_cross_pairing_duplicates는
+    # 한 pairing 내부 중복도 같이 잡음 -- "cross-pairing"이라는 이름과 달리 pairing
+    # 경계와 무관하게 이 리스트 전체에서 2회 이상 등장하는 flight를 전부 반환함)
     report["cross_bucket_duplicate_flight_ids"] = find_cross_pairing_duplicates(all_pairings)
     # policy_direct만 진짜 generator coverage로 쓴다는 원칙을 결과에도 명시.
     report["_direct_coverage_source"] = "policy_direct"
-    # C3 provenance 요구사항 -- 이 report가 어느 validator 버전으로 만들어졌는지.
-    # (constraint_hash는 pairing마다 다를 수 있어 여기(전체 report)엔 안 두고,
-    # 필요하면 validate_pairing() 개별 호출 결과의 constraint_hash를 참고.)
-    report["_validator_version"] = VALIDATOR_VERSION
+    # C3 provenance 요구사항 -- 이 report가
+    # 어느 validator 버전으로 만들어졌는지. (constraint_hash는 pairing마다 다를 수 있어
+    # 여기(전체 report)엔 안 두고, 필요하면 validate_pairing() 개별 호출 결과의
+    # constraint_hash를 참고하기)
+    report["validator_version"] = VALIDATOR_VERSION
     return report
 
 

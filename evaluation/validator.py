@@ -208,6 +208,7 @@ def validate_pairing(pairing_record: Dict, flights: Dict[int, Dict], constraint:
     c_hash = constraint_hash(constraint)
 
     if not legs:
+        # 합의된 14개 violation code 중 "빈 pairing" 전용 코드는 없음 -- UNKNOWN_FLIGHT를 재사용
         return {
             "is_valid": False, "violation_codes": [UNKNOWN_FLIGHT],
             "invalid_flight_ids": [], "duplicate_flight_ids": [],
@@ -248,9 +249,13 @@ def validate_pairing(pairing_record: Dict, flights: Dict[int, Dict], constraint:
 
 
 def find_cross_pairing_duplicates(pairings: List[Dict]) -> List[int]:
-    """Selected solution 전체에서 같은 flight가 2개 이상 pairing에 중복 배정됐는지 확인
-    (v1.md C1 "Selected solution 전체 duplicate conflict"). 개별 pairing 내부 중복은
-    validate_pairing()의 duplicate_flight_ids가 이미 잡음 -- 이건 pairing 간 중복 전용
+    """주어진 pairing 목록 전체에서 총 2회 이상 등장하는 flight ID를 찾음
+    (v1.md C1 "Selected solution 전체 duplicate conflict").
+
+    이름과 달리 "서로 다른 pairing 사이"의 중복만 잡는 게 아니라, 한 pairing이
+    내부적으로 같은 flight를 두 번 포함하는 경우(validate_pairing()의
+    duplicate_flight_ids와 겹침)도 함께 잡힌다 -- 최종 selection에서는 그것도
+    동일하게 "이 flight가 두 번 배정됐다"는 문제이므로 의도적으로 그렇게 뒀다.
     """
     seen: Dict[int, int] = {}
     dupes = []
