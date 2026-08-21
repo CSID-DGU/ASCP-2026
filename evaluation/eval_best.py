@@ -31,17 +31,30 @@ def parse_metrics(output):
     deadhead  = re.search(r"deadhead:\s*(\d+) legs", output)
     mandays   = re.search(r"ManDays:\s*(\d+)", output)
     ftc       = re.search(r"FTC:\s*([\d.]+)%", output)
+    # v1.md C3 -- evaluate_ip.py가 evaluation/validator.py로 selected pairing을
+    # 독립 재검증한 개수를 여기서도 파싱해서 비교/출력한다(eval_best.py는
+    # evaluate_ip.py를 그대로 서브프로세스로 부르므로 "동일 validator 사용"
+    # 요구사항을 이 카운트를 통해 충족함).
+    invalid_selected = re.search(r"independent re-check:\s*(\d+) invalid selected pairing", output)
     return dict(
         dead_time=float(dead_time.group(1)) if dead_time else None,
         deadhead=int(deadhead.group(1)) if deadhead else None,
         mandays=int(mandays.group(1)) if mandays else None,
         ftc=float(ftc.group(1)) if ftc else None,
+        invalid_selected=int(invalid_selected.group(1)) if invalid_selected else None,
     )
 
 
 def dominates(a, b):
-    """Whether a Pareto-dominates b: dead_time and deadhead are both <=, and at least one is <."""
+    """Whether a Pareto-dominates b: dead_time and deadhead are both <=, and at least one is <.
+
+    독립 validator가 찾은 invalid selected pairing 수가 다르면 correctness가
+    성능보다 우선한다 -- 한쪽만 invalid가 0보다 크면 dead_time/deadhead가 더 좋아도
+    dominate로 치지 않는다(무효 pairing이 섞인 결과를 "더 낫다"고 채택하지 않기 위함).
+    """
     if a["dead_time"] is None or b["dead_time"] is None:
+        return False
+    if a.get("invalid_selected") and not b.get("invalid_selected"):
         return False
     le_dead = a["dead_time"] <= b["dead_time"]
     le_dh   = a["deadhead"] <= b["deadhead"]
@@ -77,8 +90,8 @@ def main():
     m_a = parse_metrics(out_a)
     m_b = parse_metrics(out_b)
 
-    print(f"\n[eval_best] {args.stage_a}: dead_time={m_a['dead_time']}h deadhead={m_a['deadhead']} ManDays={m_a['mandays']} FTC={m_a['ftc']}%")
-    print(f"[eval_best] {args.stage_b}: dead_time={m_b['dead_time']}h deadhead={m_b['deadhead']} ManDays={m_b['mandays']} FTC={m_b['ftc']}%")
+    print(f"\n[eval_best] {args.stage_a}: dead_time={m_a['dead_time']}h deadhead={m_a['deadhead']} ManDays={m_a['mandays']} FTC={m_a['ftc']}% invalid_selected={m_a['invalid_selected']}")
+    print(f"[eval_best] {args.stage_b}: dead_time={m_b['dead_time']}h deadhead={m_b['deadhead']} ManDays={m_b['mandays']} FTC={m_b['ftc']}% invalid_selected={m_b['invalid_selected']}")
 
     if m_a["dead_time"] is None or m_b["dead_time"] is None:
         print("\n[eval_best] At least one side failed to parse -- printing both raw outputs\n")
