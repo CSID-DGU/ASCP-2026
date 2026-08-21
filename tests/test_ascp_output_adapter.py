@@ -1,5 +1,5 @@
 """
-tests/test_ascp_output_adapter.py -- evaluation/ascp_output_adapter.py 테스트 (F1 산출물 5번)
+tests/test_ascp_output_adapter.py -- evaluation/ascp_output_adapter.py 단위 테스트 (F1 산출물 5번)
 
 evaluate_ip.py::save_result_json()으로 저장한 파일을 ascp_output_adapter로 다시 읽어서
 validate_pairing()/aggregate_by_source()에 재투입하는 전체 흐름(저장 -> 로드 -> 재검증)을
@@ -9,6 +9,7 @@ validate_pairing()/aggregate_by_source()에 재투입하는 전체 흐름(저장
 import os
 import sys
 import tempfile
+import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
@@ -46,55 +47,55 @@ def _save_sample(path, selected):
     save_result_json(path, result, "checkpoints/foo/phase2_best.pt", "delta", "strict")
 
 
-def test_load_ascp_output_returns_full_payload():
-    selected = [{"legs": [100, 101], "source_type": "policy", "_gen_base_airport": BASE}]
-    with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "result.json")
-        _save_sample(path, selected)
-        payload = load_ascp_output(path)
-    assert payload["airline"] == "delta"
-    assert payload["eval_mode"] == "strict"
-    assert len(payload["pairings"]) == 1
+class LoadAscpOutputTests(unittest.TestCase):
+    def test_returns_full_payload(self):
+        selected = [{"legs": [100, 101], "source_type": "policy", "_gen_base_airport": BASE}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "result.json")
+            _save_sample(path, selected)
+            payload = load_ascp_output(path)
+        self.assertEqual(payload["airline"], "delta")
+        self.assertEqual(payload["eval_mode"], "strict")
+        self.assertEqual(len(payload["pairings"]), 1)
 
 
-def test_ascp_output_to_pairing_records_accepts_path_or_dict():
-    selected = [{"legs": [100, 101], "source_type": "policy", "_gen_base_airport": BASE}]
-    with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "result.json")
-        _save_sample(path, selected)
+class AscpOutputToPairingRecordsTests(unittest.TestCase):
+    def test_accepts_path_or_dict(self):
+        selected = [{"legs": [100, 101], "source_type": "policy", "_gen_base_airport": BASE}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "result.json")
+            _save_sample(path, selected)
 
-        records_from_path = ascp_output_to_pairing_records(path)
-        records_from_dict = ascp_output_to_pairing_records(load_ascp_output(path))
+            records_from_path = ascp_output_to_pairing_records(path)
+            records_from_dict = ascp_output_to_pairing_records(load_ascp_output(path))
 
-    assert records_from_path == records_from_dict
-    assert records_from_path[0]["legs"] == [100, 101]
-    assert records_from_path[0]["source_type"] == "policy"
+        self.assertEqual(records_from_path, records_from_dict)
+        self.assertEqual(records_from_path[0]["legs"], [100, 101])
+        self.assertEqual(records_from_path[0]["source_type"], "policy")
 
 
-def test_reloaded_pairing_can_be_re_validated_end_to_end():
-    # 저장 -> 로드 -> validate_pairing()/aggregate_by_source() 재투입까지 전체 흐름 확인.
-    # flight 200 pairing은 base 미복귀라서 재채점해도 여전히 invalid로 나와야 함.
-    selected = [
-        {"legs": [100, 101], "source_type": "policy", "_gen_base_airport": BASE},
-        {"legs": [200],      "source_type": "salvage", "_gen_base_airport": BASE},
-    ]
-    with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "result.json")
-        _save_sample(path, selected)
-        records = ascp_output_to_pairing_records(path)
+class EndToEndReValidationTests(unittest.TestCase):
+    def test_reloaded_pairing_can_be_re_validated(self):
+        # 저장 -> 로드 -> validate_pairing()/aggregate_by_source() 재투입까지 전체 흐름 확인.
+        # flight 200 pairing은 base 미복귀라서 재채점해도 여전히 invalid로 나와야 함.
+        selected = [
+            {"legs": [100, 101], "source_type": "policy", "_gen_base_airport": BASE},
+            {"legs": [200],      "source_type": "salvage", "_gen_base_airport": BASE},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "result.json")
+            _save_sample(path, selected)
+            records = ascp_output_to_pairing_records(path)
 
-    result0 = validate_pairing(records[0], FLIGHTS, CONSTRAINT)
-    result1 = validate_pairing(records[1], FLIGHTS, CONSTRAINT)
-    assert result0["is_valid"]
-    assert not result1["is_valid"]
+        result0 = validate_pairing(records[0], FLIGHTS, CONSTRAINT)
+        result1 = validate_pairing(records[1], FLIGHTS, CONSTRAINT)
+        self.assertTrue(result0["is_valid"])
+        self.assertFalse(result1["is_valid"])
 
-    report = aggregate_by_source(records, FLIGHTS, constraint=CONSTRAINT, n_total_flights=3)
-    assert report["policy_direct"]["invalid_count"] == 0
-    assert report["salvage"]["invalid_count"] == 1
+        report = aggregate_by_source(records, FLIGHTS, constraint=CONSTRAINT, n_total_flights=3)
+        self.assertEqual(report["policy_direct"]["invalid_count"], 0)
+        self.assertEqual(report["salvage"]["invalid_count"], 1)
 
 
 if __name__ == "__main__":
-    test_load_ascp_output_returns_full_payload()
-    test_ascp_output_to_pairing_records_accepts_path_or_dict()
-    test_reloaded_pairing_can_be_re_validated_end_to_end()
-    print("OK: 3개 테스트 통과")
+    unittest.main()
