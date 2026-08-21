@@ -52,7 +52,6 @@ _GET_CONSTRAINT = {
 }
 from model import FlightEncoder, PointerDecoder
 from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
-from evaluation.validator import validate_pairing, VALIDATOR_VERSION
 from evaluation.validation_report import aggregate_by_source_per_chunk
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings, set_environment
@@ -432,15 +431,18 @@ def validate_selected_pairings(selected, flights_by_id, constraint, base_ids,
     ]
     report = aggregate_by_source_per_chunk(chunks, flights_by_id, n_total_flights=n_total_flights)
 
-    invalid = []
-    for p in selected:
-        b = p.get("_gen_base_airport", base_ids[0])
-        c = {**base_template, "base_airport": b}
-        result = validate_pairing(p, flights_by_id, c)
-        if not result["is_valid"]:
-            invalid.append({"legs": p["legs"], "violation_codes": result["violation_codes"]})
+    # aggregate_by_source_per_chunk()가 bucket별로 이미 validate_pairing()을 돌려서
+    # invalid_pairings(violation_codes 포함)를 남겨두므로, 여기서 또 재검증하지 않고
+    # 그 결과를 그대로 모아 쓴다(bucket 딕셔너리만 골라내고, cross_bucket_duplicate_
+    # flight_ids/_direct_coverage_source/validator_version 같은 report 레벨 메타
+    # 항목은 건너뜀).
+    invalid = [
+        entry
+        for bucket in report.values()
+        if isinstance(bucket, dict) and bucket.get("invalid_pairings")
+        for entry in bucket["invalid_pairings"]
+    ]
 
-    report["validator_version"] = VALIDATOR_VERSION
     report["n_invalid_selected"] = len(invalid)
     report["invalid_selected"] = invalid
 
