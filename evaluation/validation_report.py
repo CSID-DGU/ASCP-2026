@@ -31,11 +31,14 @@ _SOURCE_TO_BUCKET = {
 }
 
 
-def _pairing_time_metrics(legs: List[int], flights: Dict[int, Dict], min_rest: float):
+def _pairing_time_metrics(
+    legs: List[int], flights: Dict[int, Dict], min_rest: float,
+    duty_break_indices: Optional[List[int]] = None,
+):
     """flying_time, dead_time(휴식 제외, duty별 elapsed-flying 합), pairing_days를
     flights 데이터로부터 독립 계산 (pairing_record의 cost/dead_time 필드는 안 씀).
     """
-    duties = _split_into_duties(legs, flights, min_rest)
+    duties = _split_into_duties(legs, flights, min_rest, duty_break_indices)
     total_fly = 0.0
     total_dead = 0.0
     for duty in duties:
@@ -91,7 +94,9 @@ def _aggregate(
                 deadhead_count += 1
 
             if legs and all(fid in flights for fid in legs):
-                fly, dead, days = _pairing_time_metrics(legs, flights, min_rest)
+                fly, dead, days = _pairing_time_metrics(
+                    legs, flights, min_rest, p.get("duty_break_indices")
+                )
                 total_fly += fly
                 total_dead += dead
                 total_man_days += days

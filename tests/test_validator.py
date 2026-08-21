@@ -23,6 +23,7 @@ from validator import (  # noqa: E402
     BASE_RETURN_FAILURE,
     AIRPORT_DISCONTINUITY,
     MIN_CONNECTION_FAILURE,
+    MIN_REST_FAILURE,
     MAX_CONNECTION_FAILURE,
     MAX_DUTY_FAILURE,
     MAX_LEGS_FAILURE,
@@ -223,6 +224,27 @@ def test_time_order_failure_is_caught():
     assert TIME_ORDER_FAILURE in result["violation_codes"]
 
 
+
+def test_cross_base_return_uses_actual_turkish_constraint_fields():
+    turkish_constraint = {
+        **CONSTRAINT,
+        "base_ids": [BASE, OTHER],
+        "allow_cross_base_return": True,
+    }
+    result = validate_pairing({"legs": [0]}, FLIGHTS_CROSS_BASE, turkish_constraint)
+    assert BASE_RETURN_FAILURE not in result["violation_codes"], result["violation_codes"]
+
+
+def test_explicit_duty_boundary_exposes_min_rest_failure():
+    flights = {
+        0: {"id": 0, "origin": BASE, "dest": OTHER, "dep_time": 0.0, "arr_time": 2.0},
+        1: {"id": 1, "origin": OTHER, "dest": BASE, "dep_time": 7.0, "arr_time": 9.0},
+    }
+    record = {"legs": [0, 1], "duty_break_indices": [1]}
+    result = validate_pairing(record, flights, CONSTRAINT)
+    assert not result["is_valid"]
+    assert MIN_REST_FAILURE in result["violation_codes"]
+
 if __name__ == "__main__":
     test_fns = [
         test_valid_pairing_passes,
@@ -230,6 +252,8 @@ if __name__ == "__main__":
         test_non_base_return_is_caught,
         test_cross_base_return_fails_by_default,
         test_cross_base_return_allowed_when_opted_in,
+        test_cross_base_return_uses_actual_turkish_constraint_fields,
+        test_explicit_duty_boundary_exposes_min_rest_failure,
         test_unknown_flight_is_caught,
         test_duplicate_within_pairing_is_caught,
         test_invalid_base_start_is_caught,
@@ -245,4 +269,4 @@ if __name__ == "__main__":
     ]
     for fn in test_fns:
         fn()
-    print(f"OK: {len(test_fns)}개 테스트 통과 (MIN_REST_FAILURE는 TODO -- validator.py 참고)")
+    print(f"OK: {len(test_fns)}개 테스트 통과")

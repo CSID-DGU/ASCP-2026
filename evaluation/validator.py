@@ -65,7 +65,12 @@ MIN_PAIRING_LEGS_FAILURE   = "MIN_PAIRING_LEGS_FAILURE"
 TIME_ORDER_FAILURE         = "TIME_ORDER_FAILURE"
 
 
-def _split_into_duties(legs: List[int], flights: Dict[int, Dict], min_rest: float):
+def _split_into_duties(
+    legs: List[int],
+    flights: Dict[int, Dict],
+    min_rest: float,
+    duty_break_indices: Optional[List[int]] = None,
+):
     """gap >= min_rest인 지점을 duty 경계(overnight rest)로 보고 분리
 
     min_conn <= gap <= max_conn 이면 같은 duty 안의 connection, gap >= min_rest면
@@ -76,11 +81,12 @@ def _split_into_duties(legs: List[int], flights: Dict[int, Dict], min_rest: floa
     if not legs:
         return []
     duties = [[legs[0]]]
+    explicit_breaks = set(duty_break_indices or [])
     for i in range(1, len(legs)):
         prev = flights[legs[i - 1]]
         curr = flights[legs[i]]
         gap = curr["dep_time"] - prev["arr_time"]
-        if gap >= min_rest:
+        if i in explicit_breaks or (duty_break_indices is None and gap >= min_rest):
             duties.append([curr["id"]])
         else:
             duties[-1].append(curr["id"])
@@ -111,19 +117,12 @@ def _check_base(legs, flights, constraint, violations):
     # 엉뚱한 곳에서 출발한 pairing(INVALID_BASE_START)이 그 엉뚱한 곳으로 되돌아왔을 때
     # BASE_RETURN_FAILURE를 놓친다.
     #
-    # 예외: Turkish는 HB1->HB2, HB2->HB1처럼 서로 다른 base로 돌아와도 유효함
-    # (evaluation/evaluate_ip.py의 _pairing_valid()가 airline=="turkish"일 때 별도로 이렇게
-    # 처리하는 걸 확인함). 이 검증기에서는 constraint에 명시적으로
-    # `allowed_return_bases`(이 base들 중 아무거나로 복귀해도 됨, 서로 같을 필요 없음)가
-    # 주어졌을 때만 이 예외를 적용한다 -- base_ids만으로는(Delta도 여러 base를 갖고
-    # 있어서) 항공사를 구분할 수 없으므로 반드시 별도 필드로 명시적으로 opt-in해야 함
-    #
-    # "Turkish HB1/HB2를 allowed-return-base 규칙으로 표현"하라고 이미
-    # 합의돼 있음 -- 이 접근 자체는 확정. TODO로 남는 건 두 가지:
-    # (1) 실제 필드명이 `allowed_return_bases`가 맞는지, (2) Turkish constraint
-    # 모듈(RL/turkish/constraints_turkish.py 등)이 실제로 이 필드를 채워줄지.
+    # Turkish는 allow_cross_base_return=True일 때 base_ids 중 어느 home base로든
+    # 복귀할 수 있음. allowed_return_bases는 외부 adapter의 명시적 override로만 유지함.
     base = constraint.get("base_airport")
     allowed_return_bases = constraint.get("allowed_return_bases")
+    if allowed_return_bases is None and constraint.get("allow_cross_base_return"):
+        allowed_return_bases = constraint.get("base_ids")
     first, last = flights[legs[0]], flights[legs[-1]]
 
     if base is not None and first["origin"] != base:
@@ -157,16 +156,8 @@ def _check_connections_and_rest(duties, flights, constraint, violations):
             if gap > max_conn:
                 violations.append(MAX_CONNECTION_FAILURE)
 
-    # duty 간 (overnight) 공항 연속성 + rest 시간
-    #
-    # TODO(확인 필요): 지금 구조에서 MIN_REST_FAILURE는 사실상 발생할 수 없는 죽은
-    # 코드임 -- _split_into_duties()가 "gap >= min_rest"인 지점에서만 duty를 나누기
-    # 때문에 여기서 구한 duty 간 rest는 나누는 조건 자체가 이미 min_rest 이상이라서
-    # 항상 min_rest를 만족함 max_conn을 넘었지만 min_rest에는 못 미치는 "dead zone"
-    # gap은 같은 duty로 묶여서 MAX_CONNECTION_FAILURE로만 잡힌다(의미상 맞을 수도, 아닐
-    # 수도 있음). flat leg 목록만으로는 "duty 내 connection이었는지 실패한 rest였는지"를
-    # 구조적으로 구분할 방법이 없어서 -- pairing_record가 duty 경계를 명시적으로 주는
-    # 형태가 되면 그때 구현 지금은 TODO로 남기고 fixture도 안 만듦.
+    # duty 간 공항 연속성과 실제 rest 시간을 검사함. duty_break_indices가 있으면
+    # 생성기가 선택한 END_DUTY 경계를 그대로 사용하므로 MIN_REST_FAILURE를 독립 검증 가능함.
     for i in range(1, len(duties)):
         prev_last = flights[duties[i - 1][-1]]
         curr_first = flights[duties[i][0]]
@@ -232,7 +223,9 @@ def validate_pairing(pairing_record: Dict, flights: Dict[int, Dict], constraint:
     if ok:  # flights[fid] 접근이 안전할 때만 나머지 체크 진행
         _check_base(legs, flights, constraint, violations)
         min_rest = constraint.get("min_rest", _rl_config.DEFAULT_CONSTRAINTS["min_rest"])
-        duties = _split_into_duties(legs, flights, min_rest)
+        duties = _split_into_duties(
+            legs, flights, min_rest, pairing_record.get("duty_break_indices")
+        )
         _check_connections_and_rest(duties, flights, constraint, violations)
         _check_duty_and_pairing_limits(legs, duties, flights, constraint, violations)
         start_base  = flights[legs[0]]["origin"]

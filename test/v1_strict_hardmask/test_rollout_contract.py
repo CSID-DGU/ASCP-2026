@@ -67,6 +67,8 @@ class StrictRolloutTest(unittest.TestCase):
         self.assertEqual(pairings[0]["legs"], [0, 1])
         self.assertTrue(pairings[0]["ends_at_base"])
         self.assertEqual(pairings[0]["true_start_airport"], 0)
+        self.assertEqual(pairings[0]["source_type"], "policy")
+        self.assertEqual(pairings[0]["duty_break_indices"], [])
 
     def test_batch_rollout_preserves_cpp_contract(self):
         flights, rule = strict_fixture()

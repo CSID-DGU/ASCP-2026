@@ -121,6 +121,10 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "ends_at_base":      ends_at_base,
             "true_start_airport": pairing_start_ap,
             "true_end_airport":   flight_by_id[current_legs[-1]]["dest"],
+            "source_type":         "policy",
+            "duty_break_indices": [
+                i for i, rec in enumerate(leg_recs) if i > 0 and rec["rested"]
+            ],
         })
 
     def emit_prefix(recs, end_ap, start_ap):
@@ -162,6 +166,10 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "ends_at_base":      recs[-1]["dest"] == end_ap,
             "true_start_airport": start_ap,
             "is_truncated":      True,
+            "source_type":       "salvage",
+            "duty_break_indices": [
+                i for i, rec in enumerate(recs) if i > 0 and rec["rested"]
+            ],
         })
 
     def salvage_doomed():
