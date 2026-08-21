@@ -18,6 +18,7 @@ Notes:
 
 import sys
 import os
+import json
 import math
 import random
 import argparse
@@ -454,6 +455,44 @@ def validate_selected_pairings(selected, flights_by_id, constraint, base_ids,
     return report
 
 
+# ── 4-2. C3/C4: 최종 selected pairing을 flight ID까지 포함해서 JSON으로 저장 ───
+
+def save_result_json(path, result, checkpoint_path, airline, eval_mode):
+    """v1.md C3 "ASCP 결과 JSON/CSV에 validator version과 constraint hash 기록".
+
+    지금까지는 이 저장 코드 자체가 없어서 evaluate_ip.py가 화면에 찍는 요약
+    통계(coverage/ManDays/FTC 등)만 log 파일로 남았고, 실제 선택된 pairing이
+    어떤 flight(legs)로 구성됐는지는 어디에도 저장되지 않았다(그래서 "기존 ASCP
+    output 재채점 adapter"를 만들 대상 자체가 없었음 -- log/ 전체를 확인해서
+    검증함). 이 함수가 그 공백을 메운다 -- 이후로 이 형식으로 저장된 파일은
+    evaluation/ascp_output_adapter.py로 다시 읽어서 재검증할 수 있다.
+    """
+    payload = {
+        "checkpoint": checkpoint_path,
+        "airline": airline,
+        "eval_mode": eval_mode,
+        "n_pairings": result["n_pairings"],
+        "coverage": result["coverage"],
+        "uncoverable": result["uncoverable"],
+        "deadhead_count": result["deadhead_count"],
+        "mip_obj": result.get("mip_obj"),
+        "status": result["status"],
+        "validation_report": result["validation_report"],
+        "pairings": [
+            {
+                "legs": p["legs"],
+                "source_type": p.get("source_type", "policy"),
+                "duty_break_indices": p.get("duty_break_indices"),
+                "_gen_base_airport": p.get("_gen_base_airport"),
+            }
+            for p in result["selected"]
+        ],
+    }
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+
+
 # ── 5. Main evaluation function ──────────────────────────────────────────────
 
 def evaluate_full(
@@ -474,6 +513,7 @@ def evaluate_full(
     compute_gap=False,
     seed=None,
     strict_validation=False,
+    save_json_path=None,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
 
@@ -696,6 +736,11 @@ def evaluate_full(
     result["gap_pct"] = gap_pct
     result["eval_mode"] = eval_mode
     result["validation_report"] = validation_report
+
+    if save_json_path:
+        save_result_json(save_json_path, result, checkpoint_path, airline, eval_mode)
+        print(f"\n[save] selected pairings + validation report -> {save_json_path}", flush=True)
+
     return result
 
 
@@ -743,6 +788,10 @@ if __name__ == "__main__":
                              "pairing among the selected solution (v1.md C3) -- off by default so "
                              "a single unexpected invalid doesn't kill a long eval run; the count "
                              "is always printed and returned in result['validation_report'] either way.")
+    parser.add_argument("--save-json", default=None,
+                        help="Save selected pairings (incl. flight-ID legs) + validation report "
+                             "to this JSON path (v1.md C3) -- needed for evaluation/"
+                             "ascp_output_adapter.py to re-score a past run later.")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -768,4 +817,5 @@ if __name__ == "__main__":
         compute_gap=args.compute_gap,
         seed=args.seed,
         strict_validation=args.strict_validation,
+        save_json_path=args.save_json,
     )

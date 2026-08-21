@@ -6,14 +6,16 @@ evaluate_full()을 실제로 끝까지 돌리는 통합 테스트는 지금 안 
 만 목(mock) pairing/flight 데이터로 독립적으로 테스트한다.
 """
 
+import json
 import os
 import sys
+import tempfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
-from evaluation.evaluate_ip import validate_selected_pairings  # noqa: E402
+from evaluation.evaluate_ip import validate_selected_pairings, save_result_json  # noqa: E402
 
 
 BASE, OTHER = 0, 1
@@ -85,9 +87,44 @@ def test_pairings_grouped_by_their_own_generation_base():
     assert report["policy_direct"]["pairing_count"] == 2
 
 
+def test_save_result_json_round_trips_pairings_and_validation_report():
+    selected = [{"legs": [100, 101], "source_type": "policy", "_gen_base_airport": BASE,
+                 "duty_break_indices": []}]
+    validation_report = validate_selected_pairings(selected, FLIGHTS_BY_ID, CONSTRAINT,
+                                                    BASE_IDS, n_total_flights=3)
+    result = {
+        "selected": selected,
+        "n_pairings": 1,
+        "coverage": 1.0,
+        "uncoverable": 0,
+        "deadhead_count": 0,
+        "mip_obj": 12.3,
+        "status": "Optimal",
+        "validation_report": validation_report,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "sub", "result.json")
+        save_result_json(path, result, "checkpoints/foo/phase2_best.pt", "delta", "strict")
+
+        with open(path) as f:
+            saved = json.load(f)
+
+    assert saved["checkpoint"] == "checkpoints/foo/phase2_best.pt"
+    assert saved["airline"] == "delta"
+    assert saved["eval_mode"] == "strict"
+    assert saved["n_pairings"] == 1
+    assert saved["pairings"] == [
+        {"legs": [100, 101], "source_type": "policy", "duty_break_indices": [], "_gen_base_airport": BASE}
+    ]
+    assert saved["validation_report"]["n_invalid_selected"] == 0
+    assert saved["validation_report"]["validator_version"] == validation_report["validator_version"]
+
+
 if __name__ == "__main__":
     test_all_valid_selected_pairings_report_zero_invalid()
     test_invalid_selected_pairing_is_reported()
     test_strict_mode_raises_on_invalid()
     test_pairings_grouped_by_their_own_generation_base()
-    print("OK: 4개 테스트 통과")
+    test_save_result_json_round_trips_pairings_and_validation_report()
+    print("OK: 5개 테스트 통과")
