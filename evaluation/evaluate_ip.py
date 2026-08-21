@@ -52,6 +52,9 @@ _GET_CONSTRAINT = {
 }
 from model import FlightEncoder, PointerDecoder
 from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
+from evaluation.completion_runner import solve_completion_stages
+from evaluation.completion_report import build_completion_report, render_completion_table, save_completion_report
+from evaluation.validator import validate_pairing
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings, set_environment
 from base_reach import build_base_reaches
@@ -207,9 +210,8 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
 # ── 3. Subset rollout -> global_id-keyed pairings ────────────────────────────
 
 def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy=False):
-    """Roll out over a subset (n_max legs, with global_id) and return global_id-keyed pairings."""
+    """Rollout 결과를 독립 검증한 뒤 global ID column으로 변환함."""
     local_flights = [{**f, "id": f["local_id"]} for f in subset]
-
     origins, dests, dep_norm, arr_norm, fly_norm = flights_to_tensors(
         local_flights, max_time, device=DEVICE
     )
@@ -223,10 +225,18 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
         )
 
     id_map = {f["local_id"]: f["global_id"] for f in subset}
-    for p in raw_pairings:
-        p["legs"] = [id_map[leg] for leg in p["legs"]]
-
-    return raw_pairings
+    local_by_id = {f["id"]: f for f in local_flights}
+    validated_pairings = []
+    for pairing in raw_pairings:
+        validation = validate_pairing(pairing, local_by_id, constraint)
+        if not validation["is_valid"]:
+            continue
+        pairing["is_legal"] = True
+        pairing["validator_version"] = validation["validator_version"]
+        pairing["constraint_hash"] = validation["constraint_hash"]
+        pairing["legs"] = [id_map[leg] for leg in pairing["legs"]]
+        validated_pairings.append(pairing)
+    return validated_pairings
 
 
 # ── 3-1. Partition a full window into connectivity-preserving chunks ────────
@@ -394,8 +404,39 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
     total_flights = sum(len(w) for w in windows)
     print(f"\ntotal pool: {len(pool)} pairings")
     print(f"total coverage: {len(covered_global)}/{total_flights} legs")
-    return list(pool.values()), covered_global
+    final_pool = list(pool.values())
+    for index, pairing in enumerate(final_pool):
+        pairing.setdefault("source_type", "policy")
+        pairing.setdefault("is_legal", True)
+        pairing["column_id"] = f"{pairing['source_type']}-{index}"
+    return final_pool, covered_global
 
+
+
+def solve_pool_completion(
+    pool, n_total, *, lambda_excess=1.0, time_limit=300,
+    reposition_penalty=1000.0, reserve_penalty=10000.0,
+    artificial_penalty=1000000.0, report_path=None, verbose=False,
+):
+    """수집된 pool을 V2 단계별 master로 풀고 legacy 출력 호환 필드를 추가함."""
+    stages = solve_completion_stages(
+        pool, range(n_total), lambda_excess=lambda_excess,
+        time_limit=time_limit, reposition_penalty=reposition_penalty,
+        reserve_penalty=reserve_penalty, artificial_penalty=artificial_penalty,
+        verbose=verbose,
+    )
+    report = build_completion_report(stages, range(n_total))
+    if report_path:
+        save_completion_report(report, report_path)
+    result = dict(stages[-1])
+    result["completion_report"] = report
+    result["uncoverable"] = len(result["uncovered_flight_ids"])
+    result["deadhead_count"] = result["excess_count"]
+    result["deadhead_flights"] = result["excess_flight_ids"]
+    result["mip_obj"] = result["mip_objective"]
+    result["total_cost"] = result["pairing_cost"]
+    result["n_pairings"] = len(result["selected"])
+    return result
 
 # ── 5. Main evaluation function ──────────────────────────────────────────────
 
@@ -415,6 +456,11 @@ def evaluate_full(
     use_wandb=False,
     wandb_project="ASCP-2026-paper",
     compute_gap=False,
+    full_flight_master=False,
+    completion_report_path=None,
+    reposition_penalty=1000.0,
+    reserve_penalty=10000.0,
+    artificial_penalty=1000000.0,
     seed=None,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
@@ -532,11 +578,23 @@ def evaluate_full(
         )
 
     print(f"\nSolving IP (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
-    result = solve_set_covering(pool, n_flights=n_total, time_limit=ip_time_limit, lambda_dh=lambda_dh, verbose=True)
+    if full_flight_master:
+        result = solve_pool_completion(
+            pool, n_total, lambda_excess=lambda_dh, time_limit=ip_time_limit,
+            reposition_penalty=reposition_penalty, reserve_penalty=reserve_penalty,
+            artificial_penalty=artificial_penalty,
+            report_path=completion_report_path, verbose=True,
+        )
+        print(render_completion_table(result["completion_report"]), flush=True)
+    else:
+        result = solve_set_covering(
+            pool, n_flights=n_total, time_limit=ip_time_limit,
+            lambda_dh=lambda_dh, verbose=True,
+        )
     print("IP solve complete", flush=True)
 
     gap_pct = None
-    if compute_gap:
+    if compute_gap and not full_flight_master:
         print(f"\nSolving LP relaxation (for Gap%, pool={len(pool)})...", flush=True)
         lp_result = solve_lp_relaxation(pool, lambda_dh=lambda_dh)
         if lp_result is not None and lp_result["lp_value"]:
@@ -544,7 +602,7 @@ def evaluate_full(
         else:
             print("  [warn] LP relaxation failed to solve -- cannot compute Gap%")
 
-    if result["uncoverable"] > 0 or result["coverage"] < 1.0:
+    if not full_flight_master and (result["uncoverable"] > 0 or result["coverage"] < 1.0):
         raise RuntimeError(
             "CPP 해를 구성하지 못했습니다: coverage={:.3f}, uncoverable={}".format(
                 result["coverage"], result["uncoverable"]
@@ -576,6 +634,9 @@ def evaluate_full(
     print(f"  n pairings:        {result['n_pairings']}")
     print(f"  ManDays:           {man_days}")
     print(f"  coverage:          {result['coverage'] * 100:.1f}%")
+    if full_flight_master:
+        print(f"  completion:        {result['completion_coverage'] * 100:.1f}%")
+        print(f"  artificial:        {result['artificial_count']} legs")
     print(f"  uncoverable:       {result['uncoverable']} legs")
     print(f"  deadhead:          {result['deadhead_count']} legs")
     print(f"  fly time:          {fly_total:.2f}h")
@@ -650,6 +711,13 @@ if __name__ == "__main__":
                         help="After solving the MIP, also solve the LP relaxation over the same "
                              "pool to compute Gap%%=(MIP_obj-LP_obj)/LP_obj*100 (same definition as "
                              "Tahir et al. Table 6). Off by default since the LP adds extra time on large pools")
+    parser.add_argument("--full-flight-master", action="store_true",
+                        help="전체 flight constraint와 단계별 completion master 사용")
+    parser.add_argument("--completion-report-path", default=None,
+                        help="V2 completion JSON 저장 경로")
+    parser.add_argument("--reposition-penalty", type=float, default=1000.0)
+    parser.add_argument("--reserve-penalty", type=float, default=10000.0)
+    parser.add_argument("--artificial-penalty", type=float, default=1000000.0)
     parser.add_argument("--seed", type=int, default=None,
                         help="Fix the random/torch RNG -- set this to run a paired comparison of "
                              "multiple checkpoints against the same evaluation instance (e.g. the "
@@ -677,5 +745,10 @@ if __name__ == "__main__":
         use_wandb=args.wandb,
         wandb_project=args.wandb_project,
         compute_gap=args.compute_gap,
+        full_flight_master=args.full_flight_master,
+        completion_report_path=args.completion_report_path,
+        reposition_penalty=args.reposition_penalty,
+        reserve_penalty=args.reserve_penalty,
+        artificial_penalty=args.artificial_penalty,
         seed=args.seed,
     )
