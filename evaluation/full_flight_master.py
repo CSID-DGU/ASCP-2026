@@ -85,21 +85,26 @@ def solve_full_flight_master(
     all_flight_ids: Iterable[int],
     *,
     lambda_excess: float = 1.0,
+    allow_artificial: bool = False,
+    artificial_penalty: float = 1000000.0,
     time_limit: int = 300,
     use_gurobi: bool = False,
     verbose: bool = False,
 ) -> Dict:
-    """모든 global flight ID에 coverage constraint를 생성하는 최소 master."""
+    """모든 global flight ID에 coverage constraint를 생성하는 master."""
     normalized, universe = validate_master_inputs(columns, all_flight_ids)
-    if lambda_excess < 0 or not math.isfinite(lambda_excess):
-        raise FullFlightInputError("lambda_excess는 0 이상의 유한값이어야 함")
+    for name, value in (("lambda_excess", lambda_excess), ("artificial_penalty", artificial_penalty)):
+        if value < 0 or not math.isfinite(value):
+            raise FullFlightInputError(f"{name}는 0 이상의 유한값이어야 함")
     if not universe:
         return {
             "selected": [], "selected_column_ids": [], "n_pairings": 0,
             "status": "Empty", "is_feasible": True, "mip_objective": 0.0,
-            "pairing_cost": 0.0, "excess_cost": 0.0,
+            "pairing_cost": 0.0, "excess_cost": 0.0, "artificial_cost": 0.0,
             "covered_flight_ids": [], "uncovered_flight_ids": [],
-            "coverage": 1.0, "excess_flight_ids": [], "excess_count": 0,
+            "coverage": 1.0, "completion_coverage": 1.0,
+            "excess_flight_ids": [], "excess_count": 0,
+            "artificial_flight_ids": [], "artificial_count": 0,
         }
 
     by_flight = defaultdict(list)
@@ -113,13 +118,19 @@ def solve_full_flight_master(
         flight_id: pulp.LpVariable(f"excess_{flight_id}", lowBound=0)
         for flight_id in universe
     }
+    artificial = {
+        flight_id: pulp.LpVariable(f"artificial_{flight_id}", cat="Binary")
+        for flight_id in universe
+    } if allow_artificial else {}
+
     pairing_term = pulp.lpSum(normalized[j]["cost"] * x[j] for j in range(len(x)))
     excess_term = lambda_excess * pulp.lpSum(excess.values())
-    problem += pairing_term + excess_term
+    artificial_term = artificial_penalty * pulp.lpSum(artificial.values())
+    problem += pairing_term + excess_term + artificial_term
 
     for flight_id in universe:
         cover_sum = pulp.lpSum(x[j] for j in by_flight[flight_id])
-        problem += cover_sum >= 1, f"cover_{flight_id}"
+        problem += cover_sum + artificial.get(flight_id, 0) >= 1, f"cover_{flight_id}"
         problem += excess[flight_id] >= cover_sum - 1, f"excess_{flight_id}"
 
     problem.solve(_solver(time_limit, use_gurobi, verbose))
@@ -136,10 +147,17 @@ def solve_full_flight_master(
         flight_id for flight_id in universe
         if is_feasible and (excess[flight_id].value() or 0.0) > 0.5
     ]
+    artificial_ids = [
+        flight_id for flight_id in universe
+        if is_feasible and flight_id in artificial
+        and (artificial[flight_id].value() or 0.0) > 0.5
+    ]
+    completed = covered | set(artificial_ids)
     pairing_cost = sum(column["cost"] for column in selected)
     excess_cost = lambda_excess * sum(
         excess[flight_id].value() or 0.0 for flight_id in universe
     ) if is_feasible else 0.0
+    artificial_cost = artificial_penalty * len(artificial_ids)
 
     return {
         "selected": selected,
@@ -150,9 +168,13 @@ def solve_full_flight_master(
         "mip_objective": pulp.value(problem.objective) if is_feasible else None,
         "pairing_cost": pairing_cost,
         "excess_cost": excess_cost,
+        "artificial_cost": artificial_cost,
         "covered_flight_ids": sorted(covered),
-        "uncovered_flight_ids": sorted(set(universe) - covered),
+        "uncovered_flight_ids": sorted(set(universe) - completed),
         "coverage": len(covered) / len(universe),
+        "completion_coverage": len(completed) / len(universe),
         "excess_flight_ids": sorted(excess_ids),
         "excess_count": len(excess_ids),
+        "artificial_flight_ids": sorted(artificial_ids),
+        "artificial_count": len(artificial_ids),
     }

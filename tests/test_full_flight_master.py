@@ -43,8 +43,6 @@ class InputContractTests(unittest.TestCase):
             validate_master_inputs([_column(), _column()], [10, 20])
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class FullUniverseConstraintTests(unittest.TestCase):
@@ -70,3 +68,38 @@ class FullUniverseConstraintTests(unittest.TestCase):
         result = solve_full_flight_master([], [])
         self.assertEqual(result["status"], "Empty")
         self.assertEqual(result["coverage"], 1.0)
+
+
+class ArtificialSlackTests(unittest.TestCase):
+    def test_artificial_completes_only_missing_flight(self):
+        result = solve_full_flight_master(
+            [_column(legs=[10])], [10, 20],
+            allow_artificial=True, artificial_penalty=100,
+        )
+        self.assertEqual(result["status"], "Optimal")
+        self.assertEqual(result["covered_flight_ids"], [10])
+        self.assertEqual(result["artificial_flight_ids"], [20])
+        self.assertEqual(result["coverage"], 0.5)
+        self.assertEqual(result["completion_coverage"], 1.0)
+        self.assertEqual(result["artificial_cost"], 100)
+        self.assertEqual(result["mip_objective"], 103)
+
+    def test_empty_pool_uses_one_artificial_per_flight(self):
+        result = solve_full_flight_master(
+            [], [10, 20], allow_artificial=True, artificial_penalty=7,
+        )
+        self.assertEqual(result["artificial_flight_ids"], [10, 20])
+        self.assertEqual(result["artificial_count"], 2)
+        self.assertEqual(result["mip_objective"], 14)
+
+    def test_legal_column_wins_when_cheaper_than_artificial(self):
+        result = solve_full_flight_master(
+            [_column(legs=[10], cost=5)], [10],
+            allow_artificial=True, artificial_penalty=100,
+        )
+        self.assertEqual(result["selected_column_ids"], ["p0"])
+        self.assertEqual(result["artificial_count"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
