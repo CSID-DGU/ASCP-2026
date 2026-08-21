@@ -203,6 +203,8 @@ def solve_full_flight_master(
     pairing_cost = sum(column["cost"] for column in selected)
     excess_cost = lambda_excess * sum(excess_values.values())
     reposition_cost = reposition_penalty * len(reposition_ids)
+    reserve_cost = reserve_penalty * len(reserve_ids)
+    artificial_cost = artificial_penalty * len(artificial_ids)
     selected_count_by_source = {
         source: sum(column["source_type"] == source for column in selected)
         for source in sorted(SUPPORTED_SOURCE_TYPES)
@@ -212,17 +214,12 @@ def solve_full_flight_master(
         for source in sorted(SUPPORTED_SOURCE_TYPES)
     }
     objective_breakdown = {
-        "selected_count_by_source": selected_count_by_source,
-        "selected_cost_by_source": selected_cost_by_source,
-        "objective_breakdown": objective_breakdown,
         "pairing": pairing_cost,
         "excess": excess_cost,
         "reposition": reposition_cost,
         "reserve": reserve_cost,
         "artificial": artificial_cost,
     }
-    reserve_cost = reserve_penalty * len(reserve_ids)
-    artificial_cost = artificial_penalty * len(artificial_ids)
 
     return {
         "selected": selected,
@@ -235,6 +232,9 @@ def solve_full_flight_master(
         "covered_flight_ids": sorted(legal_covered),
         "operational_covered_flight_ids": sorted(operational_covered),
         "uncovered_flight_ids": sorted(universe_set - completed),
+        "selected_count_by_source": selected_count_by_source,
+        "selected_cost_by_source": selected_cost_by_source,
+        "objective_breakdown": objective_breakdown,
         "coverage": len(legal_covered) / len(universe),
         "operational_completion_coverage": len(operational_covered) / len(universe),
         "completion_coverage": len(completed) / len(universe),
