@@ -15,7 +15,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
-from evaluation.evaluate_ip import validate_selected_pairings, save_result_json  # noqa: E402
+from evaluation.evaluate_ip import (  # noqa: E402
+    validate_selected_pairings,
+    save_result_json,
+    default_save_json_path,
+)
 
 
 BASE, OTHER = 0, 1
@@ -121,10 +125,23 @@ def test_save_result_json_round_trips_pairings_and_validation_report():
     assert saved["validation_report"]["validator_version"] == validation_report["validator_version"]
 
 
+def test_default_save_json_path_distinguishes_eval_mode_and_airline():
+    strict_path = default_save_json_path("checkpoints/foo/phase2_best.pt", "delta", "strict")
+    legacy_path = default_save_json_path("checkpoints/foo/phase2_best.pt", "delta", "legacy")
+    other_airline_path = default_save_json_path("checkpoints/foo/phase2_best.pt", "alaska", "strict")
+
+    assert strict_path.startswith("log/eval_json/")
+    assert strict_path.endswith(".json")
+    # 같은 checkpoint라도 mode/airline이 다르면 서로 덮어쓰지 않게 경로가 달라야 함
+    assert strict_path != legacy_path
+    assert strict_path != other_airline_path
+
+
 if __name__ == "__main__":
     test_all_valid_selected_pairings_report_zero_invalid()
     test_invalid_selected_pairing_is_reported()
     test_strict_mode_raises_on_invalid()
     test_pairings_grouped_by_their_own_generation_base()
     test_save_result_json_round_trips_pairings_and_validation_report()
-    print("OK: 5개 테스트 통과")
+    test_default_save_json_path_distinguishes_eval_mode_and_airline()
+    print("OK: 6개 테스트 통과")

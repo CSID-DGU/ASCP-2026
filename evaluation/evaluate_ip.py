@@ -457,15 +457,23 @@ def validate_selected_pairings(selected, flights_by_id, constraint, base_ids,
 
 # ── 4-2. C3/C4: 최종 selected pairing을 flight ID까지 포함해서 JSON으로 저장 ───
 
+def default_save_json_path(checkpoint_path, airline, eval_mode):
+    """`--save-json`/`--no-save-json` 둘 다 안 줬을 때 자동으로 쓰는 저장 경로.
+    checkpoint 파일명 + airline + eval_mode로 구성해서, 같은 checkpoint를
+    strict/legacy 두 모드로 각각 평가해도 서로 덮어쓰지 않게 한다.
+    """
+    ckpt_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
+    return f"log/eval_json/{eval_mode}_{airline}_{ckpt_name}.json"
+
+
 def save_result_json(path, result, checkpoint_path, airline, eval_mode):
     """v1.md C3 "ASCP 결과 JSON/CSV에 validator version과 constraint hash 기록".
 
     지금까지는 이 저장 코드 자체가 없어서 evaluate_ip.py가 화면에 찍는 요약
     통계(coverage/ManDays/FTC 등)만 log 파일로 남았고, 실제 선택된 pairing이
-    어떤 flight(legs)로 구성됐는지는 어디에도 저장되지 않았다(그래서 "기존 ASCP
-    output 재채점 adapter"를 만들 대상 자체가 없었음 -- log/ 전체를 확인해서
-    검증함). 이 함수가 그 공백을 메운다 -- 이후로 이 형식으로 저장된 파일은
-    evaluation/ascp_output_adapter.py로 다시 읽어서 재검증할 수 있다.
+    어떤 flight(legs)로 구성됐는지는 어디에도 저장되지 않았음 -- log/ 전체를 확인해서
+    검증함). 이 함수가 그 공백을 메움-- 이후로 이 형식으로 저장된 파일은
+    evaluation/ascp_output_adapter.py로 다시 읽어서 재검증 가능
     """
     payload = {
         "checkpoint": checkpoint_path,
@@ -514,6 +522,7 @@ def evaluate_full(
     seed=None,
     strict_validation=False,
     save_json_path=None,
+    no_save_json=False,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
 
@@ -544,13 +553,17 @@ def evaluate_full(
     set_environment(airline)
 
     wandb_run = None
-    # C3 "기존 checkpoint 평가와 신규 strict 평가를 서로 다른 mode 이름으로
-    # 저장" -- evaluate_ip.py엔 JSON/CSV 저장 기능이 따로 없고 wandb가 유일한 영구
-    # 저장 수단이라, run 이름/config에 이 mode를 반영하는 걸로 대신함. eval_mode
-    # 자체는 --strict-validation과 무관하게(그 값과 상관없이) 항상 명시해서, 이
-    # 필드가 있으면 새 파이프라인(독립 validator가 붙은 버전)으로 평가됐다는 걸
-    # wandb에서 구분할 수 있게 한다.
+    # C3 "기존 checkpoint 평가와 신규 strict 평가를 서로 다른 mode 이름으로 저장" --
+    # wandb run 이름/config에도 반영하고(아래), 실제 JSON 파일 저장(save_result_json)
+    # 경로에도 이 이름을 씀. eval_mode 자체는 --strict-validation과 무관하게(그
+    # 값과 상관없이) 항상 명시해서, 새 파이프라인(독립 validator가 붙은 버전)으로
+    # 평가됐다는 걸 구분할 수 있게 한다.
     eval_mode = "strict" if strict_validation else "legacy"
+
+    # 명시적으로 --no-save-json을 주지 않는 한 항상 저장하고, 경로만
+    # 기본값(checkpoint/airline/eval_mode 기반)을 자동 생성한다.
+    if save_json_path is None and not no_save_json:
+        save_json_path = default_save_json_path(checkpoint_path, airline, eval_mode)
     if use_wandb:
         import wandb
         wandb_run = wandb.init(
@@ -790,8 +803,12 @@ if __name__ == "__main__":
                              "is always printed and returned in result['validation_report'] either way.")
     parser.add_argument("--save-json", default=None,
                         help="Save selected pairings (incl. flight-ID legs) + validation report "
-                             "to this JSON path (v1.md C3) -- needed for evaluation/"
-                             "ascp_output_adapter.py to re-score a past run later.")
+                             "to this JSON path (v1.md C3). Saved by default even without this "
+                             "flag (path auto-derived from checkpoint/airline/eval_mode under "
+                             "log/eval_json/) -- needed for evaluation/ascp_output_adapter.py to "
+                             "re-score a past run later; pass --no-save-json to opt out.")
+    parser.add_argument("--no-save-json", action="store_true",
+                        help="Skip saving the JSON result entirely (by default it's always saved).")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -818,4 +835,5 @@ if __name__ == "__main__":
         seed=args.seed,
         strict_validation=args.strict_validation,
         save_json_path=args.save_json,
+        no_save_json=args.no_save_json,
     )
