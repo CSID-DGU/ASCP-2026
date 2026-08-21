@@ -23,6 +23,7 @@ class CompletionReportTests(unittest.TestCase):
         report = build_completion_report(self.stages, self.ids)
         self.assertEqual(report["direct_candidate_coverage"], 0.25)
         self.assertEqual(report["post_rescue_candidate_coverage"], 0.75)
+        self.assertEqual(report["operational_completion_coverage"], 0.75)
         self.assertEqual(report["completion_coverage"], 1.0)
         self.assertEqual(report["artificial_flight_ids"], [40])
 

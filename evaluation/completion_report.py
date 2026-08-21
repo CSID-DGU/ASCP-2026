@@ -49,7 +49,7 @@ def build_completion_report(stage_results: Iterable[Dict], all_flight_ids: Itera
         "direct_candidate_coverage": stages[0]["candidate_coverage"],
         "salvage_assisted_candidate_coverage": stages[1]["candidate_coverage"],
         "post_rescue_candidate_coverage": stages[2]["candidate_coverage"],
-        "operational_completion_coverage": stages[3]["operational_completion_coverage"],
+        "operational_completion_coverage": final["operational_completion_coverage"],
         "completion_coverage": final["completion_coverage"],
         "artificial_count": final["artificial_count"],
         "artificial_flight_ids": final["artificial_flight_ids"],
