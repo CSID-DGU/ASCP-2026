@@ -101,5 +101,39 @@ class ArtificialSlackTests(unittest.TestCase):
         self.assertEqual(result["artificial_count"], 0)
 
 
+
+
+class OperationalCompletionTests(unittest.TestCase):
+    def test_reposition_precedes_reserve_and_artificial_by_cost(self):
+        result = solve_full_flight_master(
+            [], [10], allow_reposition=True, allow_reserve=True,
+            allow_artificial=True, reposition_penalty=10,
+            reserve_penalty=20, artificial_penalty=100,
+        )
+        self.assertEqual(result["reposition_flight_ids"], [10])
+        self.assertEqual(result["reserve_flight_ids"], [])
+        self.assertEqual(result["artificial_flight_ids"], [])
+        self.assertEqual(result["operational_completion_coverage"], 1.0)
+
+    def test_target_restriction_forces_reserve(self):
+        result = solve_full_flight_master(
+            [], [10, 20], allow_reposition=True, allow_reserve=True,
+            reposition_flight_ids=[10], reserve_flight_ids=[20],
+            reposition_penalty=10, reserve_penalty=20,
+        )
+        self.assertEqual(result["reposition_flight_ids"], [10])
+        self.assertEqual(result["reserve_flight_ids"], [20])
+        self.assertEqual(result["completion_coverage"], 1.0)
+
+    def test_operational_column_is_disabled_without_flag(self):
+        operational = _column("r0", [10], cost=1, source_type="reposition", is_legal=False)
+        disabled = solve_full_flight_master([operational], [10])
+        enabled = solve_full_flight_master([operational], [10], allow_reposition=True)
+        self.assertFalse(disabled["is_feasible"])
+        self.assertEqual(enabled["selected_column_ids"], ["r0"])
+        self.assertEqual(enabled["coverage"], 0.0)
+        self.assertEqual(enabled["operational_completion_coverage"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

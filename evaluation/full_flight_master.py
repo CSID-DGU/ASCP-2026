@@ -85,96 +85,140 @@ def solve_full_flight_master(
     all_flight_ids: Iterable[int],
     *,
     lambda_excess: float = 1.0,
+    allow_reposition: bool = False,
+    allow_reserve: bool = False,
     allow_artificial: bool = False,
+    reposition_penalty: float = 1000.0,
+    reserve_penalty: float = 10000.0,
     artificial_penalty: float = 1000000.0,
+    reposition_flight_ids: Iterable[int] | None = None,
+    reserve_flight_ids: Iterable[int] | None = None,
     time_limit: int = 300,
     use_gurobi: bool = False,
     verbose: bool = False,
 ) -> Dict:
-    """모든 global flight ID에 coverage constraint를 생성하는 master."""
+    """전체 flight를 legal·operational·artificial 중 하나로 명시 처리함."""
     normalized, universe = validate_master_inputs(columns, all_flight_ids)
-    for name, value in (("lambda_excess", lambda_excess), ("artificial_penalty", artificial_penalty)):
+    penalties = {
+        "lambda_excess": lambda_excess,
+        "reposition_penalty": reposition_penalty,
+        "reserve_penalty": reserve_penalty,
+        "artificial_penalty": artificial_penalty,
+    }
+    for name, value in penalties.items():
         if value < 0 or not math.isfinite(value):
             raise FullFlightInputError(f"{name}는 0 이상의 유한값이어야 함")
+
+    universe_set = set(universe)
+    reposition_targets = universe_set if reposition_flight_ids is None else set(reposition_flight_ids)
+    reserve_targets = universe_set if reserve_flight_ids is None else set(reserve_flight_ids)
+    for name, targets in (("reposition_flight_ids", reposition_targets), ("reserve_flight_ids", reserve_targets)):
+        unknown = targets - universe_set
+        if unknown:
+            raise FullFlightInputError(f"{name}에 universe 밖 flight ID {sorted(unknown)}")
+
+    enabled_columns = [
+        column for column in normalized
+        if column["source_type"] in LEGAL_SOURCE_TYPES
+        or (column["source_type"] == "reposition" and allow_reposition)
+        or (column["source_type"] == "reserve" and allow_reserve)
+    ]
     if not universe:
         return {
             "selected": [], "selected_column_ids": [], "n_pairings": 0,
             "status": "Empty", "is_feasible": True, "mip_objective": 0.0,
-            "pairing_cost": 0.0, "excess_cost": 0.0, "artificial_cost": 0.0,
+            "pairing_cost": 0.0, "excess_cost": 0.0,
+            "reposition_cost": 0.0, "reserve_cost": 0.0, "artificial_cost": 0.0,
             "covered_flight_ids": [], "uncovered_flight_ids": [],
-            "coverage": 1.0, "completion_coverage": 1.0,
-            "excess_flight_ids": [], "excess_count": 0,
+            "coverage": 1.0, "operational_completion_coverage": 1.0,
+            "completion_coverage": 1.0, "excess_flight_ids": [], "excess_count": 0,
+            "reposition_flight_ids": [], "reserve_flight_ids": [],
             "artificial_flight_ids": [], "artificial_count": 0,
         }
 
     by_flight = defaultdict(list)
-    for j, column in enumerate(normalized):
+    for j, column in enumerate(enabled_columns):
         for flight_id in column["legs"]:
             by_flight[flight_id].append(j)
 
     problem = pulp.LpProblem("full_flight_master", pulp.LpMinimize)
-    x = [pulp.LpVariable(f"x_{j}", cat="Binary") for j in range(len(normalized))]
-    excess = {
-        flight_id: pulp.LpVariable(f"excess_{flight_id}", lowBound=0)
-        for flight_id in universe
+    x = [pulp.LpVariable(f"x_{j}", cat="Binary") for j in range(len(enabled_columns))]
+    excess = {flight_id: pulp.LpVariable(f"excess_{flight_id}", lowBound=0) for flight_id in universe}
+    reposition = {
+        flight_id: pulp.LpVariable(f"reposition_{flight_id}", cat="Binary")
+        for flight_id in universe if allow_reposition and flight_id in reposition_targets
+    }
+    reserve = {
+        flight_id: pulp.LpVariable(f"reserve_{flight_id}", cat="Binary")
+        for flight_id in universe if allow_reserve and flight_id in reserve_targets
     }
     artificial = {
         flight_id: pulp.LpVariable(f"artificial_{flight_id}", cat="Binary")
         for flight_id in universe
     } if allow_artificial else {}
 
-    pairing_term = pulp.lpSum(normalized[j]["cost"] * x[j] for j in range(len(x)))
+    pairing_term = pulp.lpSum(enabled_columns[j]["cost"] * x[j] for j in range(len(x)))
     excess_term = lambda_excess * pulp.lpSum(excess.values())
+    reposition_term = reposition_penalty * pulp.lpSum(reposition.values())
+    reserve_term = reserve_penalty * pulp.lpSum(reserve.values())
     artificial_term = artificial_penalty * pulp.lpSum(artificial.values())
-    problem += pairing_term + excess_term + artificial_term
+    problem += pairing_term + excess_term + reposition_term + reserve_term + artificial_term
 
     for flight_id in universe:
         cover_sum = pulp.lpSum(x[j] for j in by_flight[flight_id])
-        problem += cover_sum + artificial.get(flight_id, 0) >= 1, f"cover_{flight_id}"
+        completion_sum = reposition.get(flight_id, 0) + reserve.get(flight_id, 0) + artificial.get(flight_id, 0)
+        problem += cover_sum + completion_sum >= 1, f"cover_{flight_id}"
         problem += excess[flight_id] >= cover_sum - 1, f"excess_{flight_id}"
 
     problem.solve(_solver(time_limit, use_gurobi, verbose))
     status = pulp.LpStatus[problem.status]
     is_feasible = status in {"Optimal", "Feasible"}
     selected = [
-        normalized[j] for j, variable in enumerate(x)
+        enabled_columns[j] for j, variable in enumerate(x)
         if is_feasible and (variable.value() or 0.0) > 0.5
     ]
-    covered = set()
+    def chosen_ids(variables):
+        return sorted(
+            flight_id for flight_id, variable in variables.items()
+            if is_feasible and (variable.value() or 0.0) > 0.5
+        )
+
+    legal_covered = set()
+    operational_column_covered = set()
     for column in selected:
-        covered.update(column["legs"])
-    excess_ids = [
-        flight_id for flight_id in universe
-        if is_feasible and (excess[flight_id].value() or 0.0) > 0.5
-    ]
-    artificial_ids = [
-        flight_id for flight_id in universe
-        if is_feasible and flight_id in artificial
-        and (artificial[flight_id].value() or 0.0) > 0.5
-    ]
-    completed = covered | set(artificial_ids)
+        target = legal_covered if column["source_type"] in LEGAL_SOURCE_TYPES else operational_column_covered
+        target.update(column["legs"])
+    reposition_ids = chosen_ids(reposition)
+    reserve_ids = chosen_ids(reserve)
+    artificial_ids = chosen_ids(artificial)
+    operational_covered = legal_covered | operational_column_covered | set(reposition_ids) | set(reserve_ids)
+    completed = operational_covered | set(artificial_ids)
+    excess_values = {
+        flight_id: (excess[flight_id].value() or 0.0) if is_feasible else 0.0
+        for flight_id in universe
+    }
+    excess_ids = sorted(flight_id for flight_id, value in excess_values.items() if value > 0.5)
     pairing_cost = sum(column["cost"] for column in selected)
-    excess_cost = lambda_excess * sum(
-        excess[flight_id].value() or 0.0 for flight_id in universe
-    ) if is_feasible else 0.0
+    excess_cost = lambda_excess * sum(excess_values.values())
+    reposition_cost = reposition_penalty * len(reposition_ids)
+    reserve_cost = reserve_penalty * len(reserve_ids)
     artificial_cost = artificial_penalty * len(artificial_ids)
 
     return {
         "selected": selected,
         "selected_column_ids": [column["column_id"] for column in selected],
-        "n_pairings": len(selected),
-        "status": status,
-        "is_feasible": is_feasible,
+        "n_pairings": len(selected), "status": status, "is_feasible": is_feasible,
         "mip_objective": pulp.value(problem.objective) if is_feasible else None,
-        "pairing_cost": pairing_cost,
-        "excess_cost": excess_cost,
+        "pairing_cost": pairing_cost, "excess_cost": excess_cost,
+        "reposition_cost": reposition_cost, "reserve_cost": reserve_cost,
         "artificial_cost": artificial_cost,
-        "covered_flight_ids": sorted(covered),
-        "uncovered_flight_ids": sorted(set(universe) - completed),
-        "coverage": len(covered) / len(universe),
+        "covered_flight_ids": sorted(legal_covered),
+        "operational_covered_flight_ids": sorted(operational_covered),
+        "uncovered_flight_ids": sorted(universe_set - completed),
+        "coverage": len(legal_covered) / len(universe),
+        "operational_completion_coverage": len(operational_covered) / len(universe),
         "completion_coverage": len(completed) / len(universe),
-        "excess_flight_ids": sorted(excess_ids),
-        "excess_count": len(excess_ids),
-        "artificial_flight_ids": sorted(artificial_ids),
-        "artificial_count": len(artificial_ids),
+        "excess_flight_ids": excess_ids, "excess_count": len(excess_ids),
+        "reposition_flight_ids": reposition_ids, "reserve_flight_ids": reserve_ids,
+        "artificial_flight_ids": artificial_ids, "artificial_count": len(artificial_ids),
     }
