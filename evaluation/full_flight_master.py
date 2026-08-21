@@ -134,6 +134,8 @@ def solve_full_flight_master(
             "completion_coverage": 1.0, "excess_flight_ids": [], "excess_count": 0,
             "reposition_flight_ids": [], "reserve_flight_ids": [],
             "artificial_flight_ids": [], "artificial_count": 0,
+            "selected_count_by_source": {}, "selected_cost_by_source": {},
+            "objective_breakdown": {"pairing": 0.0, "excess": 0.0, "reposition": 0.0, "reserve": 0.0, "artificial": 0.0},
         }
 
     by_flight = defaultdict(list)
@@ -201,6 +203,24 @@ def solve_full_flight_master(
     pairing_cost = sum(column["cost"] for column in selected)
     excess_cost = lambda_excess * sum(excess_values.values())
     reposition_cost = reposition_penalty * len(reposition_ids)
+    selected_count_by_source = {
+        source: sum(column["source_type"] == source for column in selected)
+        for source in sorted(SUPPORTED_SOURCE_TYPES)
+    }
+    selected_cost_by_source = {
+        source: sum(column["cost"] for column in selected if column["source_type"] == source)
+        for source in sorted(SUPPORTED_SOURCE_TYPES)
+    }
+    objective_breakdown = {
+        "selected_count_by_source": selected_count_by_source,
+        "selected_cost_by_source": selected_cost_by_source,
+        "objective_breakdown": objective_breakdown,
+        "pairing": pairing_cost,
+        "excess": excess_cost,
+        "reposition": reposition_cost,
+        "reserve": reserve_cost,
+        "artificial": artificial_cost,
+    }
     reserve_cost = reserve_penalty * len(reserve_ids)
     artificial_cost = artificial_penalty * len(artificial_ids)
 

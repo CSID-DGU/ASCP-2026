@@ -135,5 +135,28 @@ class OperationalCompletionTests(unittest.TestCase):
         self.assertEqual(enabled["operational_completion_coverage"], 1.0)
 
 
+
+
+class SourceAwareObjectiveTests(unittest.TestCase):
+    def test_rescue_is_reported_separately_and_beats_artificial(self):
+        rescue = _column("rescue-10", [10], cost=12, source_type="rescue")
+        result = solve_full_flight_master(
+            [rescue], [10], allow_artificial=True, artificial_penalty=100,
+        )
+        self.assertEqual(result["selected_count_by_source"]["rescue"], 1)
+        self.assertEqual(result["selected_count_by_source"]["policy"], 0)
+        self.assertEqual(result["selected_cost_by_source"]["rescue"], 12)
+        self.assertEqual(result["artificial_count"], 0)
+
+    def test_objective_breakdown_matches_solver_objective(self):
+        columns = [
+            _column("p0", [10, 20], cost=3),
+            _column("p1", [20, 30], cost=4),
+        ]
+        result = solve_full_flight_master(columns, [10, 20, 30], lambda_excess=5)
+        self.assertAlmostEqual(sum(result["objective_breakdown"].values()), result["mip_objective"])
+        self.assertEqual(result["excess_flight_ids"], [20])
+
+
 if __name__ == "__main__":
     unittest.main()
