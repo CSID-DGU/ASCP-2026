@@ -7,6 +7,9 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
+
+import pulp
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 
@@ -66,3 +69,90 @@ def validate_master_inputs(
 
     return normalized, universe
 
+
+
+def _solver(time_limit: int, use_gurobi: bool, verbose: bool):
+    if use_gurobi:
+        try:
+            return pulp.GUROBI(timeLimit=time_limit, msg=int(verbose))
+        except Exception:
+            pass
+    return pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=int(verbose))
+
+
+def solve_full_flight_master(
+    columns: Sequence[Dict],
+    all_flight_ids: Iterable[int],
+    *,
+    lambda_excess: float = 1.0,
+    time_limit: int = 300,
+    use_gurobi: bool = False,
+    verbose: bool = False,
+) -> Dict:
+    """모든 global flight ID에 coverage constraint를 생성하는 최소 master."""
+    normalized, universe = validate_master_inputs(columns, all_flight_ids)
+    if lambda_excess < 0 or not math.isfinite(lambda_excess):
+        raise FullFlightInputError("lambda_excess는 0 이상의 유한값이어야 함")
+    if not universe:
+        return {
+            "selected": [], "selected_column_ids": [], "n_pairings": 0,
+            "status": "Empty", "is_feasible": True, "mip_objective": 0.0,
+            "pairing_cost": 0.0, "excess_cost": 0.0,
+            "covered_flight_ids": [], "uncovered_flight_ids": [],
+            "coverage": 1.0, "excess_flight_ids": [], "excess_count": 0,
+        }
+
+    by_flight = defaultdict(list)
+    for j, column in enumerate(normalized):
+        for flight_id in column["legs"]:
+            by_flight[flight_id].append(j)
+
+    problem = pulp.LpProblem("full_flight_master", pulp.LpMinimize)
+    x = [pulp.LpVariable(f"x_{j}", cat="Binary") for j in range(len(normalized))]
+    excess = {
+        flight_id: pulp.LpVariable(f"excess_{flight_id}", lowBound=0)
+        for flight_id in universe
+    }
+    pairing_term = pulp.lpSum(normalized[j]["cost"] * x[j] for j in range(len(x)))
+    excess_term = lambda_excess * pulp.lpSum(excess.values())
+    problem += pairing_term + excess_term
+
+    for flight_id in universe:
+        cover_sum = pulp.lpSum(x[j] for j in by_flight[flight_id])
+        problem += cover_sum >= 1, f"cover_{flight_id}"
+        problem += excess[flight_id] >= cover_sum - 1, f"excess_{flight_id}"
+
+    problem.solve(_solver(time_limit, use_gurobi, verbose))
+    status = pulp.LpStatus[problem.status]
+    is_feasible = status in {"Optimal", "Feasible"}
+    selected = [
+        normalized[j] for j, variable in enumerate(x)
+        if is_feasible and (variable.value() or 0.0) > 0.5
+    ]
+    covered = set()
+    for column in selected:
+        covered.update(column["legs"])
+    excess_ids = [
+        flight_id for flight_id in universe
+        if is_feasible and (excess[flight_id].value() or 0.0) > 0.5
+    ]
+    pairing_cost = sum(column["cost"] for column in selected)
+    excess_cost = lambda_excess * sum(
+        excess[flight_id].value() or 0.0 for flight_id in universe
+    ) if is_feasible else 0.0
+
+    return {
+        "selected": selected,
+        "selected_column_ids": [column["column_id"] for column in selected],
+        "n_pairings": len(selected),
+        "status": status,
+        "is_feasible": is_feasible,
+        "mip_objective": pulp.value(problem.objective) if is_feasible else None,
+        "pairing_cost": pairing_cost,
+        "excess_cost": excess_cost,
+        "covered_flight_ids": sorted(covered),
+        "uncovered_flight_ids": sorted(set(universe) - covered),
+        "coverage": len(covered) / len(universe),
+        "excess_flight_ids": sorted(excess_ids),
+        "excess_count": len(excess_ids),
+    }

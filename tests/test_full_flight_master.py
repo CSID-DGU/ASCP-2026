@@ -2,7 +2,7 @@
 
 import unittest
 
-from evaluation.full_flight_master import FullFlightInputError, validate_master_inputs
+from evaluation.full_flight_master import FullFlightInputError, solve_full_flight_master, validate_master_inputs
 
 
 def _column(column_id="p0", legs=None, **overrides):
@@ -45,3 +45,28 @@ class InputContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FullUniverseConstraintTests(unittest.TestCase):
+    def test_known_optimum_covers_non_contiguous_universe(self):
+        columns = [
+            _column("p0", [10, 20], cost=3),
+            _column("p1", [30], cost=2),
+            _column("p2", [10, 20, 30], cost=10),
+        ]
+        result = solve_full_flight_master(columns, [10, 20, 30])
+        self.assertEqual(result["status"], "Optimal")
+        self.assertEqual(result["selected_column_ids"], ["p0", "p1"])
+        self.assertEqual(result["coverage"], 1.0)
+        self.assertEqual(result["mip_objective"], 5.0)
+
+    def test_candidate_missing_flight_is_infeasible_not_silently_deleted(self):
+        result = solve_full_flight_master([_column(legs=[10])], [10, 20])
+        self.assertEqual(result["status"], "Infeasible")
+        self.assertFalse(result["is_feasible"])
+        self.assertEqual(result["uncovered_flight_ids"], [10, 20])
+
+    def test_empty_universe_is_trivially_feasible(self):
+        result = solve_full_flight_master([], [])
+        self.assertEqual(result["status"], "Empty")
+        self.assertEqual(result["coverage"], 1.0)
