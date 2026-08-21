@@ -108,6 +108,7 @@ class OperationalCompletionTests(unittest.TestCase):
     def test_reposition_precedes_reserve_and_artificial_by_cost(self):
         result = solve_full_flight_master(
             [], [10], allow_reposition=True, allow_reserve=True,
+            reposition_flight_ids=[10], reserve_flight_ids=[10],
             allow_artificial=True, reposition_penalty=10,
             reserve_penalty=20, artificial_penalty=100,
         )

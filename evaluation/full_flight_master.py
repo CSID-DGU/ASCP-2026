@@ -110,8 +110,8 @@ def solve_full_flight_master(
             raise FullFlightInputError(f"{name}는 0 이상의 유한값이어야 함")
 
     universe_set = set(universe)
-    reposition_targets = universe_set if reposition_flight_ids is None else set(reposition_flight_ids)
-    reserve_targets = universe_set if reserve_flight_ids is None else set(reserve_flight_ids)
+    reposition_targets = set() if reposition_flight_ids is None else set(reposition_flight_ids)
+    reserve_targets = set() if reserve_flight_ids is None else set(reserve_flight_ids)
     for name, targets in (("reposition_flight_ids", reposition_targets), ("reserve_flight_ids", reserve_targets)):
         unknown = targets - universe_set
         if unknown:
