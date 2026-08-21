@@ -4,8 +4,34 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Sequence
 
-from evaluation.full_flight_master import solve_full_flight_master
+from evaluation.full_flight_master import FullFlightInputError, solve_full_flight_master, validate_master_inputs
 
+
+
+def merge_rescue_columns(
+    columns: Sequence[Dict], rescue_columns: Sequence[Dict], all_flight_ids: Iterable[int]
+) -> List[Dict]:
+    """찬주 generator의 rescue column을 계약 검증 후 기존 pool에 병합함."""
+    universe = tuple(all_flight_ids)
+    merged = [dict(column) for column in columns]
+    seen_legs = {tuple(column.get("legs", [])) for column in merged}
+    for index, raw in enumerate(rescue_columns):
+        rescue = dict(raw)
+        rescue.setdefault("column_id", f"rescue-{index}")
+        if rescue.get("source_type") != "rescue":
+            raise FullFlightInputError(f"{rescue['column_id']}: rescue source_type이 필요함")
+        targets = set(rescue.get("repair_target_flights", []))
+        if not targets:
+            raise FullFlightInputError(f"{rescue['column_id']}: repair_target_flights가 비어 있음")
+        if not targets.issubset(set(rescue.get("legs", []))):
+            raise FullFlightInputError(f"{rescue['column_id']}: target flight가 legs에 없음")
+        key = tuple(rescue.get("legs", []))
+        if key in seen_legs:
+            continue
+        merged.append(rescue)
+        seen_legs.add(key)
+    validate_master_inputs(merged, universe)
+    return merged
 
 STAGES = (
     ("policy", {"policy"}, False, False, False),

@@ -28,5 +28,18 @@ class EvaluateIpCompletionTests(unittest.TestCase):
         self.assertEqual(loaded["completion_coverage"], 1.0)
 
 
+
+    def test_rescue_columns_are_merged_before_staged_solve(self):
+        policy = {"column_id": "p", "legs": [0], "cost": 2, "source_type": "policy", "is_legal": True}
+        rescue = {
+            "column_id": "r", "legs": [1], "cost": 3,
+            "source_type": "rescue", "is_legal": True,
+            "repair_target_flights": [1],
+        }
+        result = solve_pool_completion([policy], 2, rescue_columns=[rescue], artificial_penalty=100)
+        self.assertEqual(result["completion_report"]["post_rescue_candidate_coverage"], 1.0)
+        self.assertEqual(result["artificial_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,7 @@ Notes:
 import sys
 import os
 import math
+import json
 import random
 import argparse
 
@@ -52,7 +53,7 @@ _GET_CONSTRAINT = {
 }
 from model import FlightEncoder, PointerDecoder
 from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
-from evaluation.completion_runner import solve_completion_stages
+from evaluation.completion_runner import merge_rescue_columns, solve_completion_stages
 from evaluation.completion_report import build_completion_report, render_completion_table, save_completion_report
 from evaluation.validator import validate_pairing
 from utils import constraint_to_tensor, flights_to_tensors
@@ -416,9 +417,11 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
 def solve_pool_completion(
     pool, n_total, *, lambda_excess=1.0, time_limit=300,
     reposition_penalty=1000.0, reserve_penalty=10000.0,
-    artificial_penalty=1000000.0, report_path=None, verbose=False,
+    artificial_penalty=1000000.0, report_path=None, rescue_columns=None, verbose=False,
 ):
     """수집된 pool을 V2 단계별 master로 풀고 legacy 출력 호환 필드를 추가함."""
+    if rescue_columns:
+        pool = merge_rescue_columns(pool, rescue_columns, range(n_total))
     stages = solve_completion_stages(
         pool, range(n_total), lambda_excess=lambda_excess,
         time_limit=time_limit, reposition_penalty=reposition_penalty,
@@ -458,6 +461,7 @@ def evaluate_full(
     compute_gap=False,
     full_flight_master=False,
     completion_report_path=None,
+    rescue_pool_path=None,
     reposition_penalty=1000.0,
     reserve_penalty=10000.0,
     artificial_penalty=1000000.0,
@@ -579,11 +583,17 @@ def evaluate_full(
 
     print(f"\nSolving IP (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
     if full_flight_master:
+        rescue_columns = None
+        if rescue_pool_path:
+            with open(rescue_pool_path, "r", encoding="utf-8") as handle:
+                rescue_columns = json.load(handle)
+            if isinstance(rescue_columns, dict):
+                rescue_columns = rescue_columns.get("columns", rescue_columns.get("rescue_columns", []))
         result = solve_pool_completion(
             pool, n_total, lambda_excess=lambda_dh, time_limit=ip_time_limit,
             reposition_penalty=reposition_penalty, reserve_penalty=reserve_penalty,
             artificial_penalty=artificial_penalty,
-            report_path=completion_report_path, verbose=True,
+            report_path=completion_report_path, rescue_columns=rescue_columns, verbose=True,
         )
         print(render_completion_table(result["completion_report"]), flush=True)
     else:
@@ -713,6 +723,8 @@ if __name__ == "__main__":
                              "Tahir et al. Table 6). Off by default since the LP adds extra time on large pools")
     parser.add_argument("--full-flight-master", action="store_true",
                         help="전체 flight constraint와 단계별 completion master 사용")
+    parser.add_argument("--rescue-pool-path", default=None,
+                        help="찬주 generator가 저장한 rescue column JSON 경로")
     parser.add_argument("--completion-report-path", default=None,
                         help="V2 completion JSON 저장 경로")
     parser.add_argument("--reposition-penalty", type=float, default=1000.0)
@@ -747,6 +759,7 @@ if __name__ == "__main__":
         compute_gap=args.compute_gap,
         full_flight_master=args.full_flight_master,
         completion_report_path=args.completion_report_path,
+        rescue_pool_path=args.rescue_pool_path,
         reposition_penalty=args.reposition_penalty,
         reserve_penalty=args.reserve_penalty,
         artificial_penalty=args.artificial_penalty,

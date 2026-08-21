@@ -3,7 +3,7 @@
 import unittest
 
 from evaluation.full_flight_master import FullFlightInputError, solve_full_flight_master, validate_master_inputs
-from evaluation.completion_runner import solve_completion_stages
+from evaluation.completion_runner import merge_rescue_columns, solve_completion_stages
 
 
 def _column(column_id="p0", legs=None, **overrides):
@@ -185,6 +185,25 @@ class CompletionStageTests(unittest.TestCase):
         stages = solve_completion_stages(columns, [10, 20], artificial_penalty=100)
         self.assertEqual(stages[0]["candidate_uncovered_flight_ids"], [20])
         self.assertEqual(stages[2]["candidate_uncovered_flight_ids"], [])
+
+
+
+
+class RescueInterfaceTests(unittest.TestCase):
+    def test_rescue_contract_merges_and_deduplicates(self):
+        policy = _column("p", [10], source_type="policy")
+        rescue = _column(
+            "r", [20], source_type="rescue", repair_target_flights=[20],
+            validator_version="0.1.0", constraint_hash="abc",
+        )
+        duplicate = dict(rescue, column_id="r-duplicate")
+        merged = merge_rescue_columns([policy], [rescue, duplicate], [10, 20])
+        self.assertEqual([column["column_id"] for column in merged], ["p", "r"])
+
+    def test_rescue_target_must_be_present_in_legs(self):
+        rescue = _column("r", [20], source_type="rescue", repair_target_flights=[30])
+        with self.assertRaisesRegex(FullFlightInputError, "target flight"):
+            merge_rescue_columns([], [rescue], [20, 30])
 
 
 if __name__ == "__main__":
