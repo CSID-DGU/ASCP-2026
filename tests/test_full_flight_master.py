@@ -3,6 +3,7 @@
 import unittest
 
 from evaluation.full_flight_master import FullFlightInputError, solve_full_flight_master, validate_master_inputs
+from evaluation.completion_runner import solve_completion_stages
 
 
 def _column(column_id="p0", legs=None, **overrides):
@@ -156,6 +157,34 @@ class SourceAwareObjectiveTests(unittest.TestCase):
         result = solve_full_flight_master(columns, [10, 20, 30], lambda_excess=5)
         self.assertAlmostEqual(sum(result["objective_breakdown"].values()), result["mip_objective"])
         self.assertEqual(result["excess_flight_ids"], [20])
+
+
+
+
+class CompletionStageTests(unittest.TestCase):
+    def test_stage_candidate_coverage_is_monotonic(self):
+        columns = [
+            _column("policy", [10], source_type="policy"),
+            _column("salvage", [20], source_type="salvage"),
+            _column("rescue", [30], source_type="rescue"),
+        ]
+        stages = solve_completion_stages(
+            columns, [10, 20, 30, 40],
+            reposition_flight_ids=[], reserve_flight_ids=[], artificial_penalty=100,
+        )
+        self.assertEqual([stage["stage"] for stage in stages], ["policy", "salvage", "rescue", "operational", "artificial"])
+        self.assertEqual([stage["candidate_coverage"] for stage in stages], [0.25, 0.5, 0.75, 0.75, 0.75])
+        self.assertEqual(stages[-1]["completion_coverage"], 1.0)
+        self.assertEqual(stages[-1]["artificial_flight_ids"], [40])
+
+    def test_rescue_is_not_visible_before_rescue_stage(self):
+        columns = [
+            _column("policy", [10], source_type="policy"),
+            _column("rescue", [20], source_type="rescue"),
+        ]
+        stages = solve_completion_stages(columns, [10, 20], artificial_penalty=100)
+        self.assertEqual(stages[0]["candidate_uncovered_flight_ids"], [20])
+        self.assertEqual(stages[2]["candidate_uncovered_flight_ids"], [])
 
 
 if __name__ == "__main__":
