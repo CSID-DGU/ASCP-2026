@@ -231,5 +231,35 @@ class RolloutBatchExceptionIsolationTests(unittest.TestCase):
         self.assertGreater(call_count["n"], 3)  # 예외 이후에도 다른 episode는 계속 처리됨
 
 
+class RolloutBatchMaxStepsSafetyTests(unittest.TestCase):
+    def test_stuck_episode_terminates_via_step_cap(self):
+        # _apply_action이 아무 진전도 안 만드는(진짜 무한루프) 상황을 인위적으로
+        # 만들어서, max_steps 캡이 실제로 그 episode를 강제 종료시키는지 확인.
+        rule = dict(RICH_CONSTRAINT)
+        rule["_base_reach"] = build_base_reach(RICH_FLIGHTS, BASE, rule)
+
+        def noop_apply_action(ctx, action, *args, **kwargs):
+            pass  # state/assigned 아무것도 안 바꿈 -> 캡 없으면 영원히 안 끝남
+
+        old_stv, old_gb = _patch_batch_vec_fns(len(RICH_FLIGHTS))
+        old_apply_action = rollout._apply_action
+        rollout._apply_action = noop_apply_action
+        try:
+            import time
+            t0 = time.time()
+            results = rollout.rollout_batch(
+                RICH_FLIGHTS, rule, None, _BatchGreedyLegalDecoder(), None,
+                B=2, greedy=True,
+            )
+            elapsed = time.time() - t0
+        finally:
+            rollout._apply_action = old_apply_action
+            _unpatch_batch_vec_fns(old_stv, old_gb)
+
+        # 캡이 없었으면 이 호출은 절대 안 끝났어야 함(진전이 전혀 없으므로).
+        self.assertEqual(len(results), 2)
+        self.assertLess(elapsed, 10.0)  # 8legs*20=160 step 정도면 순식간에 끝나야 함
+
+
 if __name__ == "__main__":
     unittest.main()

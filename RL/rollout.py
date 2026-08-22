@@ -284,7 +284,16 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     if not begin_pairing():
         return pairings
 
+    # 무한루프 방지(experiments/train.py::run_episode()와 동일한 안전장치) --
+    # 정상 종료하는 episode에는 영향 없고, 혹시 모를 예외적 무한루프만 방어함.
+    max_steps  = len(flights) * 20
+    step_count = 0
+
     while True:
+        step_count += 1
+        if step_count > max_steps:
+            break
+
         mask_list = get_mask(state, flights, assigned, cur_c)
         mask      = torch.tensor(mask_list, dtype=torch.float32).to(dev)
 
@@ -350,12 +359,13 @@ class _RolloutCtx:
         "assigned", "bad_starters", "current_legs", "leg_recs",
         "pairing_dep", "pairing_start_ap", "pairing_fly", "pairing_last_arr",
         "pairing_rest", "pairing_n_duties", "pairing_intra_gap", "pairing_inter_excess",
-        "episode_base", "cur_c", "state", "pairings", "finished",
+        "episode_base", "cur_c", "state", "pairings", "finished", "step_count",
     )
 
     def __init__(self, flights):
         self.assigned = {f["id"]: False for f in flights}
         self.bad_starters = set()
+        self.step_count = 0
         self.current_legs = []
         self.leg_recs = []
         self.pairing_dep = None
@@ -598,6 +608,8 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
     all_bases = list(constraint.get("base_ids") or [constraint["base_airport"]])
     min_rest = constraint.get("min_rest", 10.0)
     min_pairing_legs = constraint.get("min_pairing_legs", 2)
+    # 무한루프 방지(rollout_with_pairings()와 동일한 안전장치, episode별로 독립 집계).
+    max_steps = len(flights) * 20
 
     _reach_cache = {}
     if constraint.get("_base_reach") is not None:
@@ -644,6 +656,12 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
 
             decide = []
             for ctx, mask_list in zip(group, masks):
+                ctx.step_count += 1
+                if ctx.step_count > max_steps:
+                    # 무한루프 방지(rollout_with_pairings()와 동일한 안전장치) --
+                    # 이 episode만 강제 종료되고 같은 그룹의 다른 episode는 계속 진행됨.
+                    ctx.finished = True
+                    continue
                 if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
                     # 위치와 무관하게 마지막 합법 base 복귀 prefix만 보존함.
                     _salvage_doomed(ctx, min_pairing_legs, min_rest)
