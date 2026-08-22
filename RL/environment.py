@@ -355,10 +355,20 @@ def step(state, action, flights, assigned, constraint=None):
         if not unassigned:
             # All flights covered -> end episode
             return state, reward, True
-        # Flights remain unassigned -> start a new pairing (anchored on the
-        # earliest base-departing leg)
+        # base에서 출발 가능한 미배정 flight가 하나도 없으면, 이 정책으로는 더 이상
+        # 합법적인 pairing을 시작할 수 없음(모든 pairing은 base에서 시작해야 하므로
+        # base 아닌 flight로 새 pairing을 억지로 시작시키면 CPP 위반)
+        # 이전엔 base 아닌 flight의 dep_time으로 pairing_start=True인 state를
+        # 만들었는데, current_airport=base라고 주장하면서 실제로는 base에서
+        # 출발 못 하는 flight를 기준으로 삼는 모순된 state였음 -- get_mask()에서
+        # 모든 action이 막혀서(전부 0) 사실상 데드락 상태(호출부의 별도
+        # 방어 코드 덕분에 크래시는 안 났지만 불필요한 헛스텝이 발생)
+        # 남은 flight들은 uncovered로 두고(추후 salvage/rescue 등 후처리가 커버) 그냥
+        # episode를 끝내기 -- unassigned 전부 소진됐을 때와 동일하게 처리
         base_unassigned = [f for f in unassigned if f["origin"] == base]
-        next_time = min(f["dep_time"] for f in base_unassigned) if base_unassigned else min(f["dep_time"] for f in unassigned)
+        if not base_unassigned:
+            return state, reward, True
+        next_time = min(f["dep_time"] for f in base_unassigned)
         next_state = {
             **state,
             "current_airport":    base,
