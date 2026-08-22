@@ -14,10 +14,13 @@ from torch.distributions import Categorical
 import config
 import environment as _env_default
 from base_reach import build_base_reach, can_reach_any_base
-from turkish.environment_turkish import get_mask as _get_mask_turkish, step as _step_turkish
-from utils import state_to_vec, flight_gap_bias
+import turkish.environment_turkish as _env_turkish
+from utils import (
+    state_to_vec, flight_gap_bias, state_to_vec_batch, flight_gap_bias_batch,
+)
 
 get_mask, step = _env_default.get_mask, _env_default.step
+get_mask_batch, step_batch = _env_default.get_mask_batch, _env_default.step_batch
 
 
 def set_environment(airline):
@@ -25,11 +28,13 @@ def set_environment(airline):
     (Turkish는 HB1/HB2 교차 복귀 허용). Rebinds this module's
     get_mask/step globals, so all callers that reference them (e.g.
     collect_pool_full, rollout_subset_global) pick up the change immediately."""
-    global get_mask, step
+    global get_mask, step, get_mask_batch, step_batch
     if airline == "turkish":
-        get_mask, step = _get_mask_turkish, _step_turkish
+        get_mask, step = _env_turkish.get_mask, _env_turkish.step
+        get_mask_batch, step_batch = _env_turkish.get_mask_batch, _env_turkish.step_batch
     else:
         get_mask, step = _env_default.get_mask, _env_default.step
+        get_mask_batch, step_batch = _env_default.get_mask_batch, _env_default.step_batch
 
 
 def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
@@ -336,17 +341,343 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     return pairings
 
 
+class _RolloutCtx:
+    """rollout_with_pairings()의 클로저 상태(pairing 조립 진행 상황)를 episode
+    하나만큼 담는 컨테이너 -- Phase 4(experiment/rollout-batch-vectorization)의
+    실제 배치 rollout_batch()가 B개를 독립적으로 들고 다닌다."""
+
+    __slots__ = (
+        "assigned", "bad_starters", "current_legs", "leg_recs",
+        "pairing_dep", "pairing_start_ap", "pairing_fly", "pairing_last_arr",
+        "pairing_rest", "pairing_n_duties", "pairing_intra_gap", "pairing_inter_excess",
+        "episode_base", "cur_c", "state", "pairings", "finished",
+    )
+
+    def __init__(self, flights):
+        self.assigned = {f["id"]: False for f in flights}
+        self.bad_starters = set()
+        self.current_legs = []
+        self.leg_recs = []
+        self.pairing_dep = None
+        self.pairing_start_ap = None
+        self.pairing_fly = 0.0
+        self.pairing_last_arr = 0.0
+        self.pairing_rest = 0.0
+        self.pairing_n_duties = 1
+        self.pairing_intra_gap = 0.0
+        self.pairing_inter_excess = 0.0
+        self.episode_base = None
+        self.cur_c = None
+        self.state = None
+        self.pairings = []
+        self.finished = False
+
+
+def _flush_pairing(ctx, flight_by_id, min_pairing_legs, is_forced=False):
+    if len(ctx.current_legs) < 1 or ctx.pairing_dep is None:
+        return
+    elapsed = ctx.pairing_last_arr - ctx.pairing_dep
+    fly = ctx.pairing_fly
+    n_legs = len(ctx.current_legs)
+    allowed_returns = set(ctx.cur_c.get("base_ids") or [ctx.pairing_start_ap]) \
+        if ctx.cur_c.get("allow_cross_base_return") else {ctx.pairing_start_ap}
+    if flight_by_id[ctx.current_legs[-1]]["dest"] not in allowed_returns:
+        raise ValueError("허용 home base로 복귀하지 않은 pairing은 저장할 수 없습니다.")
+    if n_legs < min_pairing_legs:
+        raise ValueError("최소 leg 수를 충족하지 않은 pairing은 저장할 수 없습니다.")
+    if elapsed / 24.0 > ctx.cur_c["max_pairing_days"]:
+        raise ValueError("최대 pairing 기간을 초과한 pairing은 저장할 수 없습니다.")
+    dead_time = max(elapsed - fly - ctx.pairing_rest, 0.0)
+    cost = max((dead_time
+                - config.IP_LEG_BONUS * max(n_legs - 1, 0)
+                + (config.IP_DEADHEAD_PENALTY if is_forced else 0.0)
+                + config.IP_PAIRING_FIXED_COST), 0.0)
+    ctx.pairings.append({
+        "legs":        list(ctx.current_legs),
+        "fly":         fly,
+        "elapsed":     elapsed,
+        "dead_time":   dead_time,
+        "cost":        cost,
+        "is_deadhead": is_forced,
+        "n_legs":      n_legs,
+        "n_duties":    ctx.pairing_n_duties,
+        "intra_duty_gap":    ctx.pairing_intra_gap,
+        "inter_duty_excess": ctx.pairing_inter_excess,
+        "ends_at_base":      True,
+        "true_start_airport": ctx.pairing_start_ap,
+        "true_end_airport":   flight_by_id[ctx.current_legs[-1]]["dest"],
+        "source_type":         "policy",
+        "duty_break_indices": [
+            i for i, rec in enumerate(ctx.leg_recs) if i > 0 and rec["rested"]
+        ],
+    })
+
+
+def _emit_prefix(ctx, recs, end_ap, start_ap, min_rest):
+    if len(recs) < 1:
+        return
+    fly = sum(r["arr"] - r["dep"] for r in recs)
+    elapsed = recs[-1]["arr"] - recs[0]["dep"]
+    n_rest = sum(1 for r in recs[1:] if r["rested"])
+    rest = min_rest * n_rest
+    intra = inter = 0.0
+    for prev, r in zip(recs, recs[1:]):
+        if r["rested"]:
+            inter += max(r["dep"] - (prev["arr"] + min_rest), 0.0)
+        else:
+            intra += r["dep"] - prev["arr"]
+    n_legs = len(recs)
+    dead_time = max(elapsed - fly - rest, 0.0)
+    ctx.pairings.append({
+        "legs":        [r["id"] for r in recs],
+        "fly":         fly,
+        "elapsed":     elapsed,
+        "dead_time":   dead_time,
+        "cost":        max((dead_time
+                            - config.IP_LEG_BONUS * max(n_legs - 1, 0)
+                            + config.IP_DEADHEAD_PENALTY
+                            + config.IP_PAIRING_FIXED_COST), 0.0),
+        "is_deadhead": True,
+        "n_legs":      n_legs,
+        "n_duties":    n_rest + 1,
+        "intra_duty_gap":    intra,
+        "inter_duty_excess": inter,
+        "ends_at_base":      recs[-1]["dest"] == end_ap,
+        "true_start_airport": start_ap,
+        "is_truncated":      True,
+        "source_type":       "salvage",
+        "duty_break_indices": [
+            i for i, rec in enumerate(recs) if i > 0 and rec["rested"]
+        ],
+    })
+
+
+def _salvage_doomed(ctx, min_pairing_legs, min_rest):
+    k = 0
+    prefix_end_ap = None
+    allowed_returns = set(ctx.cur_c.get("base_ids") or [ctx.episode_base]) \
+        if ctx.cur_c.get("allow_cross_base_return") else {ctx.episode_base}
+    for i, r in enumerate(ctx.leg_recs):
+        elapsed_days = (r["arr"] - ctx.leg_recs[0]["dep"]) / 24.0
+        if (r["dest"] in allowed_returns
+                and i + 1 >= min_pairing_legs
+                and elapsed_days <= ctx.cur_c["max_pairing_days"]):
+            k = i + 1
+            prefix_end_ap = r["dest"]
+    if k > 0:
+        _emit_prefix(ctx, ctx.leg_recs[:k], prefix_end_ap, ctx.pairing_start_ap, min_rest)
+        tail = ctx.leg_recs[k:]
+    else:
+        tail = list(ctx.leg_recs)
+        if ctx.leg_recs:
+            ctx.bad_starters.add(ctx.leg_recs[0]["id"])
+    for r in tail:
+        ctx.assigned[r["id"]] = False
+
+
+def _start_new_pairing(ctx, f):
+    ctx.current_legs.clear()
+    ctx.current_legs.append(f["id"])
+    ctx.leg_recs.clear()
+    ctx.leg_recs.append({"id": f["id"], "dest": f["dest"],
+                         "dep": f["dep_time"], "arr": f["arr_time"], "rested": False})
+    ctx.pairing_start_ap = f["origin"]
+    ctx.pairing_dep      = f["dep_time"]
+    ctx.pairing_fly      = f["arr_time"] - f["dep_time"]
+    ctx.pairing_last_arr = f["arr_time"]
+    ctx.pairing_rest     = 0.0
+    ctx.pairing_n_duties = 1
+    ctx.pairing_intra_gap    = 0.0
+    ctx.pairing_inter_excess = 0.0
+
+
+def _pick_start(ctx, flights, all_bases, constraint_for):
+    unassigned = [f for f in flights if not ctx.assigned[f["id"]]]
+    if not unassigned:
+        return None, None
+    startable = [f for f in unassigned if f["id"] not in ctx.bad_starters]
+    best = None
+    for b in [ctx.episode_base] + [x for x in all_bases if x != ctx.episode_base]:
+        c_b = constraint_for(b)
+        cands = [f for f in startable if f["origin"] == b and can_reach_any_base(
+            c_b["_base_reaches"], f, f["dep_time"], c_b["max_pairing_days"],
+            duty_period=0, max_duty_periods=c_b["max_duty_periods"],
+        )]
+        if not cands:
+            continue
+        f = min(cands, key=lambda f: f["dep_time"])
+        if b == ctx.episode_base:
+            return b, f
+        if best is None or f["dep_time"] < best[1]["dep_time"]:
+            best = (b, f)
+    if best is not None:
+        return best
+    return None, None
+
+
+def _begin_pairing(ctx, flights, all_bases, constraint_for):
+    base, f = _pick_start(ctx, flights, all_bases, constraint_for)
+    if f is None:
+        return False
+    if base != ctx.episode_base:
+        ctx.episode_base = base
+        ctx.cur_c = constraint_for(base)
+    ctx.assigned[f["id"]] = True
+    _start_new_pairing(ctx, f)
+    ctx.state = {
+        "current_airport":    f["dest"],
+        "current_time":       f["arr_time"],
+        "duty_time":          f["arr_time"] - f["dep_time"],
+        "duty_start_time":    f["dep_time"],
+        "legs":               1,
+        "total_legs":         1,
+        "remaining":          sum(1 for v in ctx.assigned.values() if not v),
+        "pairing_start":      False,
+        "duty_period":        0,
+        "pairing_start_time": f["dep_time"],
+        "is_resting":         False,
+        "rest_end_time":      None,
+        "base_airport":       ctx.episode_base,
+    }
+    return True
+
+
+def _apply_action(ctx, action, flights, flight_by_id, all_bases, constraint_for,
+                  min_rest, min_pairing_legs):
+    if action == len(flights):             # EndDuty
+        ctx.pairing_rest     += min_rest
+        ctx.pairing_n_duties += 1
+        ctx.state, _, _ = step(ctx.state, action, flights, ctx.assigned, ctx.cur_c)
+        return
+
+    if action == len(flights) + 1:         # EndPairing
+        _flush_pairing(ctx, flight_by_id, min_pairing_legs, is_forced=False)
+        if not _begin_pairing(ctx, flights, all_bases, constraint_for):
+            ctx.finished = True
+        return
+
+    f = flights[action]
+    ctx.current_legs.append(f["id"])
+    ctx.leg_recs.append({"id": f["id"], "dest": f["dest"],
+                         "dep": f["dep_time"], "arr": f["arr_time"],
+                         "rested": bool(ctx.state.get("is_resting", False))})
+    ctx.pairing_fly      += f["arr_time"] - f["dep_time"]
+    ctx.pairing_last_arr  = f["arr_time"]
+
+    if not ctx.state.get("pairing_start", False) and not ctx.state.get("is_resting", False):
+        ctx.pairing_intra_gap += f["dep_time"] - ctx.state["current_time"]
+    elif ctx.state.get("is_resting", False):
+        rest_end = ctx.state.get("rest_end_time", f["dep_time"])
+        ctx.pairing_inter_excess += max(f["dep_time"] - rest_end, 0.0)
+
+    ctx.state, _, done = step(ctx.state, action, flights, ctx.assigned, ctx.cur_c)
+    if done:
+        if not ctx.state.get("pairing_start", False):
+            _flush_pairing(ctx, flight_by_id, min_pairing_legs, is_forced=False)
+        ctx.finished = True
+
+
 def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                   greedy=False, device=None):
-    """CPP legality가 검증된 single rollout을 B회 실행해 동일한 반환 형식을 제공함."""
-    # 벡터화보다 correctness를 우선하며, 이후 동일 lifecycle을 보존한 최적화로 교체 가능함.
-    return [
-        rollout_with_pairings(
-            flights, constraint, encoder, decoder, encoded,
-            greedy=greedy, device=device,
-        )
-        for _ in range(B)
-    ]
+    """B개 episode를 실제로 배치 처리하는 rollout (Phase 4,
+    experiment/rollout-batch-vectorization) -- Phase 1-3에서 만든
+    get_mask_batch()/state_to_vec_batch()/flight_gap_bias_batch()를 엮어서,
+    매 timestep마다 "아직 안 끝난 episode들"의 decoder 호출을 하나로 묶는다
+    (진짜 병목인 신경망 forward pass를 B번에서 그룹 수만큼으로 줄임).
+    반환 형식은 rollout_with_pairings()를 B번 호출한 것과 동일
+    (List[List[pairing dict]]).
+
+    Turkish HB1/HB2 교차 base 복귀 때문에 episode마다 cur_c(_base_reach 등)가
+    달라질 수 있어서, 매 timestep마다 활성 episode를 episode_base별로 그룹
+    지어 그룹마다 따로 배치 호출한다(delta는 항상 그룹 1개, Turkish도 보통
+    1~2개 -- get_mask_batch()/state_to_vec_batch()가 "배치 전체가 constraint를
+    공유한다"고 가정하고 만들어졌으므로 이 전제를 유지하기 위함).
+    """
+    dev = device or torch.device("cpu")
+    flight_by_id = {f["id"]: f for f in flights}
+    all_bases = list(constraint.get("base_ids") or [constraint["base_airport"]])
+    min_rest = constraint.get("min_rest", 10.0)
+    min_pairing_legs = constraint.get("min_pairing_legs", 2)
+
+    _reach_cache = {}
+    if constraint.get("_base_reach") is not None:
+        _reach_cache[constraint["base_airport"]] = constraint["_base_reach"]
+    _constraint_cache = {}
+
+    def constraint_for(base):
+        if base in _constraint_cache:
+            return _constraint_cache[base]
+        c = {**constraint, "base_airport": base}
+        return_bases = all_bases if c.get("allow_cross_base_return") else [base]
+        for target in return_bases:
+            if target not in _reach_cache:
+                _reach_cache[target] = build_base_reach(flights, target, c)
+        c["_base_reach"] = _reach_cache[base]
+        c["_base_reaches"] = {target: _reach_cache[target] for target in return_bases}
+        _constraint_cache[base] = c
+        return c
+
+    ctxs = [_RolloutCtx(flights) for _ in range(B)]
+    for ctx in ctxs:
+        ctx.episode_base = constraint["base_airport"]
+        ctx.cur_c = constraint_for(ctx.episode_base)
+        if not any(not v for v in ctx.assigned.values()):
+            ctx.finished = True
+            continue
+        if not _begin_pairing(ctx, flights, all_bases, constraint_for):
+            ctx.finished = True
+
+    _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
+
+    while any(not ctx.finished for ctx in ctxs):
+        active = [ctx for ctx in ctxs if not ctx.finished]
+
+        groups = {}
+        for ctx in active:
+            groups.setdefault(ctx.episode_base, []).append(ctx)
+
+        for base, group in groups.items():
+            c_b = constraint_for(base)
+            states = [ctx.state for ctx in group]
+            assigneds = [ctx.assigned for ctx in group]
+            masks = get_mask_batch(states, flights, assigneds, c_b)
+
+            decide = []
+            for ctx, mask_list in zip(group, masks):
+                if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
+                    # 위치와 무관하게 마지막 합법 base 복귀 prefix만 보존함.
+                    _salvage_doomed(ctx, min_pairing_legs, min_rest)
+                    if not _begin_pairing(ctx, flights, all_bases, constraint_for):
+                        ctx.finished = True
+                    # base/state가 바뀌었을 수 있어 이번 timestep엔 액션을 뽑지 않고
+                    # 다음 while 순회에서 새 state로 다시 처리함.
+                else:
+                    decide.append((ctx, mask_list))
+
+            if not decide:
+                continue
+
+            d_ctxs   = [ctx for ctx, _ in decide]
+            d_states = [ctx.state for ctx in d_ctxs]
+            d_masks  = [m for _, m in decide]
+
+            state_vecs = state_to_vec_batch(
+                d_states, encoder, c_b, device=dev, include_total_legs=_incl_total
+            )
+            gap_biases = flight_gap_bias_batch(d_states, flights, c_b, device=dev)
+            mask_tensor = torch.tensor(d_masks, dtype=torch.float32, device=dev)
+            probs = decoder(encoded, state_vecs, mask_tensor, gap_bias=gap_biases)
+
+            if greedy:
+                actions = probs.argmax(dim=-1).tolist()
+            else:
+                actions = Categorical(probs).sample().tolist()
+
+            for ctx, action in zip(d_ctxs, actions):
+                _apply_action(ctx, action, flights, flight_by_id, all_bases,
+                              constraint_for, min_rest, min_pairing_legs)
+
+    return [ctx.pairings for ctx in ctxs]
 
 
 def collect_pool(flights, constraint, encoder, decoder, encoded,
