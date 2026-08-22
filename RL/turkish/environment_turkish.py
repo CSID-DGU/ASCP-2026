@@ -346,7 +346,14 @@ def step(state, action, flights, assigned, constraint=None):
         # 도착한 Turkish home base에서 다음 pairing을 시작함.
         restart_base = state["current_airport"] if state["current_airport"] in base_id_set else base
         base_unassigned = [f for f in unassigned if f["origin"] == restart_base]
-        next_time = min(f["dep_time"] for f in base_unassigned) if base_unassigned else min(f["dep_time"] for f in unassigned)
+        # restart_base에서 출발 가능한 미배정 flight가 없으면, 이 정책으로는 더 이상
+        # 합법적인 pairing을 시작할 수 없음(모든 pairing은 base에서 시작해야 하므로
+        # base 아닌 flight로 새 pairing을 억지로 시작시키면 그 자체가 CPP 위반).
+        # RL/environment.py(delta)와 동일한 이유로 episode를 바로 종료함 -- 남은
+        # flight는 uncovered로 두고 후처리(salvage/rescue 등)가 커버함.
+        if not base_unassigned:
+            return state, reward, True
+        next_time = min(f["dep_time"] for f in base_unassigned)
         next_state = {
             **state,
             "current_airport":    restart_base,
