@@ -97,10 +97,14 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         if elapsed / 24.0 > cur_c["max_pairing_days"]:
             raise ValueError("최대 pairing 기간을 초과한 pairing은 저장할 수 없습니다.")
         dead_time = max(elapsed - fly - pairing_rest, 0.0)
-        cost = (dead_time
-                - config.IP_LEG_BONUS * max(n_legs - 1, 0)
-                + (config.IP_DEADHEAD_PENALTY if is_forced else 0.0)
-                + config.IP_PAIRING_FIXED_COST)
+        # leg 수가 많고 연결이 타이트하면(dead_time이 작은데 IP_LEG_BONUS*(n_legs-1)이
+        # 큰 경우) 이 공식이 음수가 될 수 있음 -- evaluation/full_flight_master.py::
+        # validate_master_inputs()는 cost>=0을 요구하므로(policy pairing도 결국 그
+        # pool에 합쳐짐) 방어적으로 0에서 clamp.
+        cost = max((dead_time
+                    - config.IP_LEG_BONUS * max(n_legs - 1, 0)
+                    + (config.IP_DEADHEAD_PENALTY if is_forced else 0.0)
+                    + config.IP_PAIRING_FIXED_COST), 0.0)
         # ends_at_base: whether this pairing actually returned to the base it
         # departed from (pairing_start_ap, which can differ from episode_base
         # after base rotation). Comparing against the fixed episode_base
@@ -148,10 +152,11 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             "fly":         fly,
             "elapsed":     elapsed,
             "dead_time":   dead_time,
-            "cost":        (dead_time
-                            - config.IP_LEG_BONUS * max(n_legs - 1, 0)
-                            + config.IP_DEADHEAD_PENALTY
-                            + config.IP_PAIRING_FIXED_COST),
+            # flush_pairing()과 동일한 이유로 clamp (leg 수 많고 연결 타이트하면 음수 가능)
+            "cost":        max((dead_time
+                                - config.IP_LEG_BONUS * max(n_legs - 1, 0)
+                                + config.IP_DEADHEAD_PENALTY
+                                + config.IP_PAIRING_FIXED_COST), 0.0),
             # A prefix cut off by salvage was not intentionally ended by the
             # policy here (it's a fragment truncated after hitting a dead
             # end), so it is treated the same as flush_pairing's
