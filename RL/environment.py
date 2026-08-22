@@ -1,6 +1,9 @@
 import numpy as np
+import torch
 import config
 from base_reach import can_reach_base
+
+INF = float("inf")
 
 # flight dict keys: "origin", "dest", "dep_time", "arr_time", "id"
 
@@ -153,6 +156,145 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     if can_end_pairing:
         mask[config.END_PAIRING] = 1
 
+    return mask.tolist()
+
+
+def get_mask_batch(states, flights, assigneds, constraint=None, stage=3):
+    """get_mask()의 배치 버전 -- states/assigneds는 길이 B 리스트(episode마다 하나씩),
+    flights/constraint는 전부 공유(rollout_batch()가 원래 하나의 constraint/_base_reach를
+    모든 episode에 똑같이 넘기는 것과 동일한 전제). 반환값: 길이 N+2인 mask가 B개
+    담긴 리스트 -- [get_mask(s, flights, a, constraint, stage) for s, a in
+    zip(states, assigneds)]와 내용이 완전히 같아야 함(전수 비교는
+    tests/test_environment_batch.py 참고)
+    """
+    c = constraint if constraint else config.DEFAULT_CONSTRAINTS
+    stage_rule = config.CURRICULUM_CONFIG.get(stage, config.CURRICULUM_CONFIG[3])
+
+    B = len(states)
+    N = len(flights)
+    if B == 0:
+        return []
+    flight_ids = [f["id"] for f in flights]
+
+    base_ap = c["base_airport"]
+    base_reach = c.get("_base_reach")
+    if base_reach is None:
+        raise ValueError("CPP constraint에는 _base_reach가 필요합니다.")
+    max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
+    max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
+    max_legs         = c.get("max_legs", config.DEFAULT_CONSTRAINTS["max_legs"])
+    min_conn         = c.get("min_conn", config.DEFAULT_CONSTRAINTS["min_conn"])
+    max_conn         = c.get("max_conn", config.DEFAULT_CONSTRAINTS["max_conn"])
+    min_pairing_legs = c.get("min_pairing_legs", 2)
+    custom_max_duty  = c.get("max_duty")
+
+    # ── flight별 공유 텐서 (N,) ──────────────────────────────────────────
+    origin_t = torch.tensor([f["origin"] for f in flights], dtype=torch.long)
+    dep_t    = torch.tensor([f["dep_time"] for f in flights], dtype=torch.float64)
+    arr_t    = torch.tensor([f["arr_time"] for f in flights], dtype=torch.float64)
+    reach_time_t = torch.tensor(
+        [base_reach["time"].get(fid, INF) for fid in flight_ids], dtype=torch.float64
+    )
+    reach_duty_t = torch.tensor(
+        [base_reach["duty_crossings"].get(fid, INF) for fid in flight_ids], dtype=torch.float64
+    )
+
+    # ── episode별 텐서 (B,) ──────────────────────────────────────────────
+    pairing_start_b = torch.tensor([bool(s.get("pairing_start", False)) for s in states], dtype=torch.bool)
+    is_resting_b    = torch.tensor([bool(s.get("is_resting", False)) for s in states], dtype=torch.bool)
+    rest_end_b      = torch.tensor([s.get("rest_end_time", 0.0) or 0.0 for s in states], dtype=torch.float64)
+    duty_period_b   = torch.tensor([s.get("duty_period", 0) for s in states], dtype=torch.float64)
+    current_time_b  = torch.tensor([s["current_time"] for s in states], dtype=torch.float64)
+    current_airport_b = torch.tensor([s["current_airport"] for s in states], dtype=torch.long)
+    duty_start_time_b = torch.tensor(
+        [s.get("duty_start_time", s["current_time"]) for s in states], dtype=torch.float64
+    )
+    pairing_start_time_b = torch.tensor(
+        [s.get("pairing_start_time", s["current_time"]) for s in states], dtype=torch.float64
+    )
+    legs_b       = torch.tensor([s.get("legs", 0) for s in states], dtype=torch.float64)
+    total_legs_b = torch.tensor([s.get("total_legs", 0) for s in states], dtype=torch.float64)
+
+    assigned_b = torch.tensor(
+        [[bool(a.get(fid, False)) for fid in flight_ids] for a in assigneds]
+    )  # (B, N)
+
+    # ── 1. 공항 연속성 체크 ──────────────────────────────────────────────
+    cond1 = torch.where(
+        pairing_start_b.unsqueeze(1),
+        origin_t.unsqueeze(0) == base_ap,
+        origin_t.unsqueeze(0) == current_airport_b.unsqueeze(1),
+    )  # (B, N)
+
+    # ── 2. connection 시간 체크 ──────────────────────────────────────────
+    gap = dep_t.unsqueeze(0) - current_time_b.unsqueeze(1)  # (B, N)
+    conn_ok = (gap >= min_conn) & (gap <= max_conn)
+    rest_ok = dep_t.unsqueeze(0) >= rest_end_b.unsqueeze(1)
+    cond2 = torch.where(
+        is_resting_b.unsqueeze(1),
+        rest_ok,
+        torch.where(pairing_start_b.unsqueeze(1), torch.ones_like(conn_ok), conn_ok),
+    )
+
+    # ── 3. duty 시간 제약 ────────────────────────────────────────────────
+    legs_after_b = legs_b + 1  # (B,)
+    if custom_max_duty is not None:
+        effective_max_duty_b = torch.full((B,), float(custom_max_duty), dtype=torch.float64)
+    else:
+        capped = torch.clamp(legs_after_b, max=6)
+        effective_max_duty_b = torch.tensor(
+            [config.FAA_DUTY_TABLE.get(int(v.item()), 10.0) for v in capped], dtype=torch.float64
+        )
+    new_duty_b = pairing_start_b | is_resting_b  # (B,)
+    current_duty_start = torch.where(
+        new_duty_b.unsqueeze(1),
+        dep_t.unsqueeze(0).expand(B, N),
+        duty_start_time_b.unsqueeze(1).expand(B, N),
+    )
+    total_duty_window = arr_t.unsqueeze(0) - current_duty_start  # (B, N)
+    cond3a = total_duty_window <= effective_max_duty_b.unsqueeze(1)
+    cond3b = (legs_after_b <= max_legs).unsqueeze(1).expand(B, N)
+
+    # ── 4. pairing 기간 제약 ─────────────────────────────────────────────
+    elapsed_days = (arr_t.unsqueeze(0) - pairing_start_time_b.unsqueeze(1)) / 24.0  # (B, N)
+    cond4 = elapsed_days <= max_pd
+
+    # ── 5. base 복귀 가능성 체크 ─────────────────────────────────────────
+    ps_time = torch.where(
+        pairing_start_b.unsqueeze(1),
+        dep_t.unsqueeze(0).expand(B, N),
+        pairing_start_time_b.unsqueeze(1).expand(B, N),
+    )
+    has_reach = (reach_time_t != INF).unsqueeze(0)  # (1, N)
+    time_ok = ((arr_t.unsqueeze(0) + reach_time_t.unsqueeze(0) - ps_time) / 24.0) <= max_pd
+    duty_ok = (duty_period_b.unsqueeze(1) + reach_duty_t.unsqueeze(0)) <= max_duty_periods
+    cond5 = has_reach & time_ok & duty_ok
+
+    valid = cond1 & cond2 & cond3a & cond3b & cond4 & cond5
+    mask_flights = valid & (~assigned_b)  # (B, N)
+
+    # ── EndDuty ───────────────────────────────────────────────────────────
+    # stage_rule["allow_end_duty"]는 plain bool -- tensor와 Python `and`를 섞으면
+    # False일 때 tensor가 아니라 bare False가 반환돼서 아래 cat()이 깨지므로 `&`만 사용.
+    can_end_duty = (
+        bool(stage_rule["allow_end_duty"])
+        & (legs_b > 0)
+        & (~is_resting_b)
+        & (~pairing_start_b)
+        & (duty_period_b < max_duty_periods)
+    )  # (B,)
+
+    # ── EndPairing ────────────────────────────────────────────────────────
+    pairing_elapsed_days = (current_time_b - pairing_start_time_b) / 24.0
+    can_end_pairing = (
+        (total_legs_b >= min_pairing_legs)
+        & (pairing_elapsed_days <= max_pd)
+        & (current_airport_b == base_ap)
+    )  # (B,)
+
+    mask = torch.cat(
+        [mask_flights, can_end_duty.unsqueeze(1), can_end_pairing.unsqueeze(1)], dim=1
+    ).to(torch.int32)  # (B, N+2)
     return mask.tolist()
 
 
