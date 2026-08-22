@@ -404,6 +404,22 @@ def step(state, action, flights, assigned, constraint=None):
     return next_state, reward, False
 
 
+def step_batch(states, actions, flights, assigneds, constraint=None):
+    """step()의 얇은 배치 wrapper (Turkish) -- RL/environment.py::step_batch()와
+    동일한 이유로 텐서 벡터화 대신 기존 검증된 step()을 그대로 B번 호출한다.
+
+    states/actions/assigneds: 길이 B 리스트, flights/constraint는 전부 공유.
+    반환: (next_states, rewards, dones) 각각 길이 B 리스트.
+    """
+    next_states, rewards, dones = [], [], []
+    for state, action, assigned in zip(states, actions, assigneds):
+        next_state, reward, done = step(state, action, flights, assigned, constraint)
+        next_states.append(next_state)
+        rewards.append(reward)
+        dones.append(done)
+    return next_states, rewards, dones
+
+
 def final_reward(assigned, custom_penalty=None):
     """Return the penalty for unassigned flights at episode end."""
     penalty = custom_penalty if custom_penalty is not None else config.DEFAULT_CONSTRAINTS["uncovered_penalty"]

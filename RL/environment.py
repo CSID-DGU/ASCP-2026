@@ -427,6 +427,28 @@ def step(state, action, flights, assigned, constraint=None):
     return next_state, reward, False
 
 
+def step_batch(states, actions, flights, assigneds, constraint=None):
+    """step()의 얇은 배치 wrapper -- Phase 3, experiment/rollout-batch-vectorization.
+
+    step() 자체는 state 필드 몇 개를 갱신하는 가벼운 Python 로직이라 텐서
+    벡터화로 얻는 성능 이득이 없음(진짜 병목인 신경망 forward pass는 이미
+    state_to_vec_batch()/get_mask_batch()에서 배치화됨) -- 그래서 로직을
+    다시 구현하지 않고 기존에 검증된 step()을 그대로 B번 호출한다.
+
+    states/actions/assigneds: 길이 B 리스트(episode마다 하나씩), flights/constraint는
+    전부 공유. assigneds의 각 dict는 step()이 그 자리에서 직접 수정함(step()과 동일).
+
+    반환: (next_states, rewards, dones) 각각 길이 B 리스트.
+    """
+    next_states, rewards, dones = [], [], []
+    for state, action, assigned in zip(states, actions, assigneds):
+        next_state, reward, done = step(state, action, flights, assigned, constraint)
+        next_states.append(next_state)
+        rewards.append(reward)
+        dones.append(done)
+    return next_states, rewards, dones
+
+
 def final_reward(assigned, custom_penalty=None):
     """Return the end-of-episode penalty for flights left unassigned."""
     penalty = custom_penalty if custom_penalty is not None else config.DEFAULT_CONSTRAINTS["uncovered_penalty"]
