@@ -11,7 +11,10 @@ import wandb
 from model import FlightEncoder, PointerDecoder
 from loader import build_airport_map, bases_to_ids, load_flights_rolling
 import environment as _env_default
-from turkish.environment_turkish import get_mask as _get_mask_turkish, step as _step_turkish, final_reward as _final_reward_turkish
+from turkish.environment_turkish import (
+    get_mask as _get_mask_turkish, step as _step_turkish, final_reward as _final_reward_turkish,
+    get_mask_batch as _get_mask_batch_turkish,
+)
 from turkish.constraints_turkish import get_turkish_constraints as get_turkish_constraints_hb
 from constraints import (
     get_delta_constraints, get_alaska_constraints,
@@ -20,16 +23,19 @@ from constraints import (
 )
 
 get_mask, step, final_reward = _env_default.get_mask, _env_default.step, _env_default.final_reward
+get_mask_batch = _env_default.get_mask_batch
 
 
 def _select_environment(airline):
     """airline에 맞는 get_mask/step/final_reward 구현으로 전환. run_episode 등 이 모듈의 get_mask/step/final_reward를
     참조하는 모든 호출부에 즉시 반영됨 (모듈 전역 rebind)."""
-    global get_mask, step, final_reward
+    global get_mask, step, final_reward, get_mask_batch
     if airline == "turkish":
         get_mask, step, final_reward = _get_mask_turkish, _step_turkish, _final_reward_turkish
+        get_mask_batch = _get_mask_batch_turkish
     else:
         get_mask, step, final_reward = _env_default.get_mask, _env_default.step, _env_default.final_reward
+        get_mask_batch = _env_default.get_mask_batch
 
 
 _CONSTRAINT_FN = {
@@ -40,7 +46,10 @@ _CONSTRAINT_FN = {
 }
 from state import init_state
 from base_reach import build_base_reaches, can_reach_any_base
-from utils import flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias, set_skip_decoder_constraint
+from utils import (
+    flights_to_tensors, constraint_to_tensor, state_to_vec, flight_gap_bias,
+    state_to_vec_batch, flight_gap_bias_batch, set_skip_decoder_constraint,
+)
 import config
 
 DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
@@ -199,10 +208,13 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         if elapsed / 24.0 > constraint["max_pairing_days"]:
             raise ValueError("최대 pairing 기간을 초과한 pairing은 dual pool에 저장할 수 없습니다.")
         dead_time = max(elapsed - pairing_fly - pairing_rest, 0.0)
-        cost      = (dead_time
-                     - _LEG_BONUS_IP * max(len(current_legs) - 1, 0)
-                     + (_DEADHEAD_PENALTY_IP if is_forced else 0.0)
-                     + _PAIRING_FIXED_COST)
+        # leg 수가 많고 연결이 타이트하면 이 공식이 음수가 될 수 있음(RL/rollout.py/
+        # RL/turkish/environment_turkish.py에서 고친 것과 동일한 문제) -- solve_lp_relaxation()이
+        # 이 pool의 cost를 그대로 쓰므로 방어적으로 0에서 clamp.
+        cost = max((dead_time
+                    - _LEG_BONUS_IP * max(len(current_legs) - 1, 0)
+                    + (_DEADHEAD_PENALTY_IP if is_forced else 0.0)
+                    + _PAIRING_FIXED_COST), 0.0)
         # A pairing must start and end at the base to be a valid column for
         # the LP-dual pool (Eq. 2 requires x_p in Omega(c), which excludes
         # pairings that never return to base); same check as RL/rollout.py.
@@ -318,20 +330,193 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
     return pairings
 
 
+class _DualPoolCtx:
+    """_rollout_with_pairings()의 클로저 상태를 episode 하나만큼 담는 컨테이너 --
+    _rollout_batch_dual_pool()(Phase 5, experiment/rollout-batch-vectorization)이
+    B개를 독립적으로 유지한다. RL/rollout.py::_RolloutCtx와 같은 목적이지만, 이
+    pool은 salvage_doomed/base 회전이 없는 더 단순한 원본 로직을 그대로 따른다."""
+
+    __slots__ = ("assigned", "current_legs", "pairing_dep", "pairing_fly",
+                "pairing_last_arr", "pairing_rest", "state", "pairings", "finished")
+
+    def __init__(self, flights):
+        self.assigned = {f["id"]: False for f in flights}
+        self.current_legs = []
+        self.pairing_dep = None
+        self.pairing_fly = 0.0
+        self.pairing_last_arr = 0.0
+        self.pairing_rest = 0.0
+        self.state = None
+        self.pairings = []
+        self.finished = False
+
+
+def _dual_pool_flush_pairing(ctx, flight_by_id, constraint, episode_base, is_forced=False):
+    if len(ctx.current_legs) < 1 or ctx.pairing_dep is None:
+        return
+    elapsed = ctx.pairing_last_arr - ctx.pairing_dep
+    n_legs = len(ctx.current_legs)
+    allowed_returns = set(constraint.get("base_ids") or [episode_base]) \
+        if constraint.get("allow_cross_base_return") else {episode_base}
+    if flight_by_id[ctx.current_legs[0]]["origin"] != episode_base \
+            or flight_by_id[ctx.current_legs[-1]]["dest"] not in allowed_returns:
+        raise ValueError("허용 home base로 복귀하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
+    if n_legs < constraint["min_pairing_legs"]:
+        raise ValueError("최소 leg 수를 충족하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
+    if elapsed / 24.0 > constraint["max_pairing_days"]:
+        raise ValueError("최대 pairing 기간을 초과한 pairing은 dual pool에 저장할 수 없습니다.")
+    dead_time = max(elapsed - ctx.pairing_fly - ctx.pairing_rest, 0.0)
+    cost = max((dead_time
+                - _LEG_BONUS_IP * max(n_legs - 1, 0)
+                + (_DEADHEAD_PENALTY_IP if is_forced else 0.0)
+                + _PAIRING_FIXED_COST), 0.0)
+    ctx.pairings.append({"legs": list(ctx.current_legs), "fly": ctx.pairing_fly,
+                         "elapsed": elapsed, "cost": cost, "ends_at_base": True})
+
+
+def _dual_pool_start_new(ctx, f):
+    ctx.current_legs = [f["id"]]
+    ctx.pairing_dep = f["dep_time"]
+    ctx.pairing_fly = f["arr_time"] - f["dep_time"]
+    ctx.pairing_last_arr = f["arr_time"]
+    ctx.pairing_rest = 0.0
+
+
+def _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint):
+    unassigned = [f for f in flights if not ctx.assigned[f["id"]]]
+    base_flights = [f for f in unassigned if f["origin"] == episode_base]
+    return [f for f in base_flights if can_reach_any_base(
+        constraint["_base_reaches"], f, f["dep_time"],
+        constraint["max_pairing_days"], duty_period=0,
+        max_duty_periods=constraint["max_duty_periods"],
+    )]
+
+
+def _dual_pool_begin(flights, ctx, episode_base, constraint):
+    base_flights = _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint)
+    if not base_flights:
+        return False
+    first = sorted(base_flights, key=lambda f: f["dep_time"])[0]
+    ctx.assigned[first["id"]] = True
+    _dual_pool_start_new(ctx, first)
+    ctx.state = {
+        "current_airport":    first["dest"],
+        "current_time":       first["arr_time"],
+        "duty_time":          first["arr_time"] - first["dep_time"],
+        "duty_start_time":    first["dep_time"],
+        "legs":               1,
+        "total_legs":         1,
+        "remaining":          sum(1 for v in ctx.assigned.values() if not v),
+        "pairing_start":      False,
+        "duty_period":        0,
+        "pairing_start_time": first["dep_time"],
+        "is_resting":         False,
+        "rest_end_time":      None,
+    }
+    return True
+
+
+def _rollout_batch_dual_pool(flights, constraint, encoder, decoder, encoded, B, greedy=False):
+    """_rollout_with_pairings()의 실제 배치 버전 -- 동작(salvage_doomed 없음, base
+    고정, cross-base 회전 없음)은 완전히 동일하게 유지하고 decoder 호출만 배치로
+    묶는다. Phase 5, experiment/rollout-batch-vectorization -- _collect_pool()에서
+    사용. RL/rollout.py::rollout_batch()와 달리 episode_base가 절대 안 바뀌므로
+    (원본 _rollout_with_pairings()도 회전이 없음) 매 timestep 그룹핑이 필요 없음
+    -- 활성 episode 전체가 항상 하나의 배치."""
+    flight_by_id = {f["id"]: f for f in flights}
+    episode_base = constraint["base_airport"]
+
+    ctxs = [_DualPoolCtx(flights) for _ in range(B)]
+    for ctx in ctxs:
+        if not _dual_pool_begin(flights, ctx, episode_base, constraint):
+            ctx.finished = True
+
+    _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
+    max_steps = len(flights) * 20
+    step_counts = [0] * B
+    n_flights = len(flights)
+
+    while any(not ctx.finished for ctx in ctxs):
+        active_idx = [i for i, ctx in enumerate(ctxs) if not ctx.finished]
+
+        states    = [ctxs[i].state for i in active_idx]
+        assigneds = [ctxs[i].assigned for i in active_idx]
+        masks     = get_mask_batch(states, flights, assigneds, constraint)
+
+        decide_idx   = []
+        decide_masks = []
+        for local_i, i in enumerate(active_idx):
+            step_counts[i] += 1
+            mask_list = masks[local_i]
+            if step_counts[i] > max_steps:
+                ctxs[i].finished = True
+                continue
+            # 합법 action이 없으면 임의 위치 이동 없이 미커버 상태로 종료함(run_episode()와 동일).
+            if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
+                ctxs[i].finished = True
+                continue
+            decide_idx.append(i)
+            decide_masks.append(mask_list)
+
+        if not decide_idx:
+            continue
+
+        d_states = [ctxs[i].state for i in decide_idx]
+        state_vecs = state_to_vec_batch(
+            d_states, encoder, constraint, device=DEVICE, include_total_legs=_incl_total
+        )
+        gap_biases = flight_gap_bias_batch(d_states, flights, constraint, device=DEVICE)
+        mask_tensor = torch.tensor(decide_masks, dtype=torch.float32, device=DEVICE)
+        probs = decoder(encoded, state_vecs, mask_tensor, gap_bias=gap_biases)
+
+        if greedy:
+            actions = probs.argmax(dim=-1).tolist()
+        else:
+            actions = Categorical(probs).sample().tolist()
+
+        for i, action in zip(decide_idx, actions):
+            ctx = ctxs[i]
+            if action == n_flights:               # EndDuty
+                ctx.pairing_rest += constraint.get("min_rest", 10.0)
+                ctx.state, _, _ = step(ctx.state, action, flights, ctx.assigned, constraint)
+                continue
+
+            if action == n_flights + 1:           # EndPairing -> 새 pairing 시작
+                _dual_pool_flush_pairing(ctx, flight_by_id, constraint, episode_base, is_forced=False)
+                if not _dual_pool_begin(flights, ctx, episode_base, constraint):
+                    ctx.finished = True
+                continue
+
+            f = flights[action]
+            ctx.current_legs.append(f["id"])
+            ctx.pairing_fly      += f["arr_time"] - f["dep_time"]
+            ctx.pairing_last_arr  = f["arr_time"]
+            ctx.state, _, done = step(ctx.state, action, flights, ctx.assigned, constraint)
+            if done:
+                _dual_pool_flush_pairing(ctx, flight_by_id, constraint, episode_base, is_forced=False)
+                ctx.finished = True
+
+    return [ctx.pairings for ctx in ctxs]
+
+
 def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
     constraint = _prepare_cpp_constraint(flights, constraint)
     # Exclude pairings that do not return to base -- the restricted LP of
     # Eq. (2) is defined over Omega(c), and its duals mu^cov/nu^exc (Eq. 9)
     # should not be computed from infeasible columns.
     pool = {}
-    for _ in range(n_rollouts):
-        for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded):
+    for episode_pairings in _rollout_batch_dual_pool(
+        flights, constraint, encoder, decoder, encoded, B=n_rollouts, greedy=False
+    ):
+        for p in episode_pairings:
             if not p["ends_at_base"]:
                 continue
             key = tuple(sorted(p["legs"]))
             if key not in pool or p["cost"] < pool[key]["cost"]:
                 pool[key] = p
-    for p in _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greedy=True):
+    for p in _rollout_batch_dual_pool(
+        flights, constraint, encoder, decoder, encoded, B=1, greedy=True
+    )[0]:
         if not p["ends_at_base"]:
             continue
         key = tuple(sorted(p["legs"]))
