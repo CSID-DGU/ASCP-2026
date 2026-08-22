@@ -58,7 +58,7 @@ from evaluation.completion_report import build_completion_report, render_complet
 from evaluation.validator import validate_pairing
 from evaluation.validation_report import aggregate_by_source_per_chunk
 from utils import constraint_to_tensor, flights_to_tensors
-from rollout import rollout_with_pairings, set_environment
+from rollout import rollout_with_pairings, rollout_batch, set_environment
 from base_reach import build_base_reaches
 import config
 
@@ -241,6 +241,47 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
     return validated_pairings
 
 
+def rollout_subset_global_batch(subset, constraint, encoder, decoder, max_time, B, greedy=False):
+    """rollout_subset_global()의 배치 버전 (Phase 5b, experiment/
+    rollout-batch-vectorization) -- encoder를 한 번만 호출하고(예전엔 호출할 때마다
+    같은 chunk에 대해 매번 새로 인코딩하던 비효율이 있었음) rollout_batch()로 B개
+    episode를 한 번에 처리한 뒤, 각각 독립적으로 검증 + global ID 변환.
+
+    반환: List[List[pairing]] -- episode별 검증된 pairing 리스트 (rollout_subset_global()을
+    B번 호출한 것과 동일한 형식).
+    """
+    local_flights = [{**f, "id": f["local_id"]} for f in subset]
+    origins, dests, dep_norm, arr_norm, fly_norm = flights_to_tensors(
+        local_flights, max_time, device=DEVICE
+    )
+    c_tensor = constraint_to_tensor(constraint, device=DEVICE)
+
+    with torch.no_grad():
+        encoded = encoder(origins, dests, dep_norm, arr_norm, fly_norm, c_tensor)
+        episodes_raw = rollout_batch(
+            local_flights, constraint, encoder, decoder, encoded,
+            B=B, greedy=greedy, device=DEVICE,
+        )
+
+    id_map = {f["local_id"]: f["global_id"] for f in subset}
+    local_by_id = {f["id"]: f for f in local_flights}
+
+    results = []
+    for raw_pairings in episodes_raw:
+        validated_pairings = []
+        for pairing in raw_pairings:
+            validation = validate_pairing(pairing, local_by_id, constraint)
+            if not validation["is_valid"]:
+                continue
+            pairing["is_legal"] = True
+            pairing["validator_version"] = validation["validator_version"]
+            pairing["constraint_hash"] = validation["constraint_hash"]
+            pairing["legs"] = [id_map[leg] for leg in pairing["legs"]]
+            validated_pairings.append(pairing)
+        results.append(validated_pairings)
+    return results
+
+
 # ── 3-1. Partition a full window into connectivity-preserving chunks ────────
 
 def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_sampler):
@@ -349,12 +390,21 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
             c_b["_base_reaches"] = build_base_reaches(_local_flights, return_bases, c_b)
             c_b["_base_reach"] = c_b["_base_reaches"][base_id]
 
-            for _ in range(n_rollouts_per_chunk):
-                try:
-                    pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=False)
-                except Exception as e:
-                    print(f"  [warn] stochastic rollout failed (chunk={c_idx}): {e}", flush=True)
-                    continue
+            # Phase 5b(experiment/rollout-batch-vectorization): n_rollouts_per_chunk번
+            # 순차 호출 대신 rollout_batch()로 한 번에 배치 처리 -- encoder도 한 번만
+            # 호출됨(예전엔 호출마다 같은 chunk를 매번 새로 인코딩하던 비효율이 있었음).
+            # 개별 episode의 예외는 rollout_batch() 안에서 이미 격리되므로(한 episode
+            # 실패가 나머지를 안 죽임), 여기 바깥 try/except는 encoder/flights_to_tensors
+            # 등 배치 전체에 영향을 주는 실패에 대한 안전망으로만 남겨둠.
+            try:
+                stochastic_results = rollout_subset_global_batch(
+                    chunk, c_b, encoder, decoder, max_time, B=n_rollouts_per_chunk, greedy=False
+                )
+            except Exception as e:
+                print(f"  [warn] stochastic rollout batch failed (chunk={c_idx}): {e}", flush=True)
+                stochastic_results = []
+
+            for pairings in stochastic_results:
                 for p in pairings:
                     # Exclude pairings that don't return to base from both the
                     # pool and coverage counts -- including them in coverage

@@ -674,8 +674,17 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                 actions = Categorical(probs).sample().tolist()
 
             for ctx, action in zip(d_ctxs, actions):
-                _apply_action(ctx, action, flights, flight_by_id, all_bases,
-                              constraint_for, min_rest, min_pairing_legs)
+                # 방어적 invariant 위반(예: flush_pairing()의 base 복귀 실패 체크)이
+                # 이 episode 하나에서 터져도 배치 안의 다른 episode는 계속 진행되게
+                # 격리함 -- 예전에는 rollout_with_pairings()를 episode마다 개별
+                # 호출해서 호출부(evaluation/evaluate_ip.py)가 try/except로 각각
+                # 감쌌는데, 배치로 묶은 이제는 이 함수 안에서 직접 격리해야
+                # 그 "한 episode 실패가 나머지를 안 죽인다"는 보장이 유지됨.
+                try:
+                    _apply_action(ctx, action, flights, flight_by_id, all_bases,
+                                  constraint_for, min_rest, min_pairing_legs)
+                except Exception:
+                    ctx.finished = True
 
     return [ctx.pairings for ctx in ctxs]
 

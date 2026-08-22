@@ -197,5 +197,39 @@ class RolloutBatchTurkishCrossBaseTests(unittest.TestCase):
                 )
 
 
+class RolloutBatchExceptionIsolationTests(unittest.TestCase):
+    def test_one_episode_exception_does_not_kill_batch(self):
+        # evaluate_ip.py의 rollout_subset_global()이 개별 rollout마다 try/except로
+        # 감싸던 것과 동일한 보장 -- 배치로 묶은 뒤에도 한 episode가 예외를 던지면
+        # 그 episode만 조용히 종료되고 나머지는 정상적으로 계속 진행돼야 함.
+        rule = dict(RICH_CONSTRAINT)
+        rule["_base_reach"] = build_base_reach(RICH_FLIGHTS, BASE, rule)
+
+        real_apply_action = rollout._apply_action
+        call_count = {"n": 0}
+
+        def flaky_apply_action(ctx, action, *args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 3:
+                raise ValueError("의도적으로 발생시킨 테스트용 예외")
+            return real_apply_action(ctx, action, *args, **kwargs)
+
+        old_stv, old_gb = _patch_batch_vec_fns(len(RICH_FLIGHTS))
+        rollout._apply_action = flaky_apply_action
+        try:
+            results = rollout.rollout_batch(
+                RICH_FLIGHTS, rule, None, _BatchGreedyLegalDecoder(), None,
+                B=5, greedy=True,
+            )
+        finally:
+            rollout._apply_action = real_apply_action
+            _unpatch_batch_vec_fns(old_stv, old_gb)
+
+        # 크래시 없이 5개 episode 결과가 전부 돌아와야 함(예외 난 episode는 그 시점까지의
+        # pairings만 갖고 조용히 종료됨).
+        self.assertEqual(len(results), 5)
+        self.assertGreater(call_count["n"], 3)  # 예외 이후에도 다른 episode는 계속 처리됨
+
+
 if __name__ == "__main__":
     unittest.main()
