@@ -50,12 +50,6 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     duty_start_time  = state.get("duty_start_time", state["current_time"])
     pairing_start_time = state.get("pairing_start_time", state["current_time"])
 
-    # First leg of a pairing: if unassigned base-origin legs remain, force
-    # departure from the base; once base-origin legs are exhausted, lift the
-    # origin restriction to avoid a deadhead loop.
-    # base_remaining does not depend on the candidate flight f (loop-invariant),
-    # so it is computed once outside the loop rather than recomputed per
-    # candidate (which would be O(N^2)).
     base_ap = c["base_airport"]
 
     # CPP pairing이 base 복귀 가능성을 잃는 action을 항상 제거함.
@@ -66,11 +60,11 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     max_pd           = c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     max_duty_periods = c.get("max_duty_periods", config.DEFAULT_CONSTRAINTS["max_duty_periods"])
 
-    if pairing_start:
-        base_remaining = any(
-            not assigned[fl["id"]] and fl["origin"] == base_ap
-            for fl in flights
-        )
+    # base_remaining(계산만 되고 mask에 반영 안 되던 지역변수) 제거함 -- 원래 주석은
+    # "base 출발 flight가 소진되면 origin 제약을 풀어준다"는 의도였지만, 그 자체가
+    # CPP 규칙(pairing은 반드시 base에서 시작) 위반이라 맞는 해법이 아니었음. 진짜
+    # 원인은 step()의 EndPairing 처리로 보임(base 출발 flight가 없어도 에피소드를
+    # 안 끝내고 계속 진행 -> 데드락 가능) -- step() 쪽 실제 수정은 이 파일 담당자 판단 필요.
 
     for i, f in enumerate(flights):
         if assigned[f["id"]]:
