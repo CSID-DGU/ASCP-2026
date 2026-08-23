@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import math
+import random
 from typing import Callable, Dict, Iterable, List, Sequence
 
 import pulp
@@ -122,6 +123,30 @@ def normalize_dual(dual: Dict[int, float], clip: float = 5.0) -> Dict[int, float
         flight_id: max(-clip, min(clip, float(value) / scale))
         for flight_id, value in dual.items()
     }
+
+
+def build_dual_signal(lp_result: Dict, mode: str, rng=None) -> Dict[int, float]:
+    """동일 LP 결과를 실험 대조군별 action signal로 변환함."""
+    signal = normalize_dual(lp_result["net_dual"])
+    if mode == "real":
+        return signal
+    if mode == "zero":
+        return {flight_id: 0.0 for flight_id in signal}
+    if mode == "uncovered-only":
+        uncovered = set(lp_result["artificial_flight_ids"])
+        return {
+            flight_id: 1.0 if flight_id in uncovered else 0.0
+            for flight_id in signal
+        }
+    if mode == "uniform":
+        mean_signal = sum(signal.values()) / len(signal) if signal else 0.0
+        return {flight_id: mean_signal for flight_id in signal}
+    if mode == "shuffled":
+        keys = sorted(signal)
+        values = [signal[key] for key in keys]
+        (rng or random).shuffle(values)
+        return dict(zip(keys, values))
+    raise DualFeedbackError(f"지원하지 않는 dual mode: {mode}")
 
 
 def merge_unique_columns(existing: Sequence[Dict], new_columns: Sequence[Dict]) -> List[Dict]:

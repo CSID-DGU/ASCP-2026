@@ -54,7 +54,7 @@ _GET_CONSTRAINT = {
 from model import FlightEncoder, PointerDecoder
 from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
 from evaluation.dual_feedback import (
-    solve_full_universe_lp, normalize_dual, merge_unique_columns,
+    solve_full_universe_lp, build_dual_signal, merge_unique_columns,
 )
 from evaluation.completion_runner import merge_rescue_columns, solve_completion_stages
 from evaluation.completion_report import build_completion_report, render_completion_table, save_completion_report
@@ -819,19 +819,7 @@ def evaluate_full(
             pool, range(n_total), lambda_excess=lambda_dh,
             artificial_penalty=dual_artificial_penalty,
         )
-        signal = normalize_dual(lp_feedback["net_dual"])
-        if dual_mode == "zero":
-            signal = {key: 0.0 for key in signal}
-        elif dual_mode == "shuffled":
-            keys = sorted(signal)
-            values = [signal[key] for key in keys]
-            random.shuffle(values)
-            signal = dict(zip(keys, values))
-        elif dual_mode == "uniform":
-            mean_signal = sum(signal.values()) / len(signal) if signal else 0.0
-            signal = {key: mean_signal for key in signal}
-        elif dual_mode != "real":
-            raise ValueError(f"지원하지 않는 dual_mode: {dual_mode}")
+        signal = build_dual_signal(lp_feedback, dual_mode)
 
         with torch.no_grad():
             generated_pool, _ = collect_pool_full(
@@ -1039,7 +1027,7 @@ if __name__ == "__main__":
                         help="current master dual로 pool을 반복 보강할 횟수")
     parser.add_argument("--dual-weight", type=float, default=1.0,
                         help="decoder action logit에 더할 normalized dual 가중치")
-    parser.add_argument("--dual-mode", choices=["real", "zero", "shuffled", "uniform"], default="real")
+    parser.add_argument("--dual-mode", choices=["real", "zero", "uncovered-only", "shuffled", "uniform"], default="real")
     parser.add_argument("--dual-artificial-penalty", type=float, default=1000.0)
     parser.add_argument("--dual-trace-path", default=None)
     parser.add_argument("--seed", type=int, default=None,

@@ -1,9 +1,11 @@
+import random
 import unittest
 
 import torch
 
 from evaluation.dual_feedback import (
     normalize_dual,
+    build_dual_signal,
     run_iterative_dual_feedback,
     solve_full_universe_lp,
 )
@@ -51,6 +53,21 @@ class FullUniverseDualTests(unittest.TestCase):
         self.assertEqual(set(result), {10, 20})
         self.assertEqual(result[10], -1.0)
         self.assertEqual(result[20], 0.5)
+
+
+    def test_dual_control_modes_preserve_experimental_contract(self):
+        lp_result = {
+            "net_dual": {10: 8.0, 20: 2.0, 30: -4.0},
+            "artificial_flight_ids": [20],
+        }
+        real = build_dual_signal(lp_result, "real")
+        self.assertEqual(build_dual_signal(lp_result, "zero"), {10: 0.0, 20: 0.0, 30: 0.0})
+        self.assertEqual(build_dual_signal(lp_result, "uncovered-only"), {10: 0.0, 20: 1.0, 30: 0.0})
+        uniform = build_dual_signal(lp_result, "uniform")
+        self.assertEqual(len(set(uniform.values())), 1)
+        shuffled = build_dual_signal(lp_result, "shuffled", rng=random.Random(7))
+        self.assertEqual(set(shuffled), set(real))
+        self.assertCountEqual(shuffled.values(), real.values())
 
 
 class DecoderDualBiasTests(unittest.TestCase):
