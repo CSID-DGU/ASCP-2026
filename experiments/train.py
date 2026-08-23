@@ -1368,6 +1368,13 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
         return _constraint_for_episode(
             sampled_airline, base_airport,
             max_duty_periods=1, max_pairing_days=1, base_penalty=5.0,
+            # 항공사 기본 min_pairing_legs(예: Delta=3, 2-leg Nash 방지용)는 단일 duty +
+            # 무경험 정책 조합에서 사실상 통과 불가능한 조건이 됨(실측: avg 6 pairings/3.25%
+            # coverage). Stage1 목적은 기본 연결 패턴 학습이라 legality만 2로 완화 --
+            # reward shaping(config.MIN_LEGS_FOR_PAIRING/MIN_LEGS_PENALTY)은 항공사 무관하게
+            # 여전히 3편 미만 pairing에 페널티를 매겨 2-leg 스팸 유인은 없음(실측: avg 49.75
+            # pairings/17.48% coverage). Stage2/3/Phase2는 항공사 기본값 그대로 유지.
+            min_pairing_legs=2,
         )
 
     def stage2_constraint(sampled_airline, base_airport):
@@ -1420,7 +1427,11 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
             # base_penalty는 stage1/2에서 5.0(원래값) 고정 — stage3/phase2부터 config.py의
             # 현재값(500.0)을 그대로 물려받는다. x2gcdva5(stage1/2, p5)를 이어받는 기존
             # run들과 동일 조건을 신규 seed에서도 재현하기 위함.
-            stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1, "base_penalty": 5.0}
+            # min_pairing_legs=2: stage1_constraint()와 동일 이유(항공사 기본값 3은
+            # 단일 duty 조합에서 사실상 통과 불가능, reward shaping이 2-leg 스팸을
+            # 별도로 막아줌 -- 상세 근거는 stage1_constraint() 주석 참조)
+            stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1,
+                       "base_penalty": 5.0, "min_pairing_legs": 2}
             run_curriculum_stage(1, encoder, decoder, optimizer,
                                  n_episodes=1000, constraint_override=stage1_c,
                                  save_dir=save_dir, flight_sampler=flight_sampler,
