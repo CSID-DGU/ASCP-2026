@@ -44,6 +44,23 @@ _CONSTRAINT_FN = {
     "jetblue": get_jetblue_constraints,
     "turkish": get_turkish_constraints_hb,  # Turkish 규정값 및 HB1/HB2 교차 복귀 유지
 }
+
+
+def _constraint_for_episode(airline, base_airport, **overrides):
+    """현재 episode의 항공사 규정을 만든 뒤 curriculum 값만 덮어씀."""
+    if airline not in _CONSTRAINT_FN:
+        raise ValueError(f"지원하지 않는 episode 항공사: {airline}")
+    return {**_CONSTRAINT_FN[airline](base_airport), **overrides}
+
+
+def _unpack_flight_sample(sample, *, require_airline, default_airline):
+    """flight와 함께 선택된 항공사를 전달하여 규정 오적용을 차단함."""
+    if len(sample) == 8:
+        return sample
+    if len(sample) == 7 and not require_airline:
+        return (*sample, default_airline)
+    raise ValueError("멀티에어라인 flight_sampler는 episode 항공사를 함께 반환해야 함")
+
 from state import init_state
 from base_reach import build_base_reaches, can_reach_any_base
 from utils import (
@@ -658,9 +675,11 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         sample = flight_sampler()
         if sample is None:
             continue
-        flights, origins, dests, dep_times, arr_times, fly_times, base_airport = sample
+        flights, origins, dests, dep_times, arr_times, fly_times, base_airport, sampled_airline = _unpack_flight_sample(
+            sample, require_airline=(constraint_sampler is not None), default_airline=config.AIRLINE
+        )
 
-        base_c   = constraint_sampler() if constraint_sampler else constraint
+        base_c   = constraint_sampler(sampled_airline, base_airport) if constraint_sampler else constraint
         c        = {**base_c, "base_airport": base_airport}
         c        = _prepare_cpp_constraint(flights, c)
         c_tensor = constraint_to_tensor(c, device=DEVICE)
@@ -790,17 +809,22 @@ def run_curriculum_stage(
         sample = flight_sampler()
         if sample is None:
             continue
-        flights, origins, dests, dep_times, arr_times, fly_times, base_airport = sample
+        flights, origins, dests, dep_times, arr_times, fly_times, base_airport, sampled_airline = _unpack_flight_sample(
+            sample, require_airline=(constraint_sampler is not None), default_airline=config.AIRLINE
+        )
 
         # [B 패턴 극복 조치] Stage 3에서 30% 확률로 Stage 2 기준 제약을 주입하여 과거 환경 기억 보존 (Continual Replay)
         if stage == 3 and base_stage2_constraint is not None and random.random() < 0.3:
+            replay_constraint = (base_stage2_constraint(sampled_airline, base_airport)
+                                 if callable(base_stage2_constraint) else base_stage2_constraint)
             c = {
-                **base_stage2_constraint,
+                **replay_constraint,
                 "max_duty_periods": 2,
                 "max_pairing_days": config.WINDOW_DAYS - 1,
             }
         else:
-            c = constraint_sampler() if constraint_sampler else constraint_override
+            c = (constraint_sampler(sampled_airline, base_airport)
+                 if constraint_sampler else constraint_override)
 
         c = {**c, "base_airport": base_airport}  # 에피소드별 base 주입
         c = _prepare_cpp_constraint(flights, c)
@@ -1006,11 +1030,12 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                 )
                 if flights and any(f["origin"] == base_airport for f in flights):
                     origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
-                    return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
+                    return flights, origins, dests, dep_times, arr_times, fly_times, base_airport, airline
             return None
 
-        _first_base = all_base_ids["delta"][0]
-        base_constraint = _CONSTRAINT_FN["delta"](_first_base)
+        _first_airline = airlines[0]
+        _first_base = all_base_ids[_first_airline][0]
+        base_constraint = _constraint_for_episode(_first_airline, _first_base)
 
     else:
         if config.AIRLINE == "turkish":
@@ -1031,7 +1056,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                 if not any(f["origin"] == base_airport for f in flights):
                     return None
                 origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
-                return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
+                return flights, origins, dests, dep_times, arr_times, fly_times, base_airport, config.AIRLINE
         else:
             DATA_PATH = config.AIRLINE_DATA[config.AIRLINE]
             _df_cache = pd.read_csv(DATA_PATH, usecols=["ORIGIN", "DEST", "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "FL_DATE"]).dropna()
@@ -1054,15 +1079,17 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                 if not any(f["origin"] == base_airport for f in flights):
                     return None
                 origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
-                return flights, origins, dests, dep_times, arr_times, fly_times, base_airport
+                return flights, origins, dests, dep_times, arr_times, fly_times, base_airport, config.AIRLINE
 
         base_constraint = _CONSTRAINT_FN[config.AIRLINE](base_ids[0])
 
     _stage3_base = {**base_constraint, "max_duty_periods": 4, "max_pairing_days": WINDOW_DAYS - 1}
-    def sample_constraint():
+    def sample_constraint(sampled_airline, base_airport):
         r = config.STAGE3_CONSTRAINT_RANGES
         if multi_airline:
-            base = {**_CONSTRAINT_FN[_selected_airline[0]](0),
+            if sampled_airline != _selected_airline[0]:
+                raise RuntimeError("flight sample의 항공사와 constraint 항공사가 일치하지 않음")
+            base = {**_constraint_for_episode(sampled_airline, base_airport),
                     "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
         else:
             base = _stage3_base
@@ -1085,6 +1112,19 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
             "max_duty_periods": random.randint(*r["max_duty_periods"]),
             "max_pairing_days": random.randint(*r["max_pairing_days"]),
         }
+
+
+    def stage1_constraint(sampled_airline, base_airport):
+        return _constraint_for_episode(
+            sampled_airline, base_airport,
+            max_duty_periods=1, max_pairing_days=1, base_penalty=5.0,
+        )
+
+    def stage2_constraint(sampled_airline, base_airport):
+        return _constraint_for_episode(
+            sampled_airline, base_airport,
+            max_duty_periods=2, max_pairing_days=WINDOW_DAYS - 1, base_penalty=5.0,
+        )
 
     _s3_best     = float("inf")  
     _s3_ckpt_dir = save_dir      
@@ -1127,6 +1167,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
             run_curriculum_stage(1, encoder, decoder, optimizer,
                                  n_episodes=1000, constraint_override=stage1_c,
                                  save_dir=save_dir, flight_sampler=flight_sampler,
+                                 constraint_sampler=stage1_constraint if multi_airline else None,
                                  global_step_offset=0,
                                  entropy_start=0.30, entropy_end=0.005)
 
@@ -1135,6 +1176,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
             run_curriculum_stage(2, encoder, decoder, optimizer,
                                  n_episodes=2000, constraint_override=stage2_c,
                                  save_dir=save_dir, flight_sampler=flight_sampler,
+                                 constraint_sampler=stage2_constraint if multi_airline else None,
                                  global_step_offset=1000,
                                  entropy_start=0.02, entropy_end=0.005)
 
@@ -1147,7 +1189,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                              constraint_sampler=sample_constraint,
                              global_step_offset=_s3_offset,
                              entropy_start=0.01, entropy_end=0.005,
-                             base_stage2_constraint=base_constraint)
+                             base_stage2_constraint=stage2_constraint if multi_airline else base_constraint)
 
         _s3_ckpt = torch.load(os.path.join(save_dir, "stage3_best.pt"), map_location=DEVICE, weights_only=True)
         encoder.load_state_dict(_s3_ckpt["encoder"])
