@@ -65,6 +65,17 @@ import config
 
 # ── 0. Turkish window loader ─────────────────────────────────────────────────
 
+def validate_window_days(window_days, constraint, airline):
+    min_window_days = math.ceil(float(constraint["max_pairing_days"]))
+    if window_days < min_window_days:
+        raise ValueError(
+            f"window_days={window_days}는 {airline} max_pairing_days="
+            f"{constraint['max_pairing_days']}보다 짧습니다. "
+            f"window_days를 최소 {min_window_days}로 설정해야 합니다."
+        )
+    return window_days
+
+
 def load_windows_turkish(turkish_df, airport_map, window_days=5):
     """Split Turkish .legs data into window_days-sized non-overlapping windows and assign global IDs."""
     dates = sorted(turkish_df["dep_date_utc"].unique())
@@ -314,6 +325,7 @@ def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_s
 def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       n_rollouts_per_chunk=5,
                       subset_size=config.EPISODE_MAX_FLIGHTS,
+                      window_days=5,
                       connected_sampler=sample_connected_subnet_std,
                       airline="delta"):
     """Roll out over all windows to build the global-ID-keyed candidate pool Cθ.
@@ -333,7 +345,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
     """
     pool = {}
     covered_global = set()
-    max_time = 5 * 24.0
+    max_time = float(window_days) * 24.0
     base_id_set = set(base_ids)
 
     for w_idx, window_flights in enumerate(windows):
@@ -728,6 +740,8 @@ def evaluate_full(
     else:
         constraint = _GET_CONSTRAINT[airline](base_ids[0])
 
+    validate_window_days(window_days, constraint, airline)
+
     print(f"\nLoading full dataset ({airline}, window_days={window_days})...", flush=True)
     if airline == "turkish":
         windows, n_total = load_windows_turkish(_turkish_df, airport_map, window_days)
@@ -749,6 +763,7 @@ def evaluate_full(
             windows, base_ids, constraint, encoder, decoder,
             n_rollouts_per_chunk=n_rollouts_per_chunk,
             subset_size=subset_size,
+            window_days=window_days,
             connected_sampler=connected_sampler,
             airline=airline,
         )

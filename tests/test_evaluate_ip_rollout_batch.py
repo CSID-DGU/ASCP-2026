@@ -20,7 +20,7 @@ import torch  # noqa: E402
 from model import FlightEncoder, PointerDecoder  # noqa: E402
 from base_reach import build_base_reaches  # noqa: E402
 from evaluation.evaluate_ip import (  # noqa: E402
-    rollout_subset_global, rollout_subset_global_batch,
+    rollout_subset_global, rollout_subset_global_batch, validate_window_days,
 )
 
 
@@ -91,6 +91,17 @@ class RolloutSubsetGlobalBatchTests(unittest.TestCase):
             for pairing in episode_pairings:
                 self.assertTrue(set(pairing["legs"]).issubset(valid_global_ids))
                 self.assertTrue(pairing["is_legal"])
+
+
+class WindowContractTests(unittest.TestCase):
+    def test_jetblue_short_window_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "max_pairing_days"):
+            validate_window_days(5, {"max_pairing_days": 7}, "jetblue")
+
+    def test_window_equal_to_pairing_limit_is_allowed(self):
+        self.assertEqual(
+            validate_window_days(7, {"max_pairing_days": 7}, "jetblue"), 7
+        )
 
 
 if __name__ == "__main__":
