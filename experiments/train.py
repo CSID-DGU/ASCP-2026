@@ -665,6 +665,11 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         c        = _prepare_cpp_constraint(flights, c)
         c_tensor = constraint_to_tensor(c, device=DEVICE)
 
+        # sampled instance가 바뀌면 local ID 의미도 바뀌므로 이전 instance dual을 폐기함.
+        dual_vars = {}
+        dh_dual_vars = {}
+        lp_value = None
+
         with torch.no_grad():
             encoded = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
 
