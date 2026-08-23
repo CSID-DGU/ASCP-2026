@@ -681,24 +681,26 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         c        = _prepare_cpp_constraint(flights, c)
         c_tensor = constraint_to_tensor(c, device=DEVICE)
 
-        # sampled instance가 바뀌면 local ID 의미도 바뀌므로 이전 instance dual을 폐기함.
-        dual_vars = {}
-        dh_dual_vars = {}
-        lp_value = None
-
         with torch.no_grad():
             encoded = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
-
-            if ep % config.PHASE2_LP_INTERVAL == 0:
-                pool      = _collect_pool(flights, c, encoder, decoder, encoded,
-                                          n_rollouts=config.PHASE2_POOL_ROLLOUTS)
-                lp_result = solve_lp_relaxation(pool)
-                if lp_result is not None:
-                    dual_vars    = lp_result["dual_vars"]
-                    # coverage_only 모드: deadhead dual(ν^exc)을 아예 안 받아옴 → 아래
-                    # run_episode_with_dual의 _nu_exc가 항상 0이 되어 π^cov만 반영됨.
-                    dh_dual_vars = lp_result["dh_dual_vars"] if dual_mode == "net" else {}
-                    lp_value     = lp_result["lp_value"]
+            # 매 episode의 local flight ID 의미가 달라 이전 dual을 재사용할 수 없음.
+            # 현재 instance의 전체 flight를 artificial singleton으로 LP에 포함하여
+            # pool에서 한 번도 생성되지 않은 flight에도 coverage dual을 부여함.
+            pool = _collect_pool(
+                flights, c, encoder, decoder, encoded,
+                n_rollouts=config.PHASE2_POOL_ROLLOUTS,
+            )
+            lp_result = solve_lp_relaxation(
+                pool,
+                flight_ids=[f["id"] for f in flights],
+                artificial_cost=config.PHASE2_ARTIFICIAL_COST,
+            )
+            dual_vars = lp_result["dual_vars"] if lp_result is not None else {}
+            dh_dual_vars = (
+                lp_result["dh_dual_vars"]
+                if lp_result is not None and dual_mode == "net" else {}
+            )
+            lp_value = lp_result["lp_value"] if lp_result is not None else None
 
         _base_dw = dual_weight_override if dual_weight_override is not None else config.PHASE2_DUAL_WEIGHT
         _eff_dw = _base_dw * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
@@ -1150,17 +1152,19 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
         ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
         ckpt_n_airports = ckpt["encoder"]["airport_emb.weight"].shape[0]
         if ckpt_n_airports != n_airports:
-            encoder = FlightEncoder(
-                n_airports=ckpt_n_airports,
-                constraint_dim=len(FILM_CONSTRAINT_KEYS),
-                airport_emb_dim=32,
-                d_model=128,
-                use_film_before=not skip_film,
-                use_film_after=not skip_film,
-            ).to(DEVICE)
-            n_airports = ckpt_n_airports
+            raise ValueError(
+                "phase2-only checkpoint의 공항 embedding 크기가 현재 airport map과 다름: "
+                f"checkpoint={ckpt_n_airports}, current={n_airports}"
+            )
+        if ckpt.get("airport_map_hash") != checkpoint_metadata["airport_map_hash"]:
+            raise ValueError("phase2-only checkpoint의 airport map이 현재 학습 설정과 다름")
+        if bool(ckpt.get("skip_film", False)) != bool(skip_film):
+            raise ValueError("phase2-only checkpoint와 --skip-film 설정이 다름")
+        if bool(ckpt.get("skip_decoder_constraint", False)) != bool(skip_decoder_constraint):
+            raise ValueError("phase2-only checkpoint와 --skip-decoder-constraint 설정이 다름")
         encoder.load_state_dict(ckpt["encoder"])
         decoder.load_state_dict(ckpt["decoder"])
+        _s3_best = float(ckpt.get("best_avg_pairings", float("inf")))
         print(f"stage3_best.pt 로드 완료: {ckpt_path} → Phase 2만 실행 (n_airports={n_airports})")
 
     if not phase2_only:
@@ -1170,6 +1174,12 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                 raise ValueError("--from-stage2 사용 시 --ckpt-dir로 stage2_best.pt 폴더를 지정해야 합니다.")
             _s2_ckpt_path = os.path.join(_s2_load_dir, "stage2_best.pt")
             _s2_ckpt = torch.load(_s2_ckpt_path, map_location=DEVICE, weights_only=True)
+            if _s2_ckpt.get("airport_map_hash") != checkpoint_metadata["airport_map_hash"]:
+                raise ValueError("stage2 checkpoint의 airport map이 현재 학습 설정과 다름")
+            if bool(_s2_ckpt.get("skip_film", False)) != bool(skip_film):
+                raise ValueError("stage2 checkpoint와 --skip-film 설정이 다름")
+            if bool(_s2_ckpt.get("skip_decoder_constraint", False)) != bool(skip_decoder_constraint):
+                raise ValueError("stage2 checkpoint와 --skip-decoder-constraint 설정이 다름")
             encoder.load_state_dict(_s2_ckpt["encoder"])
             decoder.load_state_dict(_s2_ckpt["decoder"])
             print(f"stage2_best.pt 로드: {_s2_ckpt_path} → Stage 3부터 실행")

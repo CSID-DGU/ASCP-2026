@@ -36,6 +36,8 @@ def solve_lp_relaxation(
     pairings: List[Dict],
     lambda_dh: float = 1.0,
     verbose: bool = False,
+    flight_ids=None,
+    artificial_cost: float = 1000.0,
 ) -> Optional[Dict]:
     """
     Set-covering LP relaxation of Eq. (2): x_j in [0,1] (continuous) -> extract
@@ -53,8 +55,16 @@ def solve_lp_relaxation(
     Returns: { lp_value, dual_vars, reduced_costs, status }
     None: if the LP fails to solve
     """
-    if not pairings:
+    if not pairings and flight_ids is None:
         return None
+
+    real_pairing_count = len(pairings)
+    if flight_ids is not None:
+        present = {leg for p in pairings for leg in p["legs"]}
+        pairings = list(pairings) + [
+            {"legs": [flight_id], "cost": artificial_cost, "_artificial": True}
+            for flight_id in flight_ids if flight_id not in present
+        ]
 
     flight_to_pairings: Dict[int, List[int]] = defaultdict(list)
     for j, p in enumerate(pairings):
@@ -101,7 +111,7 @@ def solve_lp_relaxation(
 
     reduced_costs = [
         pairings[j]["cost"] - sum(mu_cov.get(i, 0.0) for i in pairings[j]["legs"])
-        for j in range(M)
+        for j in range(real_pairing_count)
     ]
 
     return {

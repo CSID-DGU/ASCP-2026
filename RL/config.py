@@ -93,7 +93,8 @@ EPISODE_MAX_FLIGHTS = 600
 #   every episode would bottleneck on the CBC solver); mu^cov/nu^exc are
 #   cached and reused between refreshes.
 PHASE2_POOL_ROLLOUTS = 50    # pool-collection rollouts (stochastic x 50 + greedy x 1)
-PHASE2_LP_INTERVAL   = 5     # H_LP: LP re-solve interval, in episodes
+PHASE2_LP_INTERVAL   = 1     # instance별 local ID가 달라 매 episode LP를 다시 풂
+PHASE2_ARTIFICIAL_COST = 1000.0  # 미생성 flight의 coverage dual을 만드는 LP 전용 singleton 비용
 PHASE2_N_EPISODES    = 1000  # number of Phase 2 training episodes
 PHASE2_DUAL_WARMUP   = 100   # w_dual(e) warm-up length in episodes -- ramps 0 -> full over the first 100 episodes
 
