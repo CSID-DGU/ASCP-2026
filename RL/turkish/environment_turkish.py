@@ -331,7 +331,9 @@ def step(state, action, flights, assigned, constraint=None):
         base_id_set = set(c.get("base_ids") or [base])
 
         total_legs = state.get("total_legs", 0)
-        reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
+        # LEG_PER_PAIRING_BONUS는 이미 flight 선택마다 즉시 지급됨(line ~405) -- 여기서
+        # total_legs배로 다시 지급하면 이중 지급이 됨 (RL/environment.py와 동일 버그).
+        reward = -p_cost
 
         if total_legs < config.MIN_LEGS_FOR_PAIRING:
             reward += config.MIN_LEGS_PENALTY

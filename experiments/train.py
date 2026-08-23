@@ -121,11 +121,16 @@ def _prepare_cpp_constraint(flights, constraint):
     return c
 
 
-def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
+def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False, stage=3):
     """
     Returns:
         total_reward, log_probs, entropies, metrics dict
         metrics: {n_pairings, n_deadheads, n_uncovered, coverage_pct}
+
+    stage: config.CURRICULUM_CONFIG의 stage별 규칙(예: Stage1 allow_end_duty=False)을
+        get_mask()에 반영하기 위함. 미지정 시 stage=3(제일 느슨한 규칙) 유지 -- 이전엔
+        get_mask() 호출부가 stage를 아예 안 넘겨서 Stage1도 항상 stage=3 규칙으로
+        학습됐음(Stage1의 allow_end_duty=False가 한 번도 적용된 적 없었음).
     """
     constraint = _prepare_cpp_constraint(flights, constraint)
     assigned = {f["id"]: False for f in flights}
@@ -156,7 +161,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         mask_assigned = assigned if not blocked_ids else {
             **assigned, **{fid: True for fid in blocked_ids}
         }
-        mask_list = get_mask(state, flights, mask_assigned, constraint)
+        mask_list = get_mask(state, flights, mask_assigned, constraint, stage=stage)
         mask = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
         # 합법 action이 없으면 -- base에서 다시 시작할 수 있는 미배정 flight가 남아있는 한
@@ -1009,7 +1014,7 @@ def run_curriculum_stage(
         encoded  = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
 
         reward_s, log_probs, entropies, metrics_s = run_episode(
-            flights, c, encoder, decoder, encoded, greedy=False
+            flights, c, encoder, decoder, encoded, greedy=False, stage=stage
         )
         if len(log_probs) == 0:
             continue
@@ -1017,7 +1022,7 @@ def run_curriculum_stage(
         with torch.no_grad():
             encoded_g = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
             reward_g, _, _, metrics_g = run_episode(
-                flights, c, encoder, decoder, encoded_g, greedy=True
+                flights, c, encoder, decoder, encoded_g, greedy=True, stage=stage
             )
 
         greedy_pairings.append(metrics_g["n_pairings"])

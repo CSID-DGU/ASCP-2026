@@ -352,7 +352,10 @@ def step(state, action, flights, assigned, constraint=None):
         base = c["base_airport"]
 
         total_legs = state.get("total_legs", 0)
-        reward = -p_cost + total_legs * config.LEG_PER_PAIRING_BONUS
+        # LEG_PER_PAIRING_BONUS는 이미 leg 선택마다 즉시 지급됨(line ~429) -- 여기서
+        # total_legs배로 다시 지급하면 이중 지급이 됨(같은 pairing 안에서 leg당 2번씩
+        # 보너스를 받는 셈).
+        reward = -p_cost
 
         if total_legs < config.MIN_LEGS_FOR_PAIRING:
             reward += config.MIN_LEGS_PENALTY
