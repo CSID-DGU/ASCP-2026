@@ -48,7 +48,6 @@ def main():
     parser.add_argument("--n-rollouts-per-chunk", type=int, default=5)
     parser.add_argument("--ip-time-limit", type=int, default=1800)
     parser.add_argument("--lambda-dh", type=float, default=1.0)
-    parser.add_argument("--use-utc", action="store_true")
     parser.add_argument("--require-base-return", action="store_true",
                         help="decode-time hard mask 활성화 — rollout 중 base 복귀가 불가능해지는 "
                              "leg를 마스킹하고, base 아닌 곳에서 END_PAIRING을 금지한다.")
@@ -82,7 +81,7 @@ def main():
     print(f"delta flight 윈도우 로드 중 (offset_days={args.offset_days}, window_days={args.window_days})...", flush=True)
     window_flights = load_flights_rolling(
         config.AIRLINE_DATA["delta"], window_days=args.window_days, offset_days=args.offset_days,
-        airport_map=airport_map, base_airport=base, n_max=None, use_utc=args.use_utc,
+        airport_map=airport_map, base_airport=base, n_max=None,
     )
     for f in window_flights:
         f["global_id"] = f["id"]

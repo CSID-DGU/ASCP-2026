@@ -64,7 +64,6 @@ def main():
     parser.add_argument("--date-end",   default=DEFAULT_DATE_END)
     parser.add_argument("--max-legs",   type=int, default=4000)
     parser.add_argument("--ip-time-limit", type=int, default=300)
-    parser.add_argument("--use-utc",    action="store_true", default=True)
     args = parser.parse_args()
 
     ckpt_path = args.checkpoint if os.path.isabs(args.checkpoint) else os.path.join(_REPO_ROOT, args.checkpoint)
@@ -72,7 +71,7 @@ def main():
     print("=" * 70)
     print("1단계: 부분집합 확보(Tahir 실제 커버 flight, Delta 정합 제약)")
     print("=" * 70)
-    rows = parse_raw_rows(args.csv, use_utc=args.use_utc)
+    rows = parse_raw_rows(args.csv)
     tahir_result, covered_keys, inst = run_tahir_and_get_covered_keys(
         args.tahir_csv, args.date_start, args.date_end, args.max_legs,
     )

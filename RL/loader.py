@@ -1,6 +1,7 @@
 import random
 import pandas as pd
 from collections import Counter
+from zoneinfo import ZoneInfo
 
 
 def convert_time(hhmm):
@@ -19,30 +20,53 @@ def convert_time(hhmm):
 # timezone-independent) automatically yields a correct UTC arrival time too.
 # (same source as the _UTC table in analysis/flight_time_distribution.py)
 _UTC_OFFSET_MIN = {
-    **{ap: -600 for ap in ['HNL', 'KOA', 'LIH', 'OGG']},
-    **{ap: -540 for ap in ['ANC', 'FAI']},
-    **{ap: -480 for ap in ['GEG', 'LAS', 'LAX', 'OAK', 'ONT', 'PDX', 'PSP', 'RNO', 'SAN', 'SEA',
-                            'SFO', 'SJC', 'SMF', 'SNA']},
+    **{ap: -600 for ap in ['ADK', 'HNL', 'KOA', 'LIH', 'OGG']},
+    **{ap: -540 for ap in ['ADQ', 'ANC', 'BET', 'BRW', 'CDV', 'FAI', 'JNU', 'KTN', 'OME', 'OTZ',
+                            'PSG', 'SCC', 'SIT', 'WRG', 'YAK']},
+    **{ap: -480 for ap in ['BLI', 'BUR', 'GEG', 'LAS', 'LAX', 'LGB', 'OAK', 'ONT', 'PDX', 'PSP',
+                            'RNO', 'SAN', 'SBA', 'SEA', 'SFO', 'SJC', 'SMF', 'SNA']},
     **{ap: -420 for ap in ['ABQ', 'BIL', 'BOI', 'BZN', 'COS', 'DEN', 'EGE', 'ELP', 'FCA', 'HDN',
                             'JAC', 'MSO', 'MTJ', 'PHX', 'SLC', 'TUS']},
     **{ap: -360 for ap in ['ATW', 'AUS', 'BHM', 'BIS', 'BNA', 'BTR', 'CID', 'DAL', 'DFW', 'DSM',
                             'ECP', 'FAR', 'FSD', 'GPT', 'GRB', 'HOU', 'HSV', 'IAH', 'ICT', 'JAN',
                             'LFT', 'LIT', 'MCI', 'MDW', 'MEM', 'MKE', 'MOB', 'MSN', 'MSP', 'MSY',
                             'OKC', 'OMA', 'ORD', 'PNS', 'SAT', 'STL', 'TUL', 'VPS', 'XNA']},
-    **{ap: -300 for ap in ['ABE', 'AGS', 'ALB', 'ATL', 'AVL', 'AVP', 'BDL', 'BOS', 'BUF', 'BWI',
+    **{ap: -300 for ap in ['ABE', 'AGS', 'ALB', 'ATL', 'AVL', 'AVP', 'BDL', 'BOS', 'BTV', 'BUF', 'BWI',
                             'CAE', 'CAK', 'CHA', 'CHO', 'CHS', 'CLE', 'CLT', 'CMH', 'CRW', 'CVG',
                             'DAB', 'DAY', 'DCA', 'DTW', 'EWR', 'EYW', 'FAY', 'FLL', 'FNT', 'GNV',
                             'GRR', 'GSO', 'GSP', 'HPN', 'IAD', 'ILM', 'IND', 'JAX', 'JFK', 'LEX',
                             'LGA', 'MCO', 'MDT', 'MHT', 'MIA', 'MLB', 'MYR', 'ORF', 'PBI', 'PHF',
-                            'PHL', 'PIT', 'PVD', 'PWM', 'RDU', 'RIC', 'ROA', 'ROC', 'RSW', 'SAV',
-                            'SDF', 'SRQ', 'SYR', 'TLH', 'TPA', 'TRI', 'TYS']},
-    **{ap: -240 for ap in ['SJU', 'STT', 'STX']},
+                            'ORH', 'PHL', 'PIT', 'PVD', 'PWM', 'RDU', 'RIC', 'ROA', 'ROC', 'RSW',
+                            'SAV', 'SDF', 'SRQ', 'SWF', 'SYR', 'TLH', 'TPA', 'TRI', 'TYS']},
+    **{ap: -240 for ap in ['BQN', 'PSE', 'SJU', 'STT', 'STX']},
+}
+
+_AIRPORT_TIMEZONE = {
+    **{ap: "Pacific/Honolulu" for ap in ["HNL", "KOA", "LIH", "OGG"]},
+    "ADK": "America/Adak",
+    **{ap: "America/Anchorage" for ap in [
+        "ADQ", "ANC", "BET", "BRW", "CDV", "FAI", "JNU", "KTN", "OME", "OTZ",
+        "PSG", "SCC", "SIT", "WRG", "YAK",
+    ]},
+    **{ap: "America/Los_Angeles" for ap, offset in _UTC_OFFSET_MIN.items() if offset == -480},
+    **{ap: "America/Denver" for ap, offset in _UTC_OFFSET_MIN.items() if offset == -420},
+    **{ap: "America/Chicago" for ap, offset in _UTC_OFFSET_MIN.items() if offset == -360},
+    **{ap: "America/New_York" for ap, offset in _UTC_OFFSET_MIN.items() if offset == -300},
+    **{ap: "America/Puerto_Rico" for ap, offset in _UTC_OFFSET_MIN.items() if offset == -240},
+    "PHX": "America/Phoenix",
 }
 
 
-def utc_offset_hours(airport_code):
-    """UTC offset for an airport (hours). Defaults to Eastern (-5h) if not in the table."""
-    return _UTC_OFFSET_MIN.get(airport_code, -300) / 60.0
+def utc_offset_hours(airport_code, local_datetime=None):
+    """공항의 UTC offset을 반환하며, 날짜가 있으면 서머타임까지 반영함."""
+    try:
+        if local_datetime is None:
+            return _UTC_OFFSET_MIN[airport_code] / 60.0
+        dt = pd.Timestamp(local_datetime).to_pydatetime().replace(tzinfo=None)
+        offset = dt.replace(tzinfo=ZoneInfo(_AIRPORT_TIMEZONE[airport_code])).utcoffset()
+        return offset.total_seconds() / 3600.0
+    except KeyError as exc:
+        raise ValueError(f"UTC offset이 등록되지 않은 BTS 공항: {airport_code}") from exc
 
 
 def build_airport_map(path):
@@ -94,17 +118,13 @@ def get_bases(flights, n_bases=3):
     return [a for a, _ in counts.most_common(n_bases)]
 
 
-def load_flights(path, limit=50, seed=42, n_days_max=None, use_utc=False):
+def load_flights(path, limit=50, seed=42, n_days_max=None):
     """Load flights from BTS data.
 
     Airport index: descending frequency over the full CSV -> index 0 = hub.
     The same airport_map is always used regardless of limit.
 
-    use_utc: if True, anchors dep_time to UTC absolute time.
-        Defaults to False -- existing checkpoints were trained with the loader's earlier
-        (local-time) behavior, so unconditionally enabling this at eval time would feed an
-        OOD distribution the model never saw during training. Only enable this when evaluating
-        a model that was trained with this option turned on.
+    BTS의 공항별 현지 출발시각을 항상 UTC 절대시각으로 변환함.
     """
     df = pd.read_csv(path)
     df = df[[
@@ -132,10 +152,10 @@ def load_flights(path, limit=50, seed=42, n_days_max=None, use_utc=False):
     base_date = df["FL_DATE"].min()
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
-    if use_utc:
-        # Anchor dep_time to UTC absolute time (origin local time minus UTC offset)
-        # -> makes connection-gap calculations correct across airports in different time zones
-        df["dep_time"] -= df["ORIGIN"].map(utc_offset_hours)
+    # 공항별 현지시각을 UTC 절대시각으로 맞춰 서로 다른 시간대의 연결시간을 비교함.
+    df["dep_time"] -= df.apply(
+        lambda row: utc_offset_hours(row["ORIGIN"], row["FL_DATE"]), axis=1
+    )
     # CRS_ELAPSED_TIME (minutes, block time) is timezone-independent -> adding it to dep_time
     # keeps arr_time on the same basis
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
@@ -197,7 +217,6 @@ def load_flights_rolling(
     base_airport=None,
     n_max=None,
     df=None,
-    use_utc=False,
 ):
     """Load real date-based data using a sliding window approach.
 
@@ -249,9 +268,10 @@ def load_flights_rolling(
     base_date = min(window_dates)
     df["day_offset"] = (df["FL_DATE"] - base_date).dt.days
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
-    if use_utc:
-        # Anchor dep_time to UTC absolute time -- same reasoning as load_flights()
-        df["dep_time"] -= df["ORIGIN"].map(utc_offset_hours)
+    # BTS 데이터는 항상 UTC 절대시각으로 맞춤. Turkish는 이 로더를 사용하지 않음.
+    df["dep_time"] -= df.apply(
+        lambda row: utc_offset_hours(row["ORIGIN"], row["FL_DATE"]), axis=1
+    )
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 
     df = df.sort_values("dep_time").reset_index(drop=True)

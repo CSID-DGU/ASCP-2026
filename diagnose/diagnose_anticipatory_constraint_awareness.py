@@ -31,7 +31,7 @@ Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
     python -u diagnose/diagnose_anticipatory_constraint_awareness.py checkpoints/pws5cjlz/stage3_best.pt \
-        --device cpu --use-utc --n-rollouts 6
+        --device cpu --n-rollouts 6
 """
 import os
 import sys
@@ -263,7 +263,6 @@ def main():
     ap.add_argument("--window-days", type=int, default=5)
     ap.add_argument("--subset-size", type=int, default=config.EPISODE_MAX_FLIGHTS)
     ap.add_argument("--n-rollouts", type=int, default=6)
-    ap.add_argument("--use-utc", action="store_true")
     args = ap.parse_args()
 
     device = torch.device(args.device)
@@ -284,7 +283,7 @@ def main():
             constraint = _GET_CONSTRAINT[airline](base_ids[0])
             window_flights = load_flights_rolling(
                 config.AIRLINE_DATA[airline], window_days=args.window_days, offset_days=0,
-                airport_map=airport_map, use_utc=args.use_utc,
+                airport_map=airport_map,
             )
             for i, f in enumerate(window_flights):
                 f["id"] = i

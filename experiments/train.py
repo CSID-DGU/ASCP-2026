@@ -70,9 +70,6 @@ from utils import (
 import config
 
 DEVICE = torch.device("cpu")  # train() 호출 전 _set_device()로 설정
-USE_UTC = False  # dep_time UTC 앵커링 여부 — --use-utc로 켬
-
-
 def _set_device(device_str: str):
     global DEVICE
     DEVICE = torch.device(device_str)
@@ -743,6 +740,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 "stage":             "phase2",
                 "episode":           ep,
                 "best_avg_pairings": best_avg_pairings,
+                "time_basis":        "turkish_native" if config.AIRLINE == "turkish" else "utc",
             }, ckpt_path)
             wandb.save(ckpt_path)
 
@@ -871,6 +869,7 @@ def run_curriculum_stage(
                     "stage":             stage,
                     "episode":           ep,
                     "best_avg_pairings": best_avg_pairings,
+                    "time_basis":        "turkish_native" if config.AIRLINE == "turkish" else "utc",
                 }, ckpt_path)
                 wandb.save(ckpt_path)
 
@@ -1026,7 +1025,6 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                     base_airport=base_airport,
                     n_max=config.EPISODE_MAX_FLIGHTS,
                     df=_df_caches[airline],
-                    use_utc=USE_UTC,
                 )
                 if flights and any(f["origin"] == base_airport for f in flights):
                     origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, WINDOW_DAYS * 24.0, device=DEVICE)
@@ -1072,7 +1070,6 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                     base_airport=base_airport,
                     n_max=config.EPISODE_MAX_FLIGHTS,
                     df=_df_cache,
-                    use_utc=USE_UTC,
                 )
                 if not flights:
                     return None
@@ -1222,7 +1219,6 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
             base_airport=_val_base,
             n_max=config.EPISODE_MAX_FLIGHTS,
             df=_val_df,
-            use_utc=USE_UTC,
         )
     val_origins, val_dests, val_dep_times, val_arr_times, val_fly_times = flights_to_tensors(val_flights, WINDOW_DAYS * 24.0, device=DEVICE)
 
@@ -1326,6 +1322,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
         "bases":          _val_bases_save,
         "window_days":    WINDOW_DAYS,
         "max_time":       WINDOW_DAYS * 24,
+        "time_basis":     "turkish_native" if config.AIRLINE == "turkish" else "utc",
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt")
 
@@ -1358,9 +1355,6 @@ if __name__ == "__main__":
     parser.add_argument("--turkish-files", default=None,
                         help="Turkish 학습 시 사용할 .legs 파일 이름 콤마 구분 (예: tt201401.legs). 미지정 시 "
                              "Zeren Feb 벤치마크 윈도우(tt201402.legs, 2/1~3/8, 15,742편) 기본 사용")
-    parser.add_argument("--use-utc", action="store_true",
-                        help="dep_time을 UTC 절대시간으로 앵커링. 새로 이 옵션으로 학습한 모델만 "
-                             "이 옵션 켠 채로 평가해야 함 — 기존 체크포인트에 켜면 OOD")
     parser.add_argument("--dual-weight", type=float, default=None,
                         help="Phase2 CG dual reward 가중치를 config.PHASE2_DUAL_WEIGHT(기본 0.6) 대신 "
                              "이 값으로 덮어씀. 0을 주면 CG-dual 완전히 비활성화.")
@@ -1379,9 +1373,8 @@ if __name__ == "__main__":
         config.AIRLINE_DATA[config.AIRLINE] = args.data_path
         print(f"data_path 지정: {config.AIRLINE} → {args.data_path}")
     _set_device(args.device)
-    USE_UTC = args.use_utc
     print(f"device: {DEVICE}")
-    print(f"use_utc: {USE_UTC}")
+    print(f"time_basis: {'Turkish 전용 시각' if config.AIRLINE == 'turkish' and not args.multi_airline else 'UTC (BTS 고정)'}")
     print(f"log: {args.log}")
     _turkish_files = [f.strip() for f in args.turkish_files.split(",")] if args.turkish_files else None
     train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,

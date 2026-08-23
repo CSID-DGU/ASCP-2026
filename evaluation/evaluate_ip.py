@@ -108,12 +108,8 @@ def load_windows_turkish(turkish_df, airport_map, window_days=5):
 
 # ── 1. Load the full dataset window by window, assigning global IDs ─────────
 
-def load_windows_with_global_ids(data_path, airport_map, window_days=5, use_utc=False):
+def load_windows_with_global_ids(data_path, airport_map, window_days=5):
     """Split the full CSV into window_days-sized non-overlapping windows and assign global IDs.
-
-    use_utc: if True, anchor dep_time to UTC (see RL/loader.py) -- only enable
-        this when evaluating a checkpoint trained with the same option; using
-        it with an existing checkpoint puts the model out-of-distribution.
 
     Returns:
         windows    : list of flight lists. Each flight gets a 'global_id' field.
@@ -137,7 +133,6 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5, use_utc=
             airport_map=airport_map,
             n_max=None,
             df=df,
-            use_utc=use_utc,
         )
         for f in wf:
             f["global_id"] = global_offset + f["id"]
@@ -663,7 +658,6 @@ def evaluate_full(
     lambda_dh=10.0,
     device="cpu",
     turkish_files=None,
-    use_utc=False,
     use_wandb=False,
     wandb_project="ASCP-2026-paper",
     compute_gap=False,
@@ -733,7 +727,8 @@ def evaluate_full(
                 subset_size=subset_size, window_days=window_days,
                 n_rollouts_per_chunk=n_rollouts_per_chunk,
                 ip_time_limit=ip_time_limit, lambda_dh=lambda_dh,
-                use_utc=use_utc, eval_mode=eval_mode,
+                time_basis="turkish_native" if airline == "turkish" else "utc",
+                eval_mode=eval_mode,
                 strict_validation=strict_validation,
             ),
         )
@@ -749,6 +744,14 @@ def evaluate_full(
     ckpt       = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
     n_airports = ckpt.get("n_airports",
                           ckpt["encoder"]["airport_emb.weight"].shape[0])
+    expected_time_basis = "turkish_native" if airline == "turkish" else "utc"
+    checkpoint_time_basis = ckpt.get("time_basis")
+    if checkpoint_time_basis != expected_time_basis:
+        raise ValueError(
+            "체크포인트 시간 기준이 평가 데이터와 일치하지 않음: "
+            f"checkpoint={checkpoint_time_basis or '미기록(레거시)'}, "
+            f"required={expected_time_basis}. BTS UTC 전환 전 체크포인트는 재학습해야 함."
+        )
 
     _turkish_df = None
     if airline == "turkish":
@@ -791,7 +794,7 @@ def evaluate_full(
     if airline == "turkish":
         windows, n_total = load_windows_turkish(_turkish_df, airport_map, window_days)
     else:
-        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days, use_utc=use_utc)
+        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
     print(f"total {n_total} legs, {len(windows)} windows", flush=True)
     # C3: global_id -> flight dict, independent validator가 pairing legs를 조회하는 데 씀
     flights_by_id = {f["global_id"]: {**f, "id": f["global_id"]} for w in windows for f in w}
@@ -1014,10 +1017,6 @@ if __name__ == "__main__":
                         help="Turkish only. List of .legs file names to use. Defaults to the "
                              "Zeren Feb benchmark window (tt201402.legs, 2/1-3/8, 15,742 legs) "
                              "if unset. If given explicitly, uses those files in full with no date filter.")
-    parser.add_argument("--use-utc", action="store_true",
-                        help="Anchor dep_time as absolute UTC time. Only evaluate with this flag "
-                             "for checkpoints trained with --use-utc -- enabling it for an existing "
-                             "checkpoint puts the model out-of-distribution")
     parser.add_argument("--wandb", action="store_true",
                         help="Log the eval config + console output + final result metrics to wandb (job_type=eval)")
     parser.add_argument("--wandb-project", default="ASCP-2026-paper")
@@ -1078,7 +1077,6 @@ if __name__ == "__main__":
         lambda_dh=args.lambda_dh,
         device=args.device,
         turkish_files=args.turkish_files,
-        use_utc=args.use_utc,
         use_wandb=args.wandb,
         wandb_project=args.wandb_project,
         compute_gap=args.compute_gap,

@@ -207,7 +207,7 @@ def main():
     base_ids = bases_to_ids(list(config.AIRLINE_BASES[args.airline]), airport_map)
     constraint = _GET_CONSTRAINT[args.airline](base_ids[0])
 
-    window_flights = load_flights_rolling(data_path, window_days=args.window_days, offset_days=0, airport_map=airport_map, use_utc=True)
+    window_flights = load_flights_rolling(data_path, window_days=args.window_days, offset_days=0, airport_map=airport_map)
     for i, f in enumerate(window_flights):
         f["id"] = i
     subset = sample_connected_subnet(window_flights, base_ids[0], args.subset_size)

@@ -65,7 +65,7 @@ DEFAULT_DATE_END   = "2019-01-07"
 #  매칭이 안 된다 — row 자체에서 나온 (origin, dest, dep_abs)를 키로 써서 정렬과 무관하게
 #  매칭한다.)
 
-def parse_raw_rows(csv_path, use_utc):
+def parse_raw_rows(csv_path):
     df = pd.read_csv(csv_path)
     df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], format="mixed")
     window_start = df["FL_DATE"].min()
@@ -74,8 +74,7 @@ def parse_raw_rows(csv_path, use_utc):
     for i, row in df.iterrows():
         day_offset = (row["FL_DATE"] - window_start).days
         dep_time = convert_time(row["CRS_DEP_TIME"]) + day_offset * 24.0
-        if use_utc:
-            dep_time -= utc_offset_hours(row["ORIGIN"])
+        dep_time -= utc_offset_hours(row["ORIGIN"], row["FL_DATE"])
         arr_time = dep_time + row["CRS_ELAPSED_TIME"] / 60.0
 
         hhmm = int(row["CRS_DEP_TIME"])
@@ -275,8 +274,6 @@ def main():
     parser.add_argument("--max-legs",   type=int, default=4000)
     parser.add_argument("--lambda-dh",  type=float, default=10.0)
     parser.add_argument("--ip-time-limit", type=int, default=300)
-    parser.add_argument("--use-utc",    action="store_true", default=True,
-                         help="원래 Delta small-scale 비교와 동일하게 기본 True")
     parser.add_argument("--tahir-method", default="i2cg", choices=["i2cg", "i2cgp", "both"],
                          help="Tahir 쪽 알고리즘(기본 i2cg, 기존 동작과 동일). "
                               "i2cgp/both는 같은 inst/ref로 Tahir/experiments/delta_dnn "
@@ -291,7 +288,7 @@ def main():
     print("=" * 70)
     print("1단계: 원본 CSV 직접 파싱 (우리쪽 표현 + Tahir쪽 매칭키 동시 생성)")
     print("=" * 70)
-    rows = parse_raw_rows(args.csv, use_utc=args.use_utc)
+    rows = parse_raw_rows(args.csv)
     print(f"  총 {len(rows)}행 파싱 완료")
 
     print()

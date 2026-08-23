@@ -55,7 +55,6 @@ def main():
     parser.add_argument("--n-rollouts-per-chunk", type=int, default=5)
     parser.add_argument("--ip-time-limit", type=int, default=1800)
     parser.add_argument("--lambda-dh", type=float, default=1.0)
-    parser.add_argument("--use-utc", action="store_true")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -98,7 +97,7 @@ def main():
     print(f"delta flight 윈도우 로드 중 (offset_days={args.offset_days}, window_days={args.window_days})...", flush=True)
     window_flights = load_flights_rolling(
         config.AIRLINE_DATA["delta"], window_days=args.window_days, offset_days=args.offset_days,
-        airport_map=airport_map, base_airport=base, n_max=None, use_utc=args.use_utc,
+        airport_map=airport_map, base_airport=base, n_max=None,
     )
     for f in window_flights:
         f["global_id"] = f["id"]

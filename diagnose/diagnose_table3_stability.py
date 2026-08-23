@@ -19,7 +19,7 @@ Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
     python -u diagnose/diagnose_table3_stability.py checkpoints/pws5cjlz/stage3_best.pt \
-        --device cuda:0 --use-utc --n-runs 2
+        --device cuda:0 --n-runs 2
 """
 import os
 import sys
@@ -50,7 +50,6 @@ def main():
     parser.add_argument("--n-rollouts-per-chunk", type=int, default=5)
     parser.add_argument("--ip-time-limit", type=int, default=1800)
     parser.add_argument("--lambda-dh", type=float, default=1.0)
-    parser.add_argument("--use-utc", action="store_true")
     parser.add_argument("--n-runs", type=int, default=2, help="④' Table3를 몇 회 반복할지")
     args = parser.parse_args()
 

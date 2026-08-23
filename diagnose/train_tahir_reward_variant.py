@@ -33,7 +33,7 @@ Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
     python -u diagnose/train_tahir_reward_variant.py \
-        --tahir-duty-lambda 2.0 --device cuda:0 --use-utc \
+        --tahir-duty-lambda 2.0 --device cuda:0 \
         --log log/0711/train_tahir_reward_variant.log
 """
 import os
@@ -71,8 +71,6 @@ def main():
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--log", default=os.path.join(
         os.path.dirname(__file__), "..", "log", "train_tahir_reward_variant_log.txt"))
-    parser.add_argument("--use-utc", action="store_true",
-                         help="z2db089m과 비교 가능하게 하려면 켜야 함(eval_cross_objective.py 기본값과 일치)")
     parser.add_argument("--airline", default="delta")
     args = parser.parse_args()
 
@@ -81,10 +79,8 @@ def main():
     import train as train_mod  # experiments/train.py 재사용
     train_mod.config.AIRLINE = args.airline
     train_mod._set_device(args.device)
-    train_mod.USE_UTC = args.use_utc
 
     print(f"device: {train_mod.DEVICE}")
-    print(f"use_utc: {train_mod.USE_UTC}")
     print(f"tahir_duty_lambda: {args.tahir_duty_lambda}  (0.0=baseline과 동일)")
     print(f"log: {args.log}")
 

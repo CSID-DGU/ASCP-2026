@@ -155,7 +155,7 @@ def main():
 
     flights = load_flights_rolling(
         data_path, window_days=5, offset_days=0, airport_map=airport_map,
-        base_airport=base, n_max=args.subset_size, use_utc=True,
+        base_airport=base, n_max=args.subset_size,
     )
     max_time = 5 * 24.0
     origins, dests, dep_times, arr_times, fly_times = flights_to_tensors(flights, max_time, device=device)

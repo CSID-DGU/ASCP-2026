@@ -29,7 +29,7 @@ Usage:
     cd /home/hyrn/ASCP-2026
     source ascp/bin/activate
     python -u diagnose/legacy/diagnose_decoder_constraint_ablation.py checkpoints/pws5cjlz/stage3_best.pt \
-        --device cuda:0 --use-utc
+        --device cuda:0
 """
 import os
 import sys
@@ -119,7 +119,7 @@ def run_table3_stage(encoder, decoder, airport_map, base_ids, base, device, args
     print(f"\n{'='*70}\n④' Table3 단계 ({label}) — delta 편 고정, constraint만 교체\n{'='*70}")
     window_flights = load_flights_rolling(
         config.AIRLINE_DATA["delta"], window_days=args.window_days, offset_days=0,
-        airport_map=airport_map, base_airport=base, n_max=None, use_utc=args.use_utc,
+        airport_map=airport_map, base_airport=base, n_max=None,
     )
     for f in window_flights:
         f["global_id"] = f["id"]
@@ -202,7 +202,6 @@ def main():
     parser.add_argument("--n-rollouts-per-chunk", type=int, default=5)
     parser.add_argument("--ip-time-limit", type=int, default=1800)
     parser.add_argument("--lambda-dh", type=float, default=1.0)
-    parser.add_argument("--use-utc", action="store_true")
     args = parser.parse_args()
 
     device = torch.device(args.device)
