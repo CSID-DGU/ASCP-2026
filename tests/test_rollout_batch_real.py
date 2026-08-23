@@ -198,10 +198,8 @@ class RolloutBatchTurkishCrossBaseTests(unittest.TestCase):
 
 
 class RolloutBatchExceptionIsolationTests(unittest.TestCase):
-    def test_one_episode_exception_does_not_kill_batch(self):
-        # evaluate_ip.py의 rollout_subset_global()이 개별 rollout마다 try/except로
-        # 감싸던 것과 동일한 보장 -- 배치로 묶은 뒤에도 한 episode가 예외를 던지면
-        # 그 episode만 조용히 종료되고 나머지는 정상적으로 계속 진행돼야 함.
+    def test_episode_invariant_exception_fails_batch(self):
+        # invariant 오류는 일부 episode의 후보 감소로 숨기지 않고 즉시 노출함.
         rule = dict(RICH_CONSTRAINT)
         rule["_base_reach"] = build_base_reach(RICH_FLIGHTS, BASE, rule)
 
@@ -217,18 +215,16 @@ class RolloutBatchExceptionIsolationTests(unittest.TestCase):
         old_stv, old_gb = _patch_batch_vec_fns(len(RICH_FLIGHTS))
         rollout._apply_action = flaky_apply_action
         try:
-            results = rollout.rollout_batch(
-                RICH_FLIGHTS, rule, None, _BatchGreedyLegalDecoder(), None,
-                B=5, greedy=True,
-            )
+            with self.assertRaisesRegex(ValueError, "의도적으로 발생시킨"):
+                rollout.rollout_batch(
+                    RICH_FLIGHTS, rule, None, _BatchGreedyLegalDecoder(), None,
+                    B=5, greedy=True,
+                )
         finally:
             rollout._apply_action = real_apply_action
             _unpatch_batch_vec_fns(old_stv, old_gb)
 
-        # 크래시 없이 5개 episode 결과가 전부 돌아와야 함(예외 난 episode는 그 시점까지의
-        # pairings만 갖고 조용히 종료됨).
-        self.assertEqual(len(results), 5)
-        self.assertGreater(call_count["n"], 3)  # 예외 이후에도 다른 episode는 계속 처리됨
+        # invariant 예외를 후보 감소로 숨기지 않고 호출자에게 전달함.
 
 
 class RolloutBatchMaxStepsSafetyTests(unittest.TestCase):
@@ -247,18 +243,18 @@ class RolloutBatchMaxStepsSafetyTests(unittest.TestCase):
         try:
             import time
             t0 = time.time()
-            results = rollout.rollout_batch(
-                RICH_FLIGHTS, rule, None, _BatchGreedyLegalDecoder(), None,
-                B=2, greedy=True,
-            )
+            with self.assertRaisesRegex(RuntimeError, "max_steps 초과"):
+                rollout.rollout_batch(
+                    RICH_FLIGHTS, rule, None, _BatchGreedyLegalDecoder(), None,
+                    B=2, greedy=True,
+                )
             elapsed = time.time() - t0
         finally:
             rollout._apply_action = old_apply_action
             _unpatch_batch_vec_fns(old_stv, old_gb)
 
-        # 캡이 없었으면 이 호출은 절대 안 끝났어야 함(진전이 전혀 없으므로).
-        self.assertEqual(len(results), 2)
-        self.assertLess(elapsed, 10.0)  # 8legs*20=160 step 정도면 순식간에 끝나야 함
+        # 캡은 무한 반복을 중단하되 정상 결과처럼 반환하지 않음.
+        self.assertLess(elapsed, 10.0)
 
 
 if __name__ == "__main__":

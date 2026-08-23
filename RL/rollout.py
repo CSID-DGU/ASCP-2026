@@ -292,7 +292,9 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     while True:
         step_count += 1
         if step_count > max_steps:
-            break
+            raise RuntimeError(
+                f"rollout max_steps 초과: steps={step_count}, flights={len(flights)}"
+            )
 
         mask_list = get_mask(state, flights, assigned, cur_c)
         mask      = torch.tensor(mask_list, dtype=torch.float32).to(dev)
@@ -658,10 +660,10 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
             for ctx, mask_list in zip(group, masks):
                 ctx.step_count += 1
                 if ctx.step_count > max_steps:
-                    # 무한루프 방지(rollout_with_pairings()와 동일한 안전장치) --
-                    # 이 episode만 강제 종료되고 같은 그룹의 다른 episode는 계속 진행됨.
-                    ctx.finished = True
-                    continue
+                    raise RuntimeError(
+                        "batch rollout max_steps 초과: "
+                        f"steps={ctx.step_count}, flights={len(flights)}, base={ctx.episode_base}"
+                    )
                 if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
                     # 위치와 무관하게 마지막 합법 base 복귀 prefix만 보존함.
                     _salvage_doomed(ctx, min_pairing_legs, min_rest)
@@ -692,17 +694,9 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                 actions = Categorical(probs).sample().tolist()
 
             for ctx, action in zip(d_ctxs, actions):
-                # 방어적 invariant 위반(예: flush_pairing()의 base 복귀 실패 체크)이
-                # 이 episode 하나에서 터져도 배치 안의 다른 episode는 계속 진행되게
-                # 격리함 -- 예전에는 rollout_with_pairings()를 episode마다 개별
-                # 호출해서 호출부(evaluation/evaluate_ip.py)가 try/except로 각각
-                # 감쌌는데, 배치로 묶은 이제는 이 함수 안에서 직접 격리해야
-                # 그 "한 episode 실패가 나머지를 안 죽인다"는 보장이 유지됨.
-                try:
-                    _apply_action(ctx, action, flights, flight_by_id, all_bases,
-                                  constraint_for, min_rest, min_pairing_legs)
-                except Exception:
-                    ctx.finished = True
+                # CPP invariant 위반은 후보 수 감소로 조용히 숨기지 않음.
+                _apply_action(ctx, action, flights, flight_by_id, all_bases,
+                              constraint_for, min_rest, min_pairing_legs)
 
     return [ctx.pairings for ctx in ctxs]
 

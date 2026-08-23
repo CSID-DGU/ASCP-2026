@@ -101,7 +101,9 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     while True:
         step_count += 1
         if step_count > max_steps:
-            break
+            raise RuntimeError(
+                f"training rollout max_steps 초과: steps={step_count}, flights={len(flights)}"
+            )
         mask_list = get_mask(state, flights, assigned, constraint)
         mask = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
@@ -272,7 +274,9 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
     while True:
         step_count += 1
         if step_count > max_steps:
-            break
+            raise RuntimeError(
+                f"training rollout max_steps 초과: steps={step_count}, flights={len(flights)}"
+            )
 
         mask_list = get_mask(state, flights, assigned, constraint)
         mask      = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
@@ -449,8 +453,10 @@ def _rollout_batch_dual_pool(flights, constraint, encoder, decoder, encoded, B, 
             step_counts[i] += 1
             mask_list = masks[local_i]
             if step_counts[i] > max_steps:
-                ctxs[i].finished = True
-                continue
+                raise RuntimeError(
+                    "dual-pool batch rollout max_steps 초과: "
+                    f"episode={i}, steps={step_counts[i]}, flights={len(flights)}"
+                )
             # 합법 action이 없으면 임의 위치 이동 없이 미커버 상태로 종료함(run_episode()와 동일).
             if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
                 ctxs[i].finished = True
@@ -555,7 +561,9 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     while True:
         step_count += 1
         if step_count > max_steps:
-            break
+            raise RuntimeError(
+                f"training rollout max_steps 초과: steps={step_count}, flights={len(flights)}"
+            )
 
         mask_list  = get_mask(state, flights, assigned, constraint)
         mask       = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
