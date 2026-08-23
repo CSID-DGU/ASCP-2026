@@ -675,6 +675,22 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     }
 
 
+def normalize_phase2_dual_signal(coverage_duals, excess_duals=None, mode="net"):
+    """LP 비용 단위와 무관하게 Phase 2 reward에 넣을 dual을 [-1, 1]로 맞춤."""
+    excess_duals = excess_duals or {}
+    if mode == "coverage_only":
+        raw = {flight_id: float(value) for flight_id, value in coverage_duals.items()}
+    elif mode == "net":
+        raw = {
+            flight_id: float(value) - float(excess_duals.get(flight_id, 0.0))
+            for flight_id, value in coverage_duals.items()
+        }
+    else:
+        raise ValueError(f"지원하지 않는 Phase 2 dual mode: {mode}")
+    scale = max([abs(value) for value in raw.values()] + [1.0])
+    return {flight_id: max(-1.0, min(1.0, value / scale)) for flight_id, value in raw.items()}
+
+
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
                constraint_sampler=None, init_best=float("inf"), dual_weight_override=None,
@@ -729,11 +745,13 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 flight_ids=[f["id"] for f in flights],
                 artificial_cost=config.PHASE2_ARTIFICIAL_COST,
             )
-            dual_vars = lp_result["dual_vars"] if lp_result is not None else {}
-            dh_dual_vars = (
-                lp_result["dh_dual_vars"]
-                if lp_result is not None and dual_mode == "net" else {}
+            coverage_duals = lp_result["dual_vars"] if lp_result is not None else {}
+            raw_excess_duals = lp_result["dh_dual_vars"] if lp_result is not None else {}
+            dual_vars = normalize_phase2_dual_signal(
+                coverage_duals, raw_excess_duals, mode=dual_mode,
             )
+            # net 계산과 정규화를 한 번에 끝냈으므로 rollout에서 다시 차감하지 않음.
+            dh_dual_vars = {}
             lp_value = lp_result["lp_value"] if lp_result is not None else None
 
         _base_dw = dual_weight_override if dual_weight_override is not None else config.PHASE2_DUAL_WEIGHT
@@ -805,7 +823,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             "phase2/entropy_coef":        entropy_coef,
             "phase2/best_avg25":          best_avg_pairings if best_avg_pairings < float("inf") else avg25,
             "phase2/n_dual_keys":         len(dual_vars),
-            "phase2/n_dh_dual_keys":      sum(1 for v in dh_dual_vars.values() if v > 0),
+            "phase2/n_dh_dual_keys":      sum(1 for v in raw_excess_duals.values() if v > 0),
             "phase2/dual_weight":         _eff_dw,
             "phase2/gap_weight":          decoder.gap_weight.item(),
             "phase2/lp_value":            lp_value if lp_value is not None else float("nan"),
@@ -818,7 +836,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 f"sample: p={metrics_s['n_pairings']:3d} dh={metrics_s['n_deadheads']:3d} | "
                 f"greedy: p={metrics_g['n_pairings']:3d} legs={metrics_g.get('avg_legs', 0):.2f} (avg25={avg25:5.1f}) | "
                 f"adv: {advantage:6.3f} | dw={_eff_dw:.3f} | dual keys: {len(dual_vars)} | "
-                f"dh dual keys: {sum(1 for v in dh_dual_vars.values() if v > 0)} | lp_value: {_lp_str}"
+                f"dh dual keys: {sum(1 for v in raw_excess_duals.values() if v > 0)} | lp_value: {_lp_str}"
             )
 
     print(f"  → best avg pairings: {best_avg_pairings:.1f}  "

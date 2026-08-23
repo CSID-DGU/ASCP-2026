@@ -23,6 +23,23 @@ from base_reach import build_base_reaches  # noqa: E402
 from validator import validate_pairing  # noqa: E402
 
 
+class Phase2DualNormalizationTests(unittest.TestCase):
+    def test_net_signal_is_bounded_and_preserves_relative_values(self):
+        signal = train.normalize_phase2_dual_signal(
+            {0: 1000.0, 1: 500.0}, {0: 100.0, 1: 600.0}, mode="net"
+        )
+        self.assertEqual(signal[0], 1.0)
+        self.assertLess(signal[1], 0.0)
+        self.assertTrue(all(-1.0 <= value <= 1.0 for value in signal.values()))
+
+    def test_coverage_only_ignores_excess_dual(self):
+        signal = train.normalize_phase2_dual_signal(
+            {0: 1000.0, 1: 250.0}, {0: 999.0, 1: 999.0},
+            mode="coverage_only",
+        )
+        self.assertEqual(signal, {0: 1.0, 1: 0.25})
+
+
 class _DummyLayer:
     weight = torch.zeros((1, 78))
 
