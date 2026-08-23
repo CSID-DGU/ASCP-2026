@@ -22,7 +22,7 @@ from model import FlightEncoder, PointerDecoder  # noqa: E402
 from base_reach import build_base_reaches  # noqa: E402
 from evaluation.evaluate_ip import (  # noqa: E402
     rollout_subset_global, rollout_subset_global_batch, validate_window_days,
-    constraint_for_pairing_base, collect_pool_full,
+    constraint_for_pairing_base, collect_pool_full, _attach_window_lookahead,
 )
 
 
@@ -96,6 +96,21 @@ class RolloutSubsetGlobalBatchTests(unittest.TestCase):
 
 
 class WindowContractTests(unittest.TestCase):
+    def test_lookahead_preserves_unique_universe_and_cross_boundary_time(self):
+        core_windows = [
+            [{"id": 0, "origin": BASE, "dest": A, "dep_time": 119.0, "arr_time": 120.0}],
+            [{"id": 0, "origin": A, "dest": BASE, "dep_time": 1.0, "arr_time": 2.0}],
+        ]
+        windows, n_total = _attach_window_lookahead(
+            core_windows, window_days=5, lookahead_days=1,
+        )
+        self.assertEqual(n_total, 2)
+        self.assertEqual([f["global_id"] for f in windows[0]], [0, 1])
+        self.assertEqual(windows[0][1]["dep_time"], 121.0)
+        self.assertFalse(windows[0][1]["_is_core"])
+        self.assertEqual([f["global_id"] for f in windows[1]], [1])
+        self.assertTrue(windows[1][0]["_is_core"])
+
     def test_jetblue_short_window_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "max_pairing_days"):
             validate_window_days(5, {"max_pairing_days": 7}, "jetblue")

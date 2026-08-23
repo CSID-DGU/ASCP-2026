@@ -83,12 +83,45 @@ def validate_window_days(window_days, constraint, airline):
     return window_days
 
 
-def load_windows_turkish(turkish_df, airport_map, window_days=5):
-    """Split Turkish .legs data into window_days-sized non-overlapping windows and assign global IDs."""
+def _attach_window_lookahead(core_windows, window_days, lookahead_days):
+    """고유 core flight에 ID를 한 번 부여하고 이후 날짜는 연결 context로만 겹침."""
+    global_offset = 0
+    for window in core_windows:
+        for flight in window:
+            flight["global_id"] = global_offset
+            global_offset += 1
+
+    expanded = []
+    for core_index, core in enumerate(core_windows):
+        core_start = core_index * window_days * 24.0
+        context_end = core_start + (window_days + lookahead_days) * 24.0
+        combined = []
+        for source_index in range(core_index, len(core_windows)):
+            source_start = source_index * window_days * 24.0
+            if source_start >= context_end:
+                break
+            for flight in core_windows[source_index]:
+                absolute_dep = flight["dep_time"] + source_start
+                absolute_arr = flight["arr_time"] + source_start
+                if absolute_dep >= context_end:
+                    continue
+                combined.append({
+                    **flight,
+                    "dep_time": absolute_dep - core_start,
+                    "arr_time": absolute_arr - core_start,
+                    "_absolute_dep_time": absolute_dep,
+                    "_absolute_arr_time": absolute_arr,
+                    "_is_core": source_index == core_index,
+                })
+        expanded.append(sorted(combined, key=lambda flight: flight["dep_time"]))
+    return expanded, global_offset
+
+
+def load_windows_turkish(turkish_df, airport_map, window_days=5, lookahead_days=0):
+    """Turkish flight를 고유 core와 pairing 연결용 lookahead context로 분할함."""
     dates = sorted(turkish_df["dep_date_utc"].unique())
     n_days = len(dates)
-    windows = []
-    global_offset = 0
+    core_windows = []
 
     for offset in range(0, n_days, window_days):
         wf = load_flights_rolling_turkish(
@@ -97,23 +130,19 @@ def load_windows_turkish(turkish_df, airport_map, window_days=5):
             airport_map=airport_map,
             df=turkish_df,
         )
-        for f in wf:
-            f["global_id"] = global_offset + f["id"]
-        global_offset += len(wf)
-        windows.append(wf)
+        core_windows.append(wf)
         print(
-            f"  window offset={offset:2d}: {len(wf):5d}legs "
-            f"(global {global_offset - len(wf)} ~ {global_offset - 1})",
+            f"  window offset={offset:2d}: {len(wf):5d}legs",
             flush=True,
         )
 
-    return windows, global_offset
+    return _attach_window_lookahead(core_windows, window_days, lookahead_days)
 
 
 # ── 1. Load the full dataset window by window, assigning global IDs ─────────
 
-def load_windows_with_global_ids(data_path, airport_map, window_days=5):
-    """Split the full CSV into window_days-sized non-overlapping windows and assign global IDs.
+def load_windows_with_global_ids(data_path, airport_map, window_days=5, lookahead_days=0):
+    """CSV를 고유 core와 pairing 연결용 lookahead context로 분할함.
 
     Returns:
         windows    : list of flight lists. Each flight gets a 'global_id' field.
@@ -126,8 +155,7 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5):
     dates = sorted(df["FL_DATE"].unique())
     n_days = len(dates)
 
-    windows = []
-    global_offset = 0
+    core_windows = []
 
     for offset in range(0, n_days, window_days):
         wf = load_flights_rolling(
@@ -138,17 +166,13 @@ def load_windows_with_global_ids(data_path, airport_map, window_days=5):
             n_max=None,
             df=df,
         )
-        for f in wf:
-            f["global_id"] = global_offset + f["id"]
-        global_offset += len(wf)
-        windows.append(wf)
+        core_windows.append(wf)
         print(
-            f"  window offset={offset:2d}: {len(wf):5d}legs "
-            f"(global {global_offset - len(wf)} ~ {global_offset - 1})",
+            f"  window offset={offset:2d}: {len(wf):5d}legs",
             flush=True,
         )
 
-    return windows, global_offset
+    return _attach_window_lookahead(core_windows, window_days, lookahead_days)
 
 
 # ── 2. Subset sampling within a window ───────────────────────────────────────
@@ -384,7 +408,9 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         if not window_flights:
             continue
 
-        window_all_ids = set(f["global_id"] for f in window_flights)
+        window_all_ids = {
+            f["global_id"] for f in window_flights if f.get("_is_core", True)
+        }
         window_covered = set()
 
         chunks = partition_connected_chunks(window_flights, base_ids, subset_size, connected_sampler)
@@ -469,7 +495,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                     key = tuple(sorted(p["legs"]))
                     if key not in pool or p["cost"] < pool[key]["cost"]:
                         pool[key] = p
-                    window_covered.update(p["legs"])
+                    window_covered.update(set(p["legs"]) & window_all_ids)
                     covered_global.update(p["legs"])
                 rollout_count += 1
 
@@ -489,7 +515,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                 key = tuple(sorted(p["legs"]))
                 if key not in pool or p["cost"] < pool[key]["cost"]:
                     pool[key] = p
-                window_covered.update(p["legs"])
+                window_covered.update(set(p["legs"]) & window_all_ids)
                 covered_global.update(p["legs"])
             rollout_count += 1
 
@@ -511,7 +537,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
         if uncov > 0:
             print(f"  uncovered: {uncov} legs (reported as uncoverable by the IP)", flush=True)
 
-    total_flights = sum(len(w) for w in windows)
+    total_flights = len({f["global_id"] for w in windows for f in w})
     print(f"\ntotal pool: {len(pool)} pairings")
     print(f"total coverage: {len(covered_global)}/{total_flights} legs")
     final_pool = list(pool.values())
@@ -863,12 +889,27 @@ def evaluate_full(
 
     print(f"\nLoading full dataset ({airline}, window_days={window_days})...", flush=True)
     if airline == "turkish":
-        windows, n_total = load_windows_turkish(_turkish_df, airport_map, window_days)
+        windows, n_total = load_windows_turkish(
+            _turkish_df, airport_map, window_days,
+            lookahead_days=constraint["max_pairing_days"],
+        )
     else:
-        windows, n_total = load_windows_with_global_ids(data_path, airport_map, window_days)
+        windows, n_total = load_windows_with_global_ids(
+            data_path, airport_map, window_days,
+            lookahead_days=constraint["max_pairing_days"],
+        )
     print(f"total {n_total} legs, {len(windows)} windows", flush=True)
     # C3: global_id -> flight dict, independent validator가 pairing legs를 조회하는 데 씀
-    flights_by_id = {f["global_id"]: {**f, "id": f["global_id"]} for w in windows for f in w}
+    flights_by_id = {
+        f["global_id"]: {
+            **f,
+            "id": f["global_id"],
+            "dep_time": f.get("_absolute_dep_time", f["dep_time"]),
+            "arr_time": f.get("_absolute_arr_time", f["arr_time"]),
+        }
+        for w in windows for f in w
+        if f.get("_is_core", True)
+    }
 
     connected_sampler = sample_connected_subnet_turkish if airline == "turkish" else sample_connected_subnet_std
 
