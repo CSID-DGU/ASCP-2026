@@ -110,7 +110,20 @@ PHASE2_DUAL_WARMUP   = 100   # w_dual(e) warm-up length in episodes -- ramps 0 -
 # no-op 재시작 차단(run_episode의 restart_candidate_id) 이후 실측: coverage가 약
 # 64회 재시작 근방에서 포화 -- 30은 병목이라 80으로 상향(재시작마다 실제 후보가 하나씩
 # blocked_ids에 쌓여 진전이 보장되므로 cap을 넉넉히 줘도 낭비가 없음).
-MAX_ZERO_MASK_RESTARTS = 80
+# 실측(cap 30/60/80/100/150 x 6 trial, Delta stage3 설정, untrained network):
+# avg_coverage 13.5/19.4/21.8/23.0/23.0% -- cap=100과 150이 6개 trial 전부 완전히
+# 동일한 결과(페어링 리스트까지 동일)라 100에서 완전 포화. 시간 비용도 거의 차이 없음.
+MAX_ZERO_MASK_RESTARTS = 100
+
+# Checkpoint 선택 시 coverage 동률로 볼 허용오차(%p) -- 25-episode 평균 coverage가
+# 부동소수점 완전 동일(1e-9)할 일은 사실상 없어서, 그 기준이면 avg_pairings
+# 최소화 tiebreak이 죽은 코드가 됨.
+# 실측: 고정 네트워크로 flight window만 바꿔 16회 greedy episode의 coverage_pct
+# 표준편차 ~4.89%p (Delta stage3, untrained network) -- 25-episode 평균의 표준오차
+# ~= 4.89/sqrt(25) ~= 0.98%p. 즉 순수 샘플링 노이즈만으로도 두 checkpoint의
+# coverage25가 ~1%p 정도 벌어질 수 있어, 그보다 작은 허용오차는 노이즈를 "개선"으로
+# 오판할 위험이 있음. 노이즈 폭 근방인 1.0%p를 채택.
+CHECKPOINT_COVERAGE_TOL_PCT = 1.0
 
 # Reward shaping
 

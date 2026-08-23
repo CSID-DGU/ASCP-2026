@@ -77,11 +77,17 @@ def _set_device(device_str: str):
 
 
 def _is_better_checkpoint(coverage_pct, avg_pairings, best_coverage_pct, best_avg_pairings):
-    """CPP 목적 순서대로 coverage를 먼저, pairing 수를 그다음 비교함."""
+    """CPP 목적 순서대로 coverage를 먼저, pairing 수를 그다음 비교함.
+
+    25-episode 평균 coverage가 부동소수점 단위(1e-9)로 완전히 같을 일은 거의 없어서
+    그 기준이면 avg_pairings tiebreak이 사실상 죽은 코드가 됨 -- CHECKPOINT_COVERAGE_TOL_PCT
+    (기본 0.5%p) 이내 차이는 "사실상 동률"로 보고 pairing 수 최소화로 비교한다.
+    """
+    tol = config.CHECKPOINT_COVERAGE_TOL_PCT
     return (
-        coverage_pct > best_coverage_pct + 1e-9
+        coverage_pct > best_coverage_pct + tol
         or (
-            abs(coverage_pct - best_coverage_pct) <= 1e-9
+            abs(coverage_pct - best_coverage_pct) <= tol
             and avg_pairings < best_avg_pairings
         )
     )
