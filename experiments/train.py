@@ -298,6 +298,11 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
     pairing_fly      = 0.0
     pairing_last_arr = 0.0
     pairing_rest     = 0.0
+    bad_starters     = set()  # RL/rollout.py의 bad_starters와 동일: dead-end로 확인된
+    # pairing 시작점(leg[0])을 rollout 전체에서 영구 제외. 매 dead-end마다 새로 계산되는
+    # abandoned_ids만으로는 실패한 후보 몇 개를 계속 순환 재시도하게 됨 -- 실측: cap=30/100
+    # 둘 다 결과(n_pairings=3) 동일한데 재시작 시도 중 각각 26/96회가 이미 실패했던
+    # 후보의 중복 재시도였음(고유 후보는 4개뿐).
 
     def flush_pairing(is_forced=False):
         if len(current_legs) < 1 or pairing_dep is None:
@@ -342,7 +347,8 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
     episode_base = constraint["base_airport"]
 
     def base_start_candidates(candidates):
-        base_flights = [f for f in candidates if f["origin"] == episode_base]
+        base_flights = [f for f in candidates
+                        if f["origin"] == episode_base and f["id"] not in bad_starters]
         # 수동 시작 flight도 decoder와 같은 복귀 가능성 검사를 통과해야 함.
         return [f for f in base_flights if can_reach_any_base(
             constraint["_base_reaches"], f, f["dep_time"],
@@ -392,11 +398,16 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
             # 다시 시작할 미배정 flight가 남아있으면 rollout 전체를 끝내지 않고 이어감 --
             # 그래야 pool이 첫 dead-end에서 끊기지 않고 여러 pairing을 계속 모을 수 있음.
             zero_mask_restarts += 1
+            if current_legs:
+                # 이번 pairing의 시작 leg는 dead-end로 확인됐으므로 향후 시작점
+                # 후보에서 영구 제외(RL/rollout.py의 bad_starters와 동일). 중간/끝
+                # leg는 다른 pairing의 연결편으로 여전히 쓰일 수 있어야 하므로 안 막음.
+                bad_starters.add(current_legs[0])
             abandoned_ids = set(current_legs)
             for fid in abandoned_ids:
                 assigned[fid] = False
             unassigned = [f for f in flights if not assigned[f["id"]]]
-            base_unassigned = [f for f in base_start_candidates(unassigned) if f["id"] not in abandoned_ids]
+            base_unassigned = base_start_candidates(unassigned)
             if not base_unassigned or zero_mask_restarts > config.MAX_ZERO_MASK_RESTARTS:
                 break
             next_first = sorted(base_unassigned, key=lambda f: f["dep_time"])[0]
@@ -475,7 +486,7 @@ class _DualPoolCtx:
 
     __slots__ = ("assigned", "current_legs", "pairing_dep", "pairing_fly",
                 "pairing_last_arr", "pairing_rest", "state", "pairings", "finished",
-                "zero_mask_restarts")
+                "zero_mask_restarts", "bad_starters")
 
     def __init__(self, flights):
         self.assigned = {f["id"]: False for f in flights}
@@ -488,6 +499,8 @@ class _DualPoolCtx:
         self.state = None
         self.pairings = []
         self.finished = False
+        self.bad_starters = set()  # _rollout_with_pairings()와 동일: dead-end로
+        # 확인된 pairing 시작점을 이 episode(ctx) 전체에서 영구 제외
 
 
 def _dual_pool_flush_pairing(ctx, flight_by_id, constraint, episode_base, is_forced=False):
@@ -521,10 +534,10 @@ def _dual_pool_start_new(ctx, f):
     ctx.pairing_rest = 0.0
 
 
-def _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint, exclude_ids=None):
+def _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint):
     unassigned = [f for f in flights if not ctx.assigned[f["id"]]]
     base_flights = [f for f in unassigned if f["origin"] == episode_base
-                    and (not exclude_ids or f["id"] not in exclude_ids)]
+                    and f["id"] not in ctx.bad_starters]
     return [f for f in base_flights if can_reach_any_base(
         constraint["_base_reaches"], f, f["dep_time"],
         constraint["max_pairing_days"], duty_period=0,
@@ -532,8 +545,8 @@ def _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint, exc
     )]
 
 
-def _dual_pool_begin(flights, ctx, episode_base, constraint, exclude_ids=None):
-    base_flights = _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint, exclude_ids)
+def _dual_pool_begin(flights, ctx, episode_base, constraint):
+    base_flights = _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint)
     if not base_flights:
         return False
     first = sorted(base_flights, key=lambda f: f["dep_time"])[0]
@@ -599,12 +612,15 @@ def _rollout_batch_dual_pool(flights, constraint, encoder, decoder, encoded, B, 
             if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
                 ctx = ctxs[i]
                 ctx.zero_mask_restarts += 1
-                abandoned_ids = set(ctx.current_legs)
-                for fid in abandoned_ids:
+                if ctx.current_legs:
+                    # _rollout_with_pairings()와 동일: 시작점만 영구 제외, 중간/끝
+                    # leg는 다른 pairing의 연결편으로 여전히 쓰일 수 있어야 함.
+                    ctx.bad_starters.add(ctx.current_legs[0])
+                for fid in ctx.current_legs:
                     ctx.assigned[fid] = False
                 ctx.current_legs = []
                 if (ctx.zero_mask_restarts > config.MAX_ZERO_MASK_RESTARTS
-                        or not _dual_pool_begin(flights, ctx, episode_base, constraint, abandoned_ids)):
+                        or not _dual_pool_begin(flights, ctx, episode_base, constraint)):
                     ctx.finished = True
                 continue
             decide_idx.append(i)
