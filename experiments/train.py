@@ -972,10 +972,20 @@ def run_curriculum_stage(
     airline_histories = defaultdict(list)
     expected_airlines = tuple((checkpoint_metadata or {}).get("airlines") or [config.AIRLINE])
 
+    # stage1/2는 constraint_sampler가 있어도 stage1_constraint/stage2_constraint로
+    # 항공사별 고정값을 주입할 뿐 실제 랜덤 샘플링이 아님 -- 진짜 랜덤 샘플링(sample_constraint,
+    # STAGE3_CONSTRAINT_RANGES 사용)은 stage 3에서만 쓰임.
+    if constraint_sampler and stage == 3:
+        sampler_label = " [constraint 랜덤 샘플링]"
+    elif constraint_sampler:
+        sampler_label = " [항공사별 고정 constraint 주입]"
+    else:
+        sampler_label = ""
+
     print(f"\n{'='*60}")
     print(f"Curriculum Stage {stage}: max_duty_periods={constraint_override['max_duty_periods']}, "
           f"max_pairing_days={constraint_override['max_pairing_days']}"
-          + (" [constraint 랜덤 샘플링]" if constraint_sampler else ""))
+          + sampler_label)
     print(f"{'='*60}")
 
     # [B 패턴 극복 조치] Stage 3 진입 시 파괴적 망각 차단을 위한 Backbone 가중치 보호 LR 스케일링
