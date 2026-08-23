@@ -38,7 +38,8 @@ def set_environment(airline):
 
 
 def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
-                          greedy=False, device=None):
+                          greedy=False, device=None, flight_action_scores=None,
+                          dual_weight=1.0):
     """Run one RL rollout and return a list of pairing structs.
 
     Each pairing: {legs, fly, elapsed, dead_time, cost, is_deadhead, n_legs}
@@ -309,7 +310,18 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
         state_vec = state_to_vec(state, encoder, cur_c, device=dev, include_total_legs=_incl_total)
         gap_bias  = flight_gap_bias(state, flights, cur_c, device=dev)
-        probs     = decoder(encoded, state_vec, mask, gap_bias=gap_bias)
+        action_bias = None
+        if flight_action_scores is not None:
+            action_bias = torch.tensor(
+                [dual_weight * float(flight_action_scores.get(f["id"], 0.0)) for f in flights]
+                + [0.0, 0.0], dtype=torch.float32, device=dev,
+            )
+        if action_bias is None:
+            probs = decoder(encoded, state_vec, mask, gap_bias=gap_bias)
+        else:
+            probs = decoder(
+                encoded, state_vec, mask, gap_bias=gap_bias, action_bias=action_bias
+            )
 
         if greedy:
             action = probs.argmax().item()
@@ -590,7 +602,8 @@ def _apply_action(ctx, action, flights, flight_by_id, all_bases, constraint_for,
 
 
 def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
-                  greedy=False, device=None):
+                  greedy=False, device=None, flight_action_scores=None,
+                  dual_weight=1.0):
     """B개 episode를 실제로 배치 처리하는 rollout (Phase 4,
     experiment/rollout-batch-vectorization) -- Phase 1-3에서 만든
     get_mask_batch()/state_to_vec_batch()/flight_gap_bias_batch()를 엮어서,
@@ -686,7 +699,20 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
             )
             gap_biases = flight_gap_bias_batch(d_states, flights, c_b, device=dev)
             mask_tensor = torch.tensor(d_masks, dtype=torch.float32, device=dev)
-            probs = decoder(encoded, state_vecs, mask_tensor, gap_bias=gap_biases)
+            action_bias = None
+            if flight_action_scores is not None:
+                row = [dual_weight * float(flight_action_scores.get(f["id"], 0.0))
+                       for f in flights] + [0.0, 0.0]
+                action_bias = torch.tensor(
+                    [row] * len(d_ctxs), dtype=torch.float32, device=dev
+                )
+            if action_bias is None:
+                probs = decoder(encoded, state_vecs, mask_tensor, gap_bias=gap_biases)
+            else:
+                probs = decoder(
+                    encoded, state_vecs, mask_tensor,
+                    gap_bias=gap_biases, action_bias=action_bias,
+                )
 
             if greedy:
                 actions = probs.argmax(dim=-1).tolist()

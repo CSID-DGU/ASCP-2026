@@ -66,6 +66,7 @@ class PointerDecoder(nn.Module):
         state_vec: torch.Tensor,
         mask: torch.Tensor,
         gap_bias: torch.Tensor = None,
+        action_bias: torch.Tensor = None,
         return_logits: bool = False,
     ) -> torch.Tensor:
         """
@@ -102,6 +103,9 @@ class PointerDecoder(nn.Module):
 
         if gap_bias is not None:
             scores = scores + self.gap_weight * gap_bias  # + w_gap * g_t(j)
+
+        if action_bias is not None:
+            scores = scores + action_bias
 
         scores = scores.masked_fill(mask == 0, float('-inf'))  # + b_mask_t(j; c) (Eq. 6)
 
