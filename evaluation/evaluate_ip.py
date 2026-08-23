@@ -820,7 +820,9 @@ def evaluate_full(
             artificial_penalty=dual_artificial_penalty,
         )
         signal = normalize_dual(lp_feedback["net_dual"])
-        if dual_mode == "shuffled":
+        if dual_mode == "zero":
+            signal = {key: 0.0 for key in signal}
+        elif dual_mode == "shuffled":
             keys = sorted(signal)
             values = [signal[key] for key in keys]
             random.shuffle(values)
@@ -1037,7 +1039,7 @@ if __name__ == "__main__":
                         help="current master dual로 pool을 반복 보강할 횟수")
     parser.add_argument("--dual-weight", type=float, default=1.0,
                         help="decoder action logit에 더할 normalized dual 가중치")
-    parser.add_argument("--dual-mode", choices=["real", "shuffled", "uniform"], default="real")
+    parser.add_argument("--dual-mode", choices=["real", "zero", "shuffled", "uniform"], default="real")
     parser.add_argument("--dual-artificial-penalty", type=float, default=1000.0)
     parser.add_argument("--dual-trace-path", default=None)
     parser.add_argument("--seed", type=int, default=None,
