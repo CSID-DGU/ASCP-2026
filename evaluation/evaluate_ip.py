@@ -353,6 +353,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       n_rollouts_per_chunk=15,
                       subset_size=config.EPISODE_MAX_FLIGHTS,
                       window_days=5,
+                      model_max_time=None,
                       dual_by_global_id=None, dual_weight=1.0,
                       connected_sampler=sample_connected_subnet_std,
                       airline="delta"):
@@ -373,7 +374,10 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
     """
     pool = {}
     covered_global = set()
-    max_time = float(window_days) * 24.0
+    # 데이터 분할 길이와 encoder 시간 정규화 기준을 분리함.
+    max_time = float(model_max_time if model_max_time is not None else window_days * 24.0)
+    if max_time <= 0:
+        raise ValueError("model_max_time은 양수여야 합니다.")
     base_id_set = set(base_ids)
 
     for w_idx, window_flights in enumerate(windows):
@@ -779,6 +783,13 @@ def evaluate_full(
             f"checkpoint={checkpoint_time_basis or '미기록(레거시)'}, "
             f"required={expected_time_basis}. BTS UTC 전환 전 체크포인트는 재학습해야 함."
         )
+    checkpoint_max_time = ckpt.get("max_time")
+    if checkpoint_max_time is None or float(checkpoint_max_time) <= 0:
+        raise ValueError(
+            "checkpoint에 유효한 max_time이 없음. 학습과 평가의 시간 정규화를 "
+            "일치시키기 위해 새 schema checkpoint가 필요함."
+        )
+    checkpoint_max_time = float(checkpoint_max_time)
 
     checkpoint_airport_map = ckpt.get("airport_map")
     if checkpoint_airport_map is None:
@@ -872,6 +883,7 @@ def evaluate_full(
             n_rollouts_per_chunk=n_rollouts_per_chunk,
             subset_size=subset_size,
             window_days=window_days,
+            model_max_time=checkpoint_max_time,
             connected_sampler=connected_sampler,
             airline=airline,
         )
@@ -897,6 +909,7 @@ def evaluate_full(
                 windows, base_ids, constraint, encoder, decoder,
                 n_rollouts_per_chunk=n_rollouts_per_chunk,
                 subset_size=subset_size, window_days=window_days,
+                model_max_time=checkpoint_max_time,
                 dual_by_global_id=signal, dual_weight=dual_weight,
                 connected_sampler=connected_sampler, airline=airline,
             )

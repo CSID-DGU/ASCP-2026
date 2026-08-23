@@ -11,6 +11,7 @@ FlightEncoder/PointerDecoder(랜덤 초기화)를 써서, encoder를 한 번만 
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
@@ -21,7 +22,7 @@ from model import FlightEncoder, PointerDecoder  # noqa: E402
 from base_reach import build_base_reaches  # noqa: E402
 from evaluation.evaluate_ip import (  # noqa: E402
     rollout_subset_global, rollout_subset_global_batch, validate_window_days,
-    constraint_for_pairing_base,
+    constraint_for_pairing_base, collect_pool_full,
 )
 
 
@@ -103,6 +104,18 @@ class WindowContractTests(unittest.TestCase):
         self.assertEqual(
             validate_window_days(7, {"max_pairing_days": 7}, "jetblue"), 7
         )
+
+    @patch("evaluation.evaluate_ip.rollout_subset_global_batch")
+    def test_pool_uses_checkpoint_model_max_time(self, rollout_batch):
+        rollout_batch.return_value = [[]]
+        flights = [[{**SUBSET[0], "global_id": 0}]]
+        collect_pool_full(
+            flights, [BASE], CONSTRAINT, object(), object(),
+            n_rollouts_per_chunk=1, subset_size=10,
+            window_days=5, model_max_time=192,
+        )
+        self.assertTrue(rollout_batch.called)
+        self.assertTrue(all(call.args[4] == 192.0 for call in rollout_batch.call_args_list))
 
 
 class PairingBaseContractTests(unittest.TestCase):
