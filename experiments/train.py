@@ -762,11 +762,6 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             for lp, ent in zip(log_probs, entropies)
         ]).sum()
 
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
-        optimizer.step()
-
         avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
         coverage25 = sum(greedy_coverages[-25:]) / min(len(greedy_coverages), 25)
         selection_score = _airline_selection_score(airline_histories, expected_airlines)
@@ -790,6 +785,12 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 **(checkpoint_metadata or {}),
             }, ckpt_path)
             wandb.save(ckpt_path)
+
+        # 위 greedy 지표를 산출한 바로 그 파라미터를 best로 저장한 뒤 업데이트함.
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+        optimizer.step()
 
         wandb.log({
             "phase2/greedy_pairings":     metrics_g["n_pairings"],
@@ -870,7 +871,6 @@ def run_curriculum_stage(
             c = {
                 **replay_constraint,
                 "max_duty_periods": 2,
-                "max_pairing_days": config.WINDOW_DAYS - 1,
             }
         else:
             c = (constraint_sampler(sampled_airline, base_airport)
@@ -906,11 +906,6 @@ def run_curriculum_stage(
             for lp, ent in zip(log_probs, entropies)
         ]).sum()
 
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
-        optimizer.step()
-
         avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
         coverage25 = sum(greedy_coverages[-25:]) / min(len(greedy_coverages), 25)
         selection_score = _airline_selection_score(airline_histories, expected_airlines)
@@ -935,6 +930,12 @@ def run_curriculum_stage(
                     **(checkpoint_metadata or {}),
                 }, ckpt_path)
                 wandb.save(ckpt_path)
+
+        # 위 greedy 지표와 동일한 pre-update 파라미터를 저장한 뒤 학습을 진행함.
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+        optimizer.step()
 
         wandb.log({
             f"stage{stage}/greedy_pairings":   metrics_g["n_pairings"],
