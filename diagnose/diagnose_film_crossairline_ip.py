@@ -18,7 +18,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
-from loader import load_flights_rolling, build_airport_map, bases_to_ids
+from loader import load_flights_rolling, bases_to_ids, validate_airport_map
 from constraints import (
     get_delta_constraints, get_alaska_constraints, get_jetblue_constraints,
     FILM_CONSTRAINT_KEYS,
@@ -48,9 +48,6 @@ def main():
     parser.add_argument("--n-rollouts-per-chunk", type=int, default=5)
     parser.add_argument("--ip-time-limit", type=int, default=1800)
     parser.add_argument("--lambda-dh", type=float, default=1.0)
-    parser.add_argument("--require-base-return", action="store_true",
-                        help="decode-time hard mask 활성화 — rollout 중 base 복귀가 불가능해지는 "
-                             "leg를 마스킹하고, base 아닌 곳에서 END_PAIRING을 금지한다.")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -62,8 +59,7 @@ def main():
     if n_airports <= 145:
         print(f"경고: n_airports={n_airports} — multi-airline 통합 임베딩(168)이 아닐 수 있음.")
 
-    map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-    airport_map = build_airport_map(map_paths)
+    airport_map = validate_airport_map(ckpt.get("airport_map"), n_airports)
     base_ids = bases_to_ids(list(config.AIRLINE_BASES["delta"]), airport_map)
     base = base_ids[0]
 
@@ -101,9 +97,9 @@ def main():
                 windows, base_ids, constraint, encoder, decoder,
                 n_rollouts_per_chunk=args.n_rollouts_per_chunk,
                 subset_size=args.subset_size,
+                window_days=args.window_days,
                 connected_sampler=sample_connected_subnet_std,
                 airline=airline,
-                require_base_return=args.require_base_return,
             )
 
         result = solve_set_covering(pool, n_flights=n_total, time_limit=args.ip_time_limit, lambda_dh=args.lambda_dh)

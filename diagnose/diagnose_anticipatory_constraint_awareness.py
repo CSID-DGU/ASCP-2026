@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 import config
 import environment as env  # 하드마스크 원본 — 실제 rollout 진행에 사용
 from environment import get_max_duty
-from loader import build_airport_map, bases_to_ids, load_flights_rolling, sample_connected_subnet
+from loader import validate_airport_map, bases_to_ids, load_flights_rolling, sample_connected_subnet
 from constraints import get_delta_constraints, get_alaska_constraints, get_jetblue_constraints, FILM_CONSTRAINT_KEYS
 from utils import constraint_to_tensor, flights_to_tensors, state_to_vec, flight_gap_bias
 from model import FlightEncoder, PointerDecoder
@@ -268,8 +268,9 @@ def main():
     device = torch.device(args.device)
     max_time = args.window_days * 24.0
 
-    map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-    airport_map = build_airport_map(map_paths)
+    map_ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    map_n_airports = map_ckpt.get("n_airports", map_ckpt["encoder"]["airport_emb.weight"].shape[0])
+    airport_map = validate_airport_map(map_ckpt.get("airport_map"), map_n_airports)
 
     summary = {}
     for mode, label in [("normal", "정상"), ("bypassed", "FiLM 무력화")]:

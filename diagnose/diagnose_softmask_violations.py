@@ -41,7 +41,7 @@ from torch.distributions import Categorical
 import config
 import environment as env
 from environment import get_max_duty
-from loader import build_airport_map, bases_to_ids, load_flights_rolling, sample_connected_subnet
+from loader import validate_airport_map, bases_to_ids, load_flights_rolling, sample_connected_subnet
 from constraints import get_delta_constraints, get_alaska_constraints, get_jetblue_constraints, FILM_CONSTRAINT_KEYS
 from utils import constraint_to_tensor, flights_to_tensors, state_to_vec, flight_gap_bias
 from model import FlightEncoder, PointerDecoder
@@ -67,7 +67,7 @@ def load_model(checkpoint_path):
     decoder.load_state_dict(ckpt["decoder"])
     encoder.eval()
     decoder.eval()
-    return encoder, decoder
+    return encoder, decoder, ckpt
 
 
 def rollout_and_check(flights, constraint, encoder, decoder, encoded, greedy, max_time):
@@ -196,14 +196,10 @@ def main():
     random.seed(args.seed)
 
     data_path = config.AIRLINE_DATA[args.airline]
-    encoder, decoder = load_model(args.checkpoint)
+    encoder, decoder, ckpt = load_model(args.checkpoint)
     n_airports = encoder.airport_emb.num_embeddings
 
-    if n_airports > 100:
-        map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-    else:
-        map_paths = data_path
-    airport_map = build_airport_map(map_paths)
+    airport_map = validate_airport_map(ckpt.get("airport_map"), n_airports)
     base_ids = bases_to_ids(list(config.AIRLINE_BASES[args.airline]), airport_map)
     constraint = _GET_CONSTRAINT[args.airline](base_ids[0])
 

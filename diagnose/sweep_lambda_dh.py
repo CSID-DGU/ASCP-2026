@@ -43,11 +43,7 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location=DEVICE, weights_only=True)
     n_airports = ckpt.get("n_airports", ckpt["encoder"]["airport_emb.weight"].shape[0])
 
-    if n_airports > 145:
-        map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-    else:
-        map_paths = data_path
-    airport_map = eip.build_airport_map(map_paths)
+    airport_map = eip.validate_airport_map(ckpt.get("airport_map"), n_airports)
     base_ids = eip.bases_to_ids(list(bases), airport_map)
 
     encoder = eip.FlightEncoder(n_airports=n_airports, constraint_dim=len(eip.FILM_CONSTRAINT_KEYS)).to(DEVICE)
@@ -74,7 +70,9 @@ def main():
             windows, base_ids, constraint, encoder, decoder,
             n_rollouts_per_chunk=args.n_rollouts_per_chunk,
             subset_size=args.subset_size,
+            window_days=args.window_days,
             connected_sampler=connected_sampler,
+            airline=args.airline,
         )
     print(f"pool size: {len(pool)}, covered: {len(covered)}/{n_total}", flush=True)
 

@@ -25,7 +25,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
-from loader import load_flights_rolling, build_airport_map, bases_to_ids
+from loader import load_flights_rolling, validate_airport_map, bases_to_ids
 from constraints import (
     get_delta_constraints, get_alaska_constraints, get_jetblue_constraints,
     FILM_CONSTRAINT_KEYS,
@@ -64,21 +64,7 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
     n_airports = ckpt.get("n_airports", ckpt["encoder"]["airport_emb.weight"].shape[0])
 
-    # ── 핵심 수정: 체크포인트가 실제로 학습한 공항 맵과 일치시킨다 ──────────
-    # multi-airline(n_airports>145)이면 delta+alaska+jetblue 통합 맵(원본과 동일),
-    # 단일 항공사(n_airports<=145, 이 프로젝트에서는 사실상 delta 단독)면 delta
-    # CSV 하나로만 맵을 만든다 — evaluation/evaluate_ip.py의 airport-map 분기와 동일한 처리.
-    if n_airports > 145:
-        print(f"n_airports={n_airports} → multi-airline 통합 임베딩으로 판단, 통합 공항맵 사용")
-        map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-    else:
-        print(f"n_airports={n_airports} → 단일 항공사(delta) 임베딩으로 판단, delta 단독 공항맵 사용")
-        map_paths = config.AIRLINE_DATA["delta"]
-    airport_map = build_airport_map(map_paths)
-    if len(airport_map) != n_airports:
-        print(f"경고: 재구성한 airport_map 크기({len(airport_map)})가 체크포인트 "
-              f"n_airports({n_airports})와 다름 — 학습 당시와 다른 데이터로 맵을 만들었을 "
-              f"가능성이 있어 임베딩이 여전히 어긋날 수 있음. 결과 해석 시 주의.")
+    airport_map = validate_airport_map(ckpt.get("airport_map"), n_airports)
     base_ids = bases_to_ids(list(config.AIRLINE_BASES["delta"]), airport_map)
     base = base_ids[0]
 

@@ -19,7 +19,7 @@ sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder, PointerDecoder
-from loader import build_airport_map, bases_to_ids, load_flights_rolling
+from loader import validate_airport_map, bases_to_ids, load_flights_rolling
 from constraints import (
     get_delta_constraints, get_alaska_constraints, get_jetblue_constraints,
     get_turkish_constraints, FILM_CONSTRAINT_KEYS,
@@ -56,9 +56,7 @@ def main():
               f"checkpoint rather than a multi-airline unified embedding (168). "
               f"alaska/jetblue constraint results may be meaningless.")
 
-    # Rebuild the same unified airport map used during multi-airline training (delta+alaska+jetblue)
-    map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-    airport_map = build_airport_map(map_paths)
+    airport_map = validate_airport_map(ckpt.get("airport_map"), n_airports)
     base_ids = bases_to_ids(list(config.AIRLINE_BASES["delta"]), airport_map)
     base = base_ids[0]
 

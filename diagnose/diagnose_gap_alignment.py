@@ -27,7 +27,7 @@ sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from model import FlightEncoder, PointerDecoder
-from loader import build_airport_map, bases_to_ids, load_flights_rolling
+from loader import validate_airport_map, bases_to_ids, load_flights_rolling
 from constraints import get_delta_constraints, FILM_CONSTRAINT_KEYS
 from utils import flights_to_tensors, constraint_to_tensor, state_to_vec
 import environment as env
@@ -148,7 +148,9 @@ def main():
     encoder, decoder = load_model(args.checkpoint, device)
 
     data_path = config.AIRLINE_DATA["delta"]
-    airport_map = build_airport_map(data_path)
+    map_ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    map_n_airports = map_ckpt.get("n_airports", map_ckpt["encoder"]["airport_emb.weight"].shape[0])
+    airport_map = validate_airport_map(map_ckpt.get("airport_map"), map_n_airports)
     base_ids = bases_to_ids(list(config.AIRLINE_BASES["delta"]), airport_map)
     base = base_ids[0]
     constraint = get_delta_constraints(base)

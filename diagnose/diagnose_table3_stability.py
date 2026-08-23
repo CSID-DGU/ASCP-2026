@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
 
-from loader import build_airport_map, bases_to_ids
+from loader import validate_airport_map, bases_to_ids
 import config
 from rollout import set_environment
 from evaluation import evaluate_ip
@@ -57,8 +57,9 @@ def main():
     evaluate_ip.DEVICE = device
     set_environment("delta")
 
-    map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-    airport_map = build_airport_map(map_paths)
+    map_ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    map_n_airports = map_ckpt.get("n_airports", map_ckpt["encoder"]["airport_emb.weight"].shape[0])
+    airport_map = validate_airport_map(map_ckpt.get("airport_map"), map_n_airports)
     base_ids = bases_to_ids(list(config.AIRLINE_BASES["delta"]), airport_map)
     base = base_ids[0]
 

@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "experiments"))
 
 from model import FlightEncoder, PointerDecoder
-from loader import build_airport_map, bases_to_ids, load_flights_rolling
+from loader import validate_airport_map, bases_to_ids, load_flights_rolling
 from constraints import (
     get_delta_constraints, get_alaska_constraints, get_jetblue_constraints,
     get_turkish_constraints, FILM_CONSTRAINT_KEYS,
@@ -199,8 +199,9 @@ def main():
     evaluate_ip.DEVICE = device
     set_environment("delta")
 
-    map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-    airport_map = build_airport_map(map_paths)
+    map_ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    map_n_airports = map_ckpt.get("n_airports", map_ckpt["encoder"]["airport_emb.weight"].shape[0])
+    airport_map = validate_airport_map(map_ckpt.get("airport_map"), map_n_airports)
     base_ids = bases_to_ids(list(config.AIRLINE_BASES["delta"]), airport_map)
     base = base_ids[0]
 
