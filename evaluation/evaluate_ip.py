@@ -53,6 +53,9 @@ _GET_CONSTRAINT = {
 }
 from model import FlightEncoder, PointerDecoder
 from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
+from evaluation.dual_feedback import (
+    solve_full_universe_lp, normalize_dual, merge_unique_columns,
+)
 from evaluation.completion_runner import merge_rescue_columns, solve_completion_stages
 from evaluation.completion_report import build_completion_report, render_completion_table, save_completion_report
 from evaluation.validator import validate_pairing
@@ -229,6 +232,7 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
         local_flights, max_time, device=DEVICE
     )
     c_tensor = constraint_to_tensor(constraint, device=DEVICE)
+    id_map = {f["local_id"]: f["global_id"] for f in subset}
 
     with torch.no_grad():
         encoded = encoder(origins, dests, dep_norm, arr_norm, fly_norm, c_tensor)
@@ -237,7 +241,6 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
             greedy=greedy, device=DEVICE,
         )
 
-    id_map = {f["local_id"]: f["global_id"] for f in subset}
     local_by_id = {f["id"]: f for f in local_flights}
     validated_pairings = []
     for pairing in raw_pairings:
@@ -252,7 +255,10 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
     return validated_pairings
 
 
-def rollout_subset_global_batch(subset, constraint, encoder, decoder, max_time, B, greedy=False):
+def rollout_subset_global_batch(
+    subset, constraint, encoder, decoder, max_time, B, greedy=False,
+    dual_by_global_id=None, dual_weight=1.0,
+):
     """rollout_subset_global()의 배치 버전 (Phase 5b, experiment/
     rollout-batch-vectorization) -- encoder를 한 번만 호출하고(예전엔 호출할 때마다
     같은 chunk에 대해 매번 새로 인코딩하던 비효율이 있었음) rollout_batch()로 B개
@@ -266,15 +272,22 @@ def rollout_subset_global_batch(subset, constraint, encoder, decoder, max_time, 
         local_flights, max_time, device=DEVICE
     )
     c_tensor = constraint_to_tensor(constraint, device=DEVICE)
+    id_map = {f["local_id"]: f["global_id"] for f in subset}
+    local_dual = None
+    if dual_by_global_id is not None:
+        local_dual = {
+            local_id: float(dual_by_global_id.get(global_id, 0.0))
+            for local_id, global_id in id_map.items()
+        }
 
     with torch.no_grad():
         encoded = encoder(origins, dests, dep_norm, arr_norm, fly_norm, c_tensor)
         episodes_raw = rollout_batch(
             local_flights, constraint, encoder, decoder, encoded,
             B=B, greedy=greedy, device=DEVICE,
+            flight_action_scores=local_dual, dual_weight=dual_weight,
         )
 
-    id_map = {f["local_id"]: f["global_id"] for f in subset}
     local_by_id = {f["id"]: f for f in local_flights}
 
     results = []
@@ -326,6 +339,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                       n_rollouts_per_chunk=5,
                       subset_size=config.EPISODE_MAX_FLIGHTS,
                       window_days=5,
+                      dual_by_global_id=None, dual_weight=1.0,
                       connected_sampler=sample_connected_subnet_std,
                       airline="delta"):
     """Roll out over all windows to build the global-ID-keyed candidate pool Cθ.
@@ -410,7 +424,8 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
             # 등 배치 전체에 영향을 주는 실패에 대한 안전망으로만 남겨둠.
             try:
                 stochastic_results = rollout_subset_global_batch(
-                    chunk, c_b, encoder, decoder, max_time, B=n_rollouts_per_chunk, greedy=False
+                    chunk, c_b, encoder, decoder, max_time, B=n_rollouts_per_chunk, greedy=False,
+                    dual_by_global_id=dual_by_global_id, dual_weight=dual_weight,
                 )
             except Exception as e:
                 print(f"  [warn] stochastic rollout batch failed (chunk={c_idx}): {e}", flush=True)
@@ -438,7 +453,10 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                 rollout_count += 1
 
             try:
-                pairings = rollout_subset_global(chunk, c_b, encoder, decoder, max_time, greedy=True)
+                pairings = rollout_subset_global_batch(
+                    chunk, c_b, encoder, decoder, max_time, B=1, greedy=True,
+                    dual_by_global_id=dual_by_global_id, dual_weight=dual_weight,
+                )[0]
             except Exception as e:
                 print(f"  [warn] greedy rollout failed (chunk={c_idx}): {e}", flush=True)
                 continue
@@ -659,6 +677,8 @@ def evaluate_full(
     strict_validation=False,
     save_json_path=None,
     no_save_json=False,
+    dual_iterations=0, dual_weight=1.0, dual_mode="real",
+    dual_artificial_penalty=1000.0, dual_trace_path=None,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
 
@@ -793,6 +813,52 @@ def evaluate_full(
             airline=airline,
         )
 
+    dual_trace = []
+    for dual_iteration in range(1, dual_iterations + 1):
+        lp_feedback = solve_full_universe_lp(
+            pool, range(n_total), lambda_excess=lambda_dh,
+            artificial_penalty=dual_artificial_penalty,
+        )
+        signal = normalize_dual(lp_feedback["net_dual"])
+        if dual_mode == "shuffled":
+            keys = sorted(signal)
+            values = [signal[key] for key in keys]
+            random.shuffle(values)
+            signal = dict(zip(keys, values))
+        elif dual_mode == "uniform":
+            mean_signal = sum(signal.values()) / len(signal) if signal else 0.0
+            signal = {key: mean_signal for key in signal}
+        elif dual_mode != "real":
+            raise ValueError(f"지원하지 않는 dual_mode: {dual_mode}")
+
+        with torch.no_grad():
+            generated_pool, _ = collect_pool_full(
+                windows, base_ids, constraint, encoder, decoder,
+                n_rollouts_per_chunk=n_rollouts_per_chunk,
+                subset_size=subset_size, window_days=window_days,
+                dual_by_global_id=signal, dual_weight=dual_weight,
+                connected_sampler=connected_sampler, airline=airline,
+            )
+        before = len(pool)
+        pool = merge_unique_columns(pool, generated_pool)
+        dual_trace.append({
+            "iteration": dual_iteration,
+            "lp_objective": lp_feedback["lp_objective"],
+            "artificial_count": lp_feedback["artificial_count"],
+            "zero_cost_count": lp_feedback["zero_cost_count"],
+            "zero_cost_fraction": lp_feedback["zero_cost_fraction"],
+            "pool_size_before": before, "generated_count": len(generated_pool),
+            "pool_size_after": len(pool), "new_unique_count": len(pool) - before,
+            "dual_mode": dual_mode, "dual_weight": dual_weight,
+        })
+        if len(pool) == before:
+            break
+
+    if dual_trace_path:
+        os.makedirs(os.path.dirname(dual_trace_path) or ".", exist_ok=True)
+        with open(dual_trace_path, "w", encoding="utf-8") as handle:
+            json.dump(dual_trace, handle, indent=2)
+
     print(f"\nSolving IP (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
     if full_flight_master:
         rescue_columns = None
@@ -913,6 +979,7 @@ def evaluate_full(
 
     result["gap_pct"] = gap_pct
     result["eval_mode"] = eval_mode
+    result["dual_trace"] = dual_trace
     result["validation_report"] = validation_report
 
     if save_json_path:
@@ -966,6 +1033,13 @@ if __name__ == "__main__":
     parser.add_argument("--reposition-penalty", type=float, default=None)
     parser.add_argument("--reserve-penalty", type=float, default=None)
     parser.add_argument("--artificial-penalty", type=float, default=None)
+    parser.add_argument("--dual-iterations", type=int, default=0,
+                        help="current master dual로 pool을 반복 보강할 횟수")
+    parser.add_argument("--dual-weight", type=float, default=1.0,
+                        help="decoder action logit에 더할 normalized dual 가중치")
+    parser.add_argument("--dual-mode", choices=["real", "shuffled", "uniform"], default="real")
+    parser.add_argument("--dual-artificial-penalty", type=float, default=1000.0)
+    parser.add_argument("--dual-trace-path", default=None)
     parser.add_argument("--seed", type=int, default=None,
                         help="Fix the random/torch RNG -- set this to run a paired comparison of "
                              "multiple checkpoints against the same evaluation instance (e.g. the "
@@ -1012,6 +1086,10 @@ if __name__ == "__main__":
         reposition_penalty=args.reposition_penalty,
         reserve_penalty=args.reserve_penalty,
         artificial_penalty=args.artificial_penalty,
+        dual_iterations=args.dual_iterations, dual_weight=args.dual_weight,
+        dual_mode=args.dual_mode,
+        dual_artificial_penalty=args.dual_artificial_penalty,
+        dual_trace_path=args.dual_trace_path,
         seed=args.seed,
         strict_validation=args.strict_validation,
         save_json_path=args.save_json,
