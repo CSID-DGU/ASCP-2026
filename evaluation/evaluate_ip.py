@@ -336,7 +336,7 @@ def partition_connected_chunks(window_flights, base_ids, chunk_size, connected_s
 # ── 4. Collect the pool across all windows ───────────────────────────────────
 
 def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
-                      n_rollouts_per_chunk=5,
+                      n_rollouts_per_chunk=15,
                       subset_size=config.EPISODE_MAX_FLIGHTS,
                       window_days=5,
                       dual_by_global_id=None, dual_weight=1.0,
@@ -655,12 +655,12 @@ def evaluate_full(
     checkpoint_path,
     airline="delta",
     data_path=None,
-    n_rollouts_per_chunk=5,
+    n_rollouts_per_chunk=15,
     window_days=5,
     subset_size=config.EPISODE_MAX_FLIGHTS,
     bases=None,
     ip_time_limit=3600,
-    lambda_dh=1.0,
+    lambda_dh=10.0,
     device="cpu",
     turkish_files=None,
     use_utc=False,
@@ -678,7 +678,7 @@ def evaluate_full(
     save_json_path=None,
     no_save_json=False,
     dual_iterations=0, dual_weight=1.0, dual_mode="real",
-    dual_artificial_penalty=1000.0, dual_trace_path=None,
+    dual_artificial_penalty=None, dual_trace_path=None,
 ):
     """Full flight-coverage evaluation. Uses config.AIRLINE_DATA[airline] if data_path is unset.
 
@@ -815,9 +815,17 @@ def evaluate_full(
 
     dual_trace = []
     for dual_iteration in range(1, dual_iterations + 1):
+        if dual_artificial_penalty is None:
+            # 절대값 대신 그 시점 pool의 cost 규모(Cmax)에 상대적인 값을 씀
+            _legal_costs = [float(c["cost"]) for c in pool
+                            if math.isfinite(float(c.get("cost", 0.0))) and float(c.get("cost", 0.0)) >= 0]
+            _cmax = max([1.0] + _legal_costs)
+            _artificial_penalty = _cmax * 2.0
+        else:
+            _artificial_penalty = dual_artificial_penalty
         lp_feedback = solve_full_universe_lp(
             pool, range(n_total), lambda_excess=lambda_dh,
-            artificial_penalty=dual_artificial_penalty,
+            artificial_penalty=_artificial_penalty,
         )
         signal = build_dual_signal(lp_feedback, dual_mode)
 
@@ -831,6 +839,8 @@ def evaluate_full(
             )
         before = len(pool)
         pool = merge_unique_columns(pool, generated_pool)
+        for index, pairing in enumerate(pool):
+            pairing["column_id"] = f"{pairing.get('source_type', 'policy')}-{index}"
         dual_trace.append({
             "iteration": dual_iteration,
             "lp_objective": lp_feedback["lp_objective"],
@@ -840,6 +850,7 @@ def evaluate_full(
             "pool_size_before": before, "generated_count": len(generated_pool),
             "pool_size_after": len(pool), "new_unique_count": len(pool) - before,
             "dual_mode": dual_mode, "dual_weight": dual_weight,
+            "dual_artificial_penalty_used": _artificial_penalty,
         })
         if len(pool) == before:
             break
@@ -988,16 +999,16 @@ if __name__ == "__main__":
     parser.add_argument("--data-path", default=None,
                         help="CSV path. Uses config.AIRLINE_DATA[airline] if unset. "
                              "Set this for small-scale sample evaluation (e.g. RL/data/sample_DL_*.csv)")
-    parser.add_argument("--n-rollouts-per-chunk", type=int, default=5,
-                        help="Stochastic rollouts per chunk. Each window is split into sequential subset_size-sized chunks (default: 5)")
+    parser.add_argument("--n-rollouts-per-chunk", type=int, default=15,
+                        help="Stochastic rollouts per chunk. Each window is split into sequential subset_size-sized chunks (default: 15)")
     parser.add_argument("--window-days", type=int, default=5,
                         help="Window size in days. 1 is recommended for small-scale (1-week) data (default: 5)")
     parser.add_argument("--subset-size", type=int, default=config.EPISODE_MAX_FLIGHTS,
                         help=f"Flights per rollout (default: {config.EPISODE_MAX_FLIGHTS})")
     parser.add_argument("--ip-time-limit", type=int, default=3600,
                         help="CBC solver time limit in seconds (default: 3600)")
-    parser.add_argument("--lambda-dh", type=float, default=1.0,
-                        help="DH penalty weight (default: 1.0)")
+    parser.add_argument("--lambda-dh", type=float, default=10.0,
+                        help="DH penalty weight (default: 10.0)")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--turkish-files", nargs="+", default=None,
                         help="Turkish only. List of .legs file names to use. Defaults to the "
@@ -1028,7 +1039,8 @@ if __name__ == "__main__":
     parser.add_argument("--dual-weight", type=float, default=1.0,
                         help="decoder action logit에 더할 normalized dual 가중치")
     parser.add_argument("--dual-mode", choices=["real", "zero", "uncovered-only", "shuffled", "uniform"], default="real")
-    parser.add_argument("--dual-artificial-penalty", type=float, default=1000.0)
+    parser.add_argument("--dual-artificial-penalty", type=float, default=None,
+                        help="Unset uses Cmax x2 (pool's own legal cost scale) instead of a flat value")
     parser.add_argument("--dual-trace-path", default=None)
     parser.add_argument("--seed", type=int, default=None,
                         help="Fix the random/torch RNG -- set this to run a paired comparison of "

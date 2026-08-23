@@ -92,9 +92,9 @@ def calibrate_completion_penalties(columns: Sequence[Dict]) -> Dict[str, float]:
             finite_costs.append(cost)
     scale = max([1.0] + finite_costs)
     return {
-        "reposition_penalty": scale * 10.0,
-        "reserve_penalty": scale * 100.0,
-        "artificial_penalty": scale * 1000.0,
+        "reposition_penalty": scale * 2.0,
+        "reserve_penalty": scale * 4.0,
+        "artificial_penalty": scale * 8.0,
     }
 
 

@@ -217,14 +217,14 @@ class RescueInterfaceTests(unittest.TestCase):
 class PenaltyCalibrationTests(unittest.TestCase):
     def test_penalties_follow_pool_cost_scale_and_strict_order(self):
         penalties = calibrate_completion_penalties([_column(cost=25)])
-        self.assertEqual(penalties["reposition_penalty"], 250)
-        self.assertEqual(penalties["reserve_penalty"], 2500)
-        self.assertEqual(penalties["artificial_penalty"], 25000)
+        self.assertEqual(penalties["reposition_penalty"], 50)
+        self.assertEqual(penalties["reserve_penalty"], 100)
+        self.assertEqual(penalties["artificial_penalty"], 200)
 
     def test_auto_penalties_are_recorded_in_result(self):
         result = solve_full_flight_master([], [10], allow_artificial=True)
-        self.assertEqual(result["penalties"]["artificial_penalty"], 1000)
-        self.assertEqual(result["artificial_cost"], 1000)
+        self.assertEqual(result["penalties"]["artificial_penalty"], 8)
+        self.assertEqual(result["artificial_cost"], 8)
 
 
 if __name__ == "__main__":
