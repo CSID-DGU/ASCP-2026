@@ -33,6 +33,13 @@ AIRLINE_DATA = {
     "jetblue": "RL/data/jetblue_2019_01.csv",
     "turkish": "RL/data/timetables",           # .legs 파일 디렉토리 (Airbus narrow body, 2014)
 }
+MULTI_AIRLINES = ("delta", "alaska", "jetblue")
+AIRLINE_WINDOW_DAYS = {
+    "delta": 6,
+    "alaska": 6,
+    "jetblue": 8,
+    "turkish": 4,
+}
 AIRLINE_BASES = {
     "delta":   ["ATL", "DTW", "MSP", "JFK", "LAX", "SEA", "SLC"],  # BTS 2019 기준 주요 허브
     "alaska":  ["SEA", "PDX", "ANC", "LAX", "SFO"],                 # BTS 2019 기준 주요 허브
@@ -77,8 +84,7 @@ STAGE3_CONSTRAINT_RANGES = {
 # 실제로 받을 값을 학습 중 직접 보게 하기 위한 절충.
 STAGE3_REAL_CONSTRAINT_INJECT_PROB = 0.2
 
-# 슬라이딩 윈도우 크기 — max_pairing_days + 1 (마지막 날 시작 pairing도 완성 가능하게)
-# Stage 2/3, Phase 2 모두 max_pairing_days = WINDOW_DAYS - 1로 설정
+# 레거시 기본값. 학습은 AIRLINE_WINDOW_DAYS에서 항공사별 값을 선택함.
 WINDOW_DAYS = 5
 
 # 에피소드 최대 flight 수 — sample_connected_subnet으로 spoke-spoke 간선 포함해 샘플링

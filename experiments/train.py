@@ -935,7 +935,10 @@ def run_curriculum_stage(
 
 def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_constraint=False,
           ckpt_dir=None, from_stage2=False, turkish_files=None, dual_weight=None, dual_mode="net"):
-    WINDOW_DAYS = config.WINDOW_DAYS  # config.py에서 관리 — max_pairing_days 상한과 연동
+    WINDOW_DAYS = (
+        max(config.AIRLINE_WINDOW_DAYS[a] for a in config.MULTI_AIRLINES)
+        if multi_airline else config.AIRLINE_WINDOW_DAYS[config.AIRLINE]
+    )
 
     # 2x2 FiLM 인과성 실험(C/D/C'/D') — 디코더의 constraint 직접 concat 경로를
     # 원천 차단할지 여부. 이 프로세스 안에서 학습·rollout 전체(train.py, rollout.py
@@ -945,8 +948,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
     _select_environment("multi" if multi_airline else config.AIRLINE)
 
     if multi_airline:
-        import os as _os
-        airlines = [a for a in config.AIRLINE_DATA if not _os.path.isdir(config.AIRLINE_DATA[a])]
+        airlines = list(config.MULTI_AIRLINES)
         all_paths = [config.AIRLINE_DATA[a] for a in airlines]
         airport_map = build_airport_map(all_paths)
         all_base_ids = {a: bases_to_ids(config.AIRLINE_BASES[a], airport_map) for a in airlines}
@@ -1133,8 +1135,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
         if multi_airline:
             if sampled_airline != _selected_airline[0]:
                 raise RuntimeError("flight sample의 항공사와 constraint 항공사가 일치하지 않음")
-            base = {**_constraint_for_episode(sampled_airline, base_airport),
-                    "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1}
+            base = {**_constraint_for_episode(sampled_airline, base_airport)}
         else:
             base = _stage3_base
         if random.random() < config.STAGE3_REAL_CONSTRAINT_INJECT_PROB:
@@ -1166,8 +1167,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
 
     def stage2_constraint(sampled_airline, base_airport):
         return _constraint_for_episode(
-            sampled_airline, base_airport,
-            max_duty_periods=2, max_pairing_days=WINDOW_DAYS - 1, base_penalty=5.0,
+            sampled_airline, base_airport, base_penalty=5.0,
         )
 
     _s3_best     = float("inf")  
