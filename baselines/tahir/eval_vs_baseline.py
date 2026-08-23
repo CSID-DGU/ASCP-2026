@@ -43,6 +43,7 @@ from baselines.tahir.cppsc_loader import load_cppsc_flights, get_cppsc_constrain
 from constraints import FILM_CONSTRAINT_KEYS
 from utils import constraint_to_tensor, flights_to_tensors
 from rollout import rollout_with_pairings
+from baselines.tahir.airport_mapping import remap_cppsc_airports
 
 DEVICE = torch.device("cpu")
 
@@ -135,6 +136,13 @@ def main():
 
     ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
     n_airports = ckpt.get("n_airports", ckpt["encoder"]["airport_emb.weight"].shape[0])
+    checkpoint_airport_map = ckpt.get("airport_map")
+    if not isinstance(checkpoint_airport_map, dict) or not checkpoint_airport_map:
+        raise ValueError("checkpoint에 airport_map이 없어 CPPSC 공항 의미를 검증할 수 없음")
+    global MAX_TIME
+    MAX_TIME = float(ckpt.get("max_time", 0.0))
+    if MAX_TIME <= 0:
+        raise ValueError("checkpoint에 유효한 max_time이 없음")
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
     airport_emb_dim = encoder.airport_emb.embedding_dim
@@ -175,20 +183,13 @@ def main():
                 flights, airport_map, base_ids = load_cppsc_flights(at, t)
             except (FileNotFoundError, Exception) as e:
                 continue
+            flights, base_ids = remap_cppsc_airports(
+                flights, airport_map, base_ids, checkpoint_airport_map,
+            )
 
             # Use first base airport as base_airport constraint
             base_airport = base_ids[0] if base_ids else 0
             constraint = get_cppsc_constraints(base_airport)
-
-            # RL must use same n_airports as training; remap if needed
-            # (CPPSC airport count may differ from training set)
-            n_ap_cppsc = max(f["origin"] for f in flights) + 1
-            n_ap_cppsc = max(n_ap_cppsc, max(f["dest"] for f in flights) + 1)
-
-            if n_ap_cppsc > n_airports:
-                print(f"  AT_{at} t={t}: SKIP — instance has {n_ap_cppsc} airports, "
-                      f"model trained on {n_airports}")
-                continue
 
             n_rl, n_unc, cov_rl = run_greedy(flights, constraint, encoder, decoder)
 
