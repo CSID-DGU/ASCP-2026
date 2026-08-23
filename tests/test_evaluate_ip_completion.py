@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from evaluation.evaluate_ip import solve_pool_completion
+from evaluation.evaluate_ip import solve_pool_completion, validate_rescue_columns_current_run
+from evaluation.validator import constraint_hash, VALIDATOR_VERSION
 
 
 class EvaluateIpCompletionTests(unittest.TestCase):
@@ -39,6 +40,42 @@ class EvaluateIpCompletionTests(unittest.TestCase):
         result = solve_pool_completion([policy], 2, rescue_columns=[rescue], artificial_penalty=100)
         self.assertEqual(result["completion_report"]["post_rescue_candidate_coverage"], 1.0)
         self.assertEqual(result["artificial_count"], 0)
+
+
+class RescueCurrentRunValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.flights = {
+            0: {"id": 0, "origin": 10, "dest": 20, "dep_time": 1.0, "arr_time": 2.0},
+            1: {"id": 1, "origin": 20, "dest": 10, "dep_time": 3.0, "arr_time": 4.0},
+        }
+        self.constraint = {
+            "base_airport": 10, "min_conn": 0.5, "max_conn": 3.0,
+            "min_rest": 10.0, "max_duty": 13.0, "max_legs": 8,
+            "max_duty_periods": 2, "max_pairing_days": 5,
+            "min_pairing_legs": 2,
+        }
+
+    def candidate(self):
+        return {
+            "legs": [0, 1], "source_type": "rescue", "is_legal": True,
+            "cost": 1.0, "repair_target_flights": [1],
+            "validator_version": VALIDATOR_VERSION,
+            "constraint_hash": constraint_hash(self.constraint),
+        }
+
+    def test_valid_rescue_is_rechecked(self):
+        result = validate_rescue_columns_current_run(
+            [self.candidate()], self.flights, self.constraint
+        )
+        self.assertEqual(result[0]["_gen_base_airport"], 10)
+
+    def test_stale_constraint_hash_is_rejected(self):
+        candidate = self.candidate()
+        candidate["constraint_hash"] = "stale"
+        with self.assertRaisesRegex(ValueError, "constraint_hash"):
+            validate_rescue_columns_current_run(
+                [candidate], self.flights, self.constraint
+            )
 
 
 if __name__ == "__main__":

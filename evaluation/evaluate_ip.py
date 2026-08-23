@@ -483,6 +483,31 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
 
 
 
+def validate_rescue_columns_current_run(rescue_columns, flights_by_id, constraint):
+    """외부 rescue provenance를 신뢰하지 않고 현재 flight와 규정으로 재검증함."""
+    validated = []
+    for index, raw in enumerate(rescue_columns or []):
+        rescue = dict(raw)
+        legs = list(rescue.get("legs", []))
+        if not legs or legs[0] not in flights_by_id:
+            raise ValueError(f"rescue-{index}: 현재 instance에서 시작 flight를 찾을 수 없습니다.")
+        start_base = flights_by_id[legs[0]]["origin"]
+        current_constraint = {**constraint, "base_airport": start_base}
+        result = validate_pairing(rescue, flights_by_id, current_constraint)
+        if not result["is_valid"]:
+            raise ValueError(
+                f"rescue-{index}: current-run validator 위반 {result['violation_codes']}"
+            )
+        if rescue.get("validator_version") != result["validator_version"]:
+            raise ValueError(f"rescue-{index}: validator_version이 현재 실행과 다릅니다.")
+        if rescue.get("constraint_hash") != result["constraint_hash"]:
+            raise ValueError(f"rescue-{index}: constraint_hash가 현재 실행과 다릅니다.")
+        rescue["is_legal"] = True
+        rescue["_gen_base_airport"] = start_base
+        validated.append(rescue)
+    return validated
+
+
 def solve_pool_completion(
     pool, n_total, *, lambda_excess=1.0, time_limit=300,
     reposition_penalty=None, reserve_penalty=None,
@@ -776,6 +801,9 @@ def evaluate_full(
                 rescue_columns = json.load(handle)
             if isinstance(rescue_columns, dict):
                 rescue_columns = rescue_columns.get("columns", rescue_columns.get("rescue_columns", []))
+            rescue_columns = validate_rescue_columns_current_run(
+                rescue_columns, flights_by_id, constraint
+            )
         result = solve_pool_completion(
             pool, n_total, lambda_excess=lambda_dh, time_limit=ip_time_limit,
             reposition_penalty=reposition_penalty, reserve_penalty=reserve_penalty,
@@ -792,7 +820,7 @@ def evaluate_full(
 
     validation_report = validate_selected_pairings(
         result["selected"], flights_by_id, constraint, base_ids, n_total,
-        strict=strict_validation,
+        strict=(strict_validation or full_flight_master),
     )
     print(
         f"\n[validator] independent re-check: "
