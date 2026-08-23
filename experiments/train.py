@@ -9,7 +9,7 @@ from torch.distributions import Categorical
 import wandb
 
 from model import FlightEncoder, PointerDecoder
-from loader import build_airport_map, bases_to_ids, load_flights_rolling
+from loader import build_airport_map, bases_to_ids, load_flights_rolling, airport_map_hash
 import environment as _env_default
 from turkish.environment_turkish import (
     get_mask as _get_mask_turkish, step as _step_turkish, final_reward as _final_reward_turkish,
@@ -648,7 +648,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
                constraint_sampler=None, init_best=float("inf"), dual_weight_override=None,
-               dual_mode="net"):
+               dual_mode="net", checkpoint_metadata=None):
     # dual_mode: "net"(기본, 기존 동작) = π^cov - ν^exc를 그대로 씀.
     # "coverage_only" = ν^exc(deadhead dual)를 0으로 고정 — coverage dual(π^cov)만 반영.
     # dual-ablation 3분할(off/coverage_only/net) 중 off는 기존 --dual-weight 0으로 이미 커버됨.
@@ -741,6 +741,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 "episode":           ep,
                 "best_avg_pairings": best_avg_pairings,
                 "time_basis":        "turkish_native" if config.AIRLINE == "turkish" else "utc",
+                **(checkpoint_metadata or {}),
             }, ckpt_path)
             wandb.save(ckpt_path)
 
@@ -785,6 +786,7 @@ def run_curriculum_stage(
     global_step_offset=0,
     entropy_start=0.05, entropy_end=0.005,
     base_stage2_constraint=None,  # Stage 3 리플레이용 베이스 파라미터 추가
+    checkpoint_metadata=None,
 ):
     best_avg_pairings = float("inf")
     greedy_pairings = []
@@ -870,6 +872,7 @@ def run_curriculum_stage(
                     "episode":           ep,
                     "best_avg_pairings": best_avg_pairings,
                     "time_basis":        "turkish_native" if config.AIRLINE == "turkish" else "utc",
+                    **(checkpoint_metadata or {}),
                 }, ckpt_path)
                 wandb.save(ckpt_path)
 
@@ -994,6 +997,21 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
 
     save_dir = os.path.join(os.path.dirname(__file__), "..", "checkpoints", wandb.run.id)
     os.makedirs(save_dir, exist_ok=True)
+
+    checkpoint_metadata = {
+        "checkpoint_schema_version": 2,
+        "airport_map": dict(airport_map),
+        "airport_map_hash": airport_map_hash(airport_map),
+        "n_airports": n_airports,
+        "airline": "multi" if multi_airline else config.AIRLINE,
+        "airlines": list(airlines) if multi_airline else [config.AIRLINE],
+        "multi_airline": bool(multi_airline),
+        "skip_film": bool(skip_film),
+        "skip_decoder_constraint": bool(skip_decoder_constraint),
+        "window_days": WINDOW_DAYS,
+        "max_time": WINDOW_DAYS * 24,
+        "time_basis": "turkish_native" if (not multi_airline and config.AIRLINE == "turkish") else "utc",
+    }
 
     import pandas as pd
 
@@ -1166,7 +1184,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                                  save_dir=save_dir, flight_sampler=flight_sampler,
                                  constraint_sampler=stage1_constraint if multi_airline else None,
                                  global_step_offset=0,
-                                 entropy_start=0.30, entropy_end=0.005)
+                                 entropy_start=0.30, entropy_end=0.005,
+                                 checkpoint_metadata=checkpoint_metadata)
 
             # ── Stage 2: full multi-day ───────────────────────────────────────
             stage2_c = {**base_constraint, "max_duty_periods": 2, "max_pairing_days": WINDOW_DAYS - 1, "base_penalty": 5.0}
@@ -1175,7 +1194,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                                  save_dir=save_dir, flight_sampler=flight_sampler,
                                  constraint_sampler=stage2_constraint if multi_airline else None,
                                  global_step_offset=1000,
-                                 entropy_start=0.02, entropy_end=0.005)
+                                 entropy_start=0.02, entropy_end=0.005,
+                                 checkpoint_metadata=checkpoint_metadata)
 
         # ── Stage 3: 7개 constraint 전체 랜덤 augmentation (FiLM 학습) ───
         _s3_offset = 0 if from_stage2 else 3000
@@ -1186,7 +1206,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                              constraint_sampler=sample_constraint,
                              global_step_offset=_s3_offset,
                              entropy_start=0.01, entropy_end=0.005,
-                             base_stage2_constraint=stage2_constraint if multi_airline else base_constraint)
+                             base_stage2_constraint=stage2_constraint if multi_airline else base_constraint,
+                             checkpoint_metadata=checkpoint_metadata)
 
         _s3_ckpt = torch.load(os.path.join(save_dir, "stage3_best.pt"), map_location=DEVICE, weights_only=True)
         encoder.load_state_dict(_s3_ckpt["encoder"])
@@ -1288,7 +1309,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
                flight_sampler=flight_sampler,
                global_step_offset=phase2_offset,
                constraint_sampler=sample_constraint,
-               dual_weight_override=dual_weight, dual_mode=dual_mode)
+               dual_weight_override=dual_weight, dual_mode=dual_mode,
+               checkpoint_metadata=checkpoint_metadata)
 
     # ── FiLM 최종 검증: stage3_best.pt 기준 ───────────────────────────
     # (Phase 2가 FiLM 가중치를 덮어썼을 수 있으므로 검증만 stage3_best로 임시 복원해서 확인)
@@ -1323,6 +1345,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
         "window_days":    WINDOW_DAYS,
         "max_time":       WINDOW_DAYS * 24,
         "time_basis":     "turkish_native" if config.AIRLINE == "turkish" else "utc",
+        **checkpoint_metadata,
     }, os.path.join(save_dir, "model_latest.pt"))
     print(f"\n모델 저장: checkpoints/model_latest.pt")
 

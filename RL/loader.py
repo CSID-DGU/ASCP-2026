@@ -1,4 +1,6 @@
 import random
+import hashlib
+import json
 import pandas as pd
 from collections import Counter
 from zoneinfo import ZoneInfo
@@ -84,6 +86,26 @@ def build_airport_map(path):
         counts.update(list(df["ORIGIN"]) + list(df["DEST"]))
     airports_sorted = sorted(counts.keys(), key=lambda a: -counts[a])
     return {a: i for i, a in enumerate(airports_sorted)}
+
+
+def airport_map_hash(airport_map):
+    """공항 embedding 사전의 의미와 순서를 검증하는 안정적인 hash를 반환함."""
+    payload = json.dumps(airport_map, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def validate_airport_map(airport_map, n_airports=None):
+    """Checkpoint에서 복원한 공항 사전이 연속 ID를 갖는지 검증함."""
+    if not isinstance(airport_map, dict) or not airport_map:
+        raise ValueError("checkpoint에 유효한 airport_map이 없음")
+    normalized = {str(code): int(idx) for code, idx in airport_map.items()}
+    if sorted(normalized.values()) != list(range(len(normalized))):
+        raise ValueError("airport_map ID가 0부터 시작하는 연속 범위가 아님")
+    if n_airports is not None and len(normalized) != int(n_airports):
+        raise ValueError(
+            f"airport_map 크기({len(normalized)})와 embedding 크기({n_airports})가 다름"
+        )
+    return normalized
 
 
 def bases_to_ids(bases, airport_map):

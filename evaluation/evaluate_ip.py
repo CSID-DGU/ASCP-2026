@@ -32,7 +32,11 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 DEVICE = torch.device("cpu")
 
-from loader import load_flights_rolling, build_airport_map, bases_to_ids, sample_connected_subnet as sample_connected_subnet_std
+from loader import (
+    load_flights_rolling, build_airport_map, bases_to_ids,
+    sample_connected_subnet as sample_connected_subnet_std,
+    validate_airport_map, airport_map_hash,
+)
 from turkish.loader_turkish import (
     parse_legs_dir, build_airport_map_turkish, load_flights_rolling_turkish,
     sample_connected_subnet as sample_connected_subnet_turkish,
@@ -753,6 +757,28 @@ def evaluate_full(
             f"required={expected_time_basis}. BTS UTC 전환 전 체크포인트는 재학습해야 함."
         )
 
+    checkpoint_airport_map = ckpt.get("airport_map")
+    if checkpoint_airport_map is None:
+        raise ValueError(
+            "checkpoint에 airport_map이 없음. 데이터별 ID 재생성을 막기 위해 "
+            "새 schema로 재학습해야 함."
+        )
+    airport_map = validate_airport_map(checkpoint_airport_map, n_airports)
+    stored_map_hash = ckpt.get("airport_map_hash")
+    if stored_map_hash and stored_map_hash != airport_map_hash(airport_map):
+        raise ValueError("checkpoint airport_map hash가 저장 내용과 일치하지 않음")
+
+    checkpoint_airline = ckpt.get("airline")
+    checkpoint_airlines = ckpt.get("airlines", [])
+    if checkpoint_airline != "multi" and checkpoint_airline != airline:
+        raise ValueError(
+            f"단일 항공사 checkpoint({checkpoint_airline})를 {airline} 데이터로 평가할 수 없음"
+        )
+    if checkpoint_airline == "multi" and airline not in checkpoint_airlines:
+        raise ValueError(
+            f"multi checkpoint 학습 항공사 {checkpoint_airlines}에 {airline}이 포함되지 않음"
+        )
+
     _turkish_df = None
     if airline == "turkish":
         # If turkish_files is unset, default to the Zeren Feb benchmark
@@ -761,14 +787,17 @@ def evaluate_full(
             _turkish_df = parse_legs_dir(data_path, files=[ZEREN_FEB_FILE], date_range=ZEREN_FEB_WINDOW)
         else:
             _turkish_df = parse_legs_dir(data_path, files=turkish_files)
-        airport_map = build_airport_map_turkish(df=_turkish_df)
+        unknown = (
+            set(_turkish_df["ORIGIN"]) | set(_turkish_df["DEST"])
+        ) - set(airport_map)
     else:
-        if n_airports > 145:
-            # Turkish (.legs directory) can't be processed by the BTS CSV loader -> exclude
-            map_paths = [v for k, v in config.AIRLINE_DATA.items() if k != "turkish"]
-        else:
-            map_paths = data_path
-        airport_map = build_airport_map(map_paths)
+        _airport_df = pd.read_csv(data_path, usecols=["ORIGIN", "DEST"]).dropna()
+        unknown = (set(_airport_df["ORIGIN"]) | set(_airport_df["DEST"])) - set(airport_map)
+    if unknown:
+        raise ValueError(
+            "평가 데이터에 checkpoint 학습 당시 없던 공항이 있음. "
+            f"실험 universe를 먼저 정의해야 함: {sorted(unknown)}"
+        )
     base_ids = bases_to_ids(list(bases), airport_map)
 
     encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
