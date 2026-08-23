@@ -1,9 +1,18 @@
 import random
 import hashlib
 import json
+import warnings
 import pandas as pd
 from collections import Counter
 from zoneinfo import ZoneInfo
+
+# convert_time()의 h + m/60 부동소수점 연산이 만드는 나노초 미만 잔차를
+# pd.Timestamp.to_pydatetime()이 버릴 때마다 뜨는 무해한 경고 -- 시간 단위(h) 데이터에서
+# 나노초 정밀도 손실은 의미가 없고, utc_offset_hours()가 매 flight/episode마다 호출되어
+# 로그를 뒤덮으므로 여기서만 좁게 억제한다.
+warnings.filterwarnings(
+    "ignore", message="Discarding nonzero nanoseconds in conversion", category=UserWarning,
+)
 
 
 def convert_time(hhmm):

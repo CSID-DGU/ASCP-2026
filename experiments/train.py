@@ -152,6 +152,12 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False, st
     # (reward pump 방지: assigned만 풀어주면 같은 flight를 다시 골라 LEG_PER_PAIRING_BONUS를
     # 또 받을 수 있음. get_mask에는 assigned|blocked를 합쳐서 넘기고, coverage/reward
     # 계산에 쓰는 진짜 assigned는 완성된 pairing만 반영하도록 분리함.)
+    restart_candidate_id = None  # 직전 재시작이 겨냥한 base flight id
+    tried_restart_ids = set()  # pairing 시작점으로 시도해서 실패한 flight id -- RL/rollout.py의
+    # bad_starters와 동일한 역할: "새 pairing 시작점으로는 다시 안 씀"만 강제하고 blocked_ids
+    # (reward 받은/pump 방지용)와는 분리해서, 다른 pairing의 연결편으로는 여전히 고를 수 있게 함.
+    # 안 넣으면 재시작 후보(next_first)가 매번 동일하게 재계산돼 동일 dead-end가 재생성 ->
+    # cap을 다 소진할 때까지 no-op만 반복.
     while True:
         step_count += 1
         if step_count > max_steps:
@@ -170,6 +176,11 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False, st
         no_end_duty   = mask_list[-2] == 0
         no_end_pairing = mask_list[-1] == 0
         if no_flight and no_end_duty and no_end_pairing:
+            if not current_pairing_ids and restart_candidate_id is not None:
+                # 직전 재시작 이후 flight를 하나도 못 고르고 또 막힘 -- 이 flight는 새
+                # pairing 시작점으로는 실패가 확정됐으므로 재시작 후보 풀에서만 뺀다
+                # (reward를 받은 적 없는 flight라 blocked_ids/reward pump와는 무관).
+                tried_restart_ids.add(restart_candidate_id)
             # 막힌 pairing에 쓰인 flight는 완성된 게 아니므로 coverage/reward 계산에서
             # 빠져야 하지만(다시 미배정), reward pump를 막기 위해 이 episode 안에서
             # 다시 고르지는 못 하게 영구 차단한다.
@@ -182,10 +193,13 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False, st
                 break
             n_zero_mask += 1
             base = constraint["base_airport"]
-            base_unassigned = [f for f in unassigned if f["origin"] == base]
+            base_unassigned = [f for f in unassigned
+                               if f["origin"] == base and f["id"] not in tried_restart_ids]
             if not base_unassigned or n_zero_mask > config.MAX_ZERO_MASK_RESTARTS:
                 break
-            next_time = min(f["dep_time"] for f in base_unassigned)
+            next_first = min(base_unassigned, key=lambda f: f["dep_time"])
+            restart_candidate_id = next_first["id"]
+            next_time = next_first["dep_time"]
             state = {
                 **state,
                 "current_airport":    base,
@@ -685,6 +699,8 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     step_count = 0
     current_pairing_ids = []
     blocked_ids = set()  # reward pump 방지 -- run_episode()와 동일한 이유
+    restart_candidate_id = None  # run_episode()와 동일: no-op 재시작 방지용
+    tried_restart_ids = set()  # run_episode()와 동일: 시작점 실패만 기록, 연결편 재사용은 허용
 
     while True:
         step_count += 1
@@ -703,6 +719,10 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
         no_end_duty    = mask_list[-2] == 0
         no_end_pairing = mask_list[-1] == 0
         if no_flight and no_end_duty and no_end_pairing:
+            if not current_pairing_ids and restart_candidate_id is not None:
+                # run_episode()와 동일: 재시작 직후 진전 없이 또 막히면 그 후보는 시작점
+                # 후보에서만 뺀다(연결편으로는 여전히 재사용 가능, reward 받은 적 없음).
+                tried_restart_ids.add(restart_candidate_id)
             # dual 학습도 run_episode()와 동일: 막힌 pairing은 미배정으로 되돌리되
             # reward pump 방지를 위해 이 episode 안에서는 영구 차단.
             blocked_ids.update(current_pairing_ids)
@@ -713,10 +733,13 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             if not unassigned:
                 break
             n_zero_mask += 1
-            base_unassigned = [f for f in unassigned if f["origin"] == base]
+            base_unassigned = [f for f in unassigned
+                               if f["origin"] == base and f["id"] not in tried_restart_ids]
             if not base_unassigned or n_zero_mask > config.MAX_ZERO_MASK_RESTARTS:
                 break
-            next_time = min(f["dep_time"] for f in base_unassigned)
+            next_first = min(base_unassigned, key=lambda f: f["dep_time"])
+            restart_candidate_id = next_first["id"]
+            next_time = next_first["dep_time"]
             state = {
                 **state,
                 "current_airport":    base,
@@ -930,6 +953,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             "phase2/greedy_avg_overnight": metrics_g.get("avg_overnight", 0),
             "phase2/sample_reward":       reward_s,
             "phase2/avg25":               avg25,
+            "phase2/coverage25":          coverage25,
             "phase2/advantage":           advantage,
             "phase2/loss":                loss.item(),
             "phase2/entropy_coef":        entropy_coef,
@@ -946,7 +970,8 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             print(
                 f"  Ep {ep:4d} | "
                 f"sample: p={metrics_s['n_pairings']:3d} dh={metrics_s['n_deadheads']:3d} | "
-                f"greedy: p={metrics_g['n_pairings']:3d} legs={metrics_g.get('avg_legs', 0):.2f} (avg25={avg25:5.1f}) | "
+                f"greedy: p={metrics_g['n_pairings']:3d} legs={metrics_g.get('avg_legs', 0):.2f} "
+                f"(avg25={avg25:5.1f}, cov25={coverage25:5.1f}%) | "
                 f"adv: {advantage:6.3f} | dw={_eff_dw:.3f} | dual keys: {len(dual_vars)} | "
                 f"dh dual keys: {sum(1 for v in raw_excess_duals.values() if v > 0)} | lp_value: {_lp_str}"
             )
@@ -1085,6 +1110,7 @@ def run_curriculum_stage(
             f"stage{stage}/greedy_avg_overnight": metrics_g.get("avg_overnight", 0),
             f"stage{stage}/sample_reward":     reward_s,
             f"stage{stage}/avg25":             avg25,
+            f"stage{stage}/coverage25":        coverage25,
             f"stage{stage}/advantage":         advantage,
             f"stage{stage}/loss":              loss.item(),
             f"stage{stage}/entropy_coef":      entropy_coef,
@@ -1096,7 +1122,8 @@ def run_curriculum_stage(
             print(
                 f"  Ep {ep:4d} | "
                 f"sample: p={metrics_s['n_pairings']:3d} dh={metrics_s['n_deadheads']:3d} | "
-                f"greedy: p={metrics_g['n_pairings']:3d} legs={metrics_g.get('avg_legs', 0):.2f} (avg25={avg25:5.1f}) | "
+                f"greedy: p={metrics_g['n_pairings']:3d} legs={metrics_g.get('avg_legs', 0):.2f} "
+                f"(avg25={avg25:5.1f}, cov25={coverage25:5.1f}%) | "
                 f"adv: {advantage:6.3f}"
             )
 
@@ -1605,7 +1632,14 @@ if __name__ == "__main__":
     parser.add_argument("--data-path", default=None,
                         help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
                              "delta-small 등 대체 데이터셋으로 학습/이어받기할 때 지정")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="random/torch seed 고정 (재현 가능한 학습용). 미지정 시 시드 고정 안 함")
     args = parser.parse_args()
+    if args.seed is not None:
+        random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        print(f"seed: {args.seed}")
     if args.airline:
         config.AIRLINE = args.airline
     if args.data_path:

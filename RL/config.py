@@ -107,7 +107,10 @@ PHASE2_DUAL_WARMUP   = 100   # w_dual(e) warm-up length in episodes -- ramps 0 -
 # Dead-end 시 base 재시작 횟수 상한 -- base 출발 flight가 수백 개인 인스턴스에서 초기(랜덤에
 # 가까운) 정책은 매번 다시 막혀서 재시작을 사실상 무한정 반복할 수 있음. 이 횟수를 넘으면
 # base에서 시작할 미배정 flight가 남아있어도 episode를 끝낸다.
-MAX_ZERO_MASK_RESTARTS = 30
+# no-op 재시작 차단(run_episode의 restart_candidate_id) 이후 실측: coverage가 약
+# 64회 재시작 근방에서 포화 -- 30은 병목이라 80으로 상향(재시작마다 실제 후보가 하나씩
+# blocked_ids에 쌓여 진전이 보장되므로 cap을 넉넉히 줘도 낭비가 없음).
+MAX_ZERO_MASK_RESTARTS = 80
 
 # Reward shaping
 
