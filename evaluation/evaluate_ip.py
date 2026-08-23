@@ -224,6 +224,15 @@ def sample_connected_subset(window_flights, subset_size, base_id, constraint):
 
 # ── 3. Subset rollout -> global_id-keyed pairings ────────────────────────────
 
+def constraint_for_pairing_base(pairing, constraint):
+    """회전 후 pairing의 실제 시작 base에 맞춘 검증 constraint를 반환함."""
+    pairing_base = pairing.get("true_start_airport", constraint["base_airport"])
+    allowed_bases = set(constraint.get("base_ids") or [constraint["base_airport"]])
+    if pairing_base not in allowed_bases:
+        return None
+    return {**constraint, "base_airport": pairing_base}
+
+
 def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy=False):
     """Rollout 결과를 독립 검증한 뒤 global ID column으로 변환함."""
     local_flights = [{**f, "id": f["local_id"]} for f in subset]
@@ -243,7 +252,10 @@ def rollout_subset_global(subset, constraint, encoder, decoder, max_time, greedy
     local_by_id = {f["id"]: f for f in local_flights}
     validated_pairings = []
     for pairing in raw_pairings:
-        validation = validate_pairing(pairing, local_by_id, constraint)
+        pairing_constraint = constraint_for_pairing_base(pairing, constraint)
+        if pairing_constraint is None:
+            continue
+        validation = validate_pairing(pairing, local_by_id, pairing_constraint)
         if not validation["is_valid"]:
             continue
         pairing["is_legal"] = True
@@ -293,7 +305,10 @@ def rollout_subset_global_batch(
     for raw_pairings in episodes_raw:
         validated_pairings = []
         for pairing in raw_pairings:
-            validation = validate_pairing(pairing, local_by_id, constraint)
+            pairing_constraint = constraint_for_pairing_base(pairing, constraint)
+            if pairing_constraint is None:
+                continue
+            validation = validate_pairing(pairing, local_by_id, pairing_constraint)
             if not validation["is_valid"]:
                 continue
             pairing["is_legal"] = True
@@ -427,8 +442,9 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                     dual_by_global_id=dual_by_global_id, dual_weight=dual_weight,
                 )
             except Exception as e:
-                print(f"  [warn] stochastic rollout batch failed (chunk={c_idx}): {e}", flush=True)
-                stochastic_results = []
+                raise RuntimeError(
+                    f"stochastic rollout batch failed (window={w_idx}, chunk={c_idx})"
+                ) from e
 
             for pairings in stochastic_results:
                 for p in pairings:
@@ -443,7 +459,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                     # 최종 selected pairing을 독립 재검증할 때(evaluate_full()) 그
                     # pairing이 실제로 생성될 때 쓰인 constraint를 복원하는 데 필요함
                     # (chunk마다 base_id가 랜덤으로 다시 뽑히므로).
-                    p["_gen_base_airport"] = base_id
+                    p["_gen_base_airport"] = p.get("true_start_airport", base_id)
                     key = tuple(sorted(p["legs"]))
                     if key not in pool or p["cost"] < pool[key]["cost"]:
                         pool[key] = p
@@ -457,12 +473,13 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                     dual_by_global_id=dual_by_global_id, dual_weight=dual_weight,
                 )[0]
             except Exception as e:
-                print(f"  [warn] greedy rollout failed (chunk={c_idx}): {e}", flush=True)
-                continue
+                raise RuntimeError(
+                    f"greedy rollout failed (window={w_idx}, chunk={c_idx})"
+                ) from e
             for p in pairings:
                 if not _pairing_valid(p):
                     continue
-                p["_gen_base_airport"] = base_id
+                p["_gen_base_airport"] = p.get("true_start_airport", base_id)
                 key = tuple(sorted(p["legs"]))
                 if key not in pool or p["cost"] < pool[key]["cost"]:
                     pool[key] = p
@@ -500,7 +517,7 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
 
 
 
-def validate_rescue_columns_current_run(rescue_columns, flights_by_id, constraint):
+def validate_rescue_columns_current_run(rescue_columns, flights_by_id, constraint, base_ids):
     """외부 rescue provenance를 신뢰하지 않고 현재 flight와 규정으로 재검증함."""
     validated = []
     for index, raw in enumerate(rescue_columns or []):
@@ -509,6 +526,10 @@ def validate_rescue_columns_current_run(rescue_columns, flights_by_id, constrain
         if not legs or legs[0] not in flights_by_id:
             raise ValueError(f"rescue-{index}: 현재 instance에서 시작 flight를 찾을 수 없습니다.")
         start_base = flights_by_id[legs[0]]["origin"]
+        if start_base not in set(base_ids):
+            raise ValueError(
+                f"rescue-{index}: 시작 공항 {start_base}은 configured crew base가 아닙니다."
+            )
         current_constraint = {**constraint, "base_airport": start_base}
         result = validate_pairing(rescue, flights_by_id, current_constraint)
         if not result["is_valid"]:
@@ -909,7 +930,7 @@ def evaluate_full(
             if isinstance(rescue_columns, dict):
                 rescue_columns = rescue_columns.get("columns", rescue_columns.get("rescue_columns", []))
             rescue_columns = validate_rescue_columns_current_run(
-                rescue_columns, flights_by_id, constraint
+                rescue_columns, flights_by_id, constraint, base_ids
             )
         result = solve_pool_completion(
             pool, n_total, lambda_excess=lambda_dh, time_limit=ip_time_limit,

@@ -21,6 +21,7 @@ from model import FlightEncoder, PointerDecoder  # noqa: E402
 from base_reach import build_base_reaches  # noqa: E402
 from evaluation.evaluate_ip import (  # noqa: E402
     rollout_subset_global, rollout_subset_global_batch, validate_window_days,
+    constraint_for_pairing_base,
 )
 
 
@@ -101,6 +102,21 @@ class WindowContractTests(unittest.TestCase):
     def test_window_equal_to_pairing_limit_is_allowed(self):
         self.assertEqual(
             validate_window_days(7, {"max_pairing_days": 7}, "jetblue"), 7
+        )
+
+
+class PairingBaseContractTests(unittest.TestCase):
+    def test_rotated_configured_base_is_used_for_validation(self):
+        constraint = {**CONSTRAINT, "base_ids": [0, 3]}
+        resolved = constraint_for_pairing_base(
+            {"true_start_airport": 3}, constraint
+        )
+        self.assertEqual(resolved["base_airport"], 3)
+
+    def test_unconfigured_start_base_is_rejected(self):
+        constraint = {**CONSTRAINT, "base_ids": [0, 3]}
+        self.assertIsNone(
+            constraint_for_pairing_base({"true_start_airport": 7}, constraint)
         )
 
 

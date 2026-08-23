@@ -65,7 +65,7 @@ class RescueCurrentRunValidationTests(unittest.TestCase):
 
     def test_valid_rescue_is_rechecked(self):
         result = validate_rescue_columns_current_run(
-            [self.candidate()], self.flights, self.constraint
+            [self.candidate()], self.flights, self.constraint, [10]
         )
         self.assertEqual(result[0]["_gen_base_airport"], 10)
 
@@ -74,7 +74,21 @@ class RescueCurrentRunValidationTests(unittest.TestCase):
         candidate["constraint_hash"] = "stale"
         with self.assertRaisesRegex(ValueError, "constraint_hash"):
             validate_rescue_columns_current_run(
-                [candidate], self.flights, self.constraint
+                [candidate], self.flights, self.constraint, [10]
+            )
+
+    def test_non_crew_base_rescue_is_rejected(self):
+        flights = {
+            0: {"id": 0, "origin": 20, "dest": 30, "dep_time": 1.0, "arr_time": 2.0},
+            1: {"id": 1, "origin": 30, "dest": 20, "dep_time": 3.0, "arr_time": 4.0},
+        }
+        candidate = self.candidate()
+        candidate["constraint_hash"] = constraint_hash(
+            {**self.constraint, "base_airport": 20}
+        )
+        with self.assertRaisesRegex(ValueError, "configured crew base"):
+            validate_rescue_columns_current_run(
+                [candidate], flights, self.constraint, [10]
             )
 
 
