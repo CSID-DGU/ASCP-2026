@@ -29,6 +29,7 @@ def build_completion_report(stage_results: Iterable[Dict], all_flight_ids: Itera
             "candidate_coverage": stage["candidate_coverage"],
             "legal_coverage": stage["coverage"],
             "operational_completion_coverage": stage["operational_completion_coverage"],
+            "operational_stage_has_inputs": stage.get("operational_stage_has_inputs", False),
             "completion_coverage": stage["completion_coverage"],
             "candidate_uncovered_flight_ids": stage["candidate_uncovered_flight_ids"],
             "uncovered_flight_ids": stage["uncovered_flight_ids"],

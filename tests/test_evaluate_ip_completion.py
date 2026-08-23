@@ -19,6 +19,8 @@ class EvaluateIpCompletionTests(unittest.TestCase):
         self.assertEqual(result["artificial_flight_ids"], [1])
         self.assertEqual(result["uncoverable"], 0)
         self.assertEqual(result["mip_obj"], result["mip_objective"])
+        operational = result["completion_report"]["stages"][3]
+        self.assertFalse(operational["operational_stage_has_inputs"])
 
     def test_report_is_saved_under_requested_result_path(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -186,6 +186,7 @@ def solve_set_covering(
         return {
             "selected": [], "n_pairings": 0, "total_cost": 0.0,
             "coverage": 0.0, "status": "no_pairings", "uncoverable": n_flights,
+            "is_feasible": False, "is_optimal": False, "mip_obj": None,
             "deadhead_count": 0, "deadhead_flights": [],
         }
 
@@ -224,7 +225,12 @@ def solve_set_covering(
 
     prob.solve(solver)
 
-    selected = [pairings[j] for j in range(M) if (x[j].value() or 0) > 0.5]
+    status = pulp.LpStatus[prob.status]
+    is_feasible = status in {"Optimal", "Feasible"}
+    selected = [
+        pairings[j] for j in range(M)
+        if is_feasible and (x[j].value() or 0) > 0.5
+    ]
 
     covered_legs = set()
     for p in selected:
@@ -242,9 +248,11 @@ def solve_set_covering(
         "selected":            selected,
         "n_pairings":          len(selected),
         "total_cost":          sum(p["cost"] for p in selected),
-        "mip_obj":             pulp.value(prob.objective),
+        "mip_obj":             pulp.value(prob.objective) if is_feasible else None,
         "coverage":            covered_count / n_flights if n_flights > 0 else 0.0,
-        "status":              pulp.LpStatus[prob.status],
+        "status":              status,
+        "is_feasible":         is_feasible,
+        "is_optimal":          status == "Optimal",
         "uncoverable":         len(uncoverable),
         "deadhead_count":      len(deadhead_flights),
         "deadhead_flights":    deadhead_flights,

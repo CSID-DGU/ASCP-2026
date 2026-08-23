@@ -86,6 +86,14 @@ def solve_completion_stages(
         result["candidate_coverage"] = (
             len(candidate_covered) / len(universe) if universe else 1.0
         )
+        result["operational_stage_has_inputs"] = bool(
+            stage_name == "operational"
+            and (
+                any(c.get("source_type") in {"reposition", "reserve"} for c in stage_columns)
+                or options.get("reposition_flight_ids")
+                or options.get("reserve_flight_ids")
+            )
+        )
         results.append(result)
 
     return results
