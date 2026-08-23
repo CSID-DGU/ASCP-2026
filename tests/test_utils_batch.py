@@ -16,7 +16,10 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
-from utils import state_to_vec, state_to_vec_batch, flight_gap_bias, flight_gap_bias_batch  # noqa: E402
+from utils import (  # noqa: E402
+    state_to_vec, state_to_vec_batch, flight_gap_bias, flight_gap_bias_batch,
+    set_skip_decoder_constraint,
+)
 
 
 class _DummyEncoder:
@@ -51,6 +54,9 @@ STATES = [
 
 
 class StateToVecBatchTests(unittest.TestCase):
+    def tearDown(self):
+        set_skip_decoder_constraint(False)
+
     def test_matches_individual_calls_stacked(self):
         encoder = _DummyEncoder()
         expected = torch.stack([state_to_vec(s, encoder, CONSTRAINT) for s in STATES])
@@ -70,6 +76,14 @@ class StateToVecBatchTests(unittest.TestCase):
         ])
         actual = state_to_vec_batch(STATES, encoder, CONSTRAINT, include_total_legs=False)
         self.assertTrue(torch.allclose(actual, expected, atol=1e-6))
+
+    def test_decoder_ablation_zeros_constraint_in_single_and_batch(self):
+        encoder = _DummyEncoder()
+        set_skip_decoder_constraint(True)
+        single = state_to_vec(STATES[0], encoder, CONSTRAINT)
+        batch = state_to_vec_batch(STATES, encoder, CONSTRAINT)
+        self.assertTrue(torch.all(single[-7:] == 0.0))
+        self.assertTrue(torch.all(batch[:, -7:] == 0.0))
 
 
 class FlightGapBiasBatchTests(unittest.TestCase):

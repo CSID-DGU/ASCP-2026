@@ -64,7 +64,7 @@ from evaluation.completion_runner import merge_rescue_columns, solve_completion_
 from evaluation.completion_report import build_completion_report, render_completion_table, save_completion_report
 from evaluation.validator import validate_pairing
 from evaluation.validation_report import aggregate_by_source_per_chunk
-from utils import constraint_to_tensor, flights_to_tensors
+from utils import constraint_to_tensor, flights_to_tensors, set_skip_decoder_constraint
 from rollout import rollout_with_pairings, rollout_batch, set_environment
 from base_reach import build_base_reaches
 import config
@@ -800,7 +800,15 @@ def evaluate_full(
         )
     base_ids = bases_to_ids(list(bases), airport_map)
 
-    encoder = FlightEncoder(n_airports=n_airports, constraint_dim=len(FILM_CONSTRAINT_KEYS)).to(DEVICE)
+    skip_film = bool(ckpt.get("skip_film", False))
+    skip_decoder_constraint = bool(ckpt.get("skip_decoder_constraint", False))
+    set_skip_decoder_constraint(skip_decoder_constraint)
+    encoder = FlightEncoder(
+        n_airports=n_airports,
+        constraint_dim=len(FILM_CONSTRAINT_KEYS),
+        use_film_before=not skip_film,
+        use_film_after=not skip_film,
+    ).to(DEVICE)
     # Auto-detect the checkpoint's state_vec dimension (older checkpoints used
     # fewer scalars than the current state_to_vec)
     airport_emb_dim = encoder.airport_emb.embedding_dim

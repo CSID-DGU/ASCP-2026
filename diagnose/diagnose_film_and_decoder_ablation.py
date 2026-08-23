@@ -42,14 +42,15 @@ from constraints import (
     get_delta_constraints, get_alaska_constraints, get_jetblue_constraints,
     get_turkish_constraints, FILM_CONSTRAINT_KEYS,
 )
-from utils import flights_to_tensors, constraint_to_tensor, state_to_vec as _state_to_vec_orig
+from utils import (
+    flights_to_tensors, constraint_to_tensor, set_skip_decoder_constraint,
+)
 from evaluation.set_partition import solve_set_covering
 from rollout import set_environment
 
 import config
 
 import train as train_mod
-import rollout as rollout_mod
 from train import run_episode
 
 from evaluation import evaluate_ip
@@ -73,22 +74,13 @@ def bypass_film(encoder):
     encoder.film_after.forward = identity
 
 
-def make_blind_state_to_vec(fixed_constraint):
-    def blind(state, encoder, constraint, device=None, include_total_legs=True):
-        return _state_to_vec_orig(state, encoder, fixed_constraint,
-                                   device=device, include_total_legs=include_total_legs)
-    return blind
-
-
-def bypass_decoder_constraint(fixed_constraint):
-    blind = make_blind_state_to_vec(fixed_constraint)
-    train_mod.state_to_vec = blind
-    rollout_mod.state_to_vec = blind
+def bypass_decoder_constraint(_fixed_constraint=None):
+    # 단일·batch rollout이 공유하는 utils 전역 설정으로 decoder constraint를 0 처리함.
+    set_skip_decoder_constraint(True)
 
 
 def restore_state_to_vec():
-    train_mod.state_to_vec = _state_to_vec_orig
-    rollout_mod.state_to_vec = _state_to_vec_orig
+    set_skip_decoder_constraint(False)
 
 
 def run_greedy_stage(encoder, decoder, airport_map, base, device, label):

@@ -49,7 +49,7 @@ from constraints import (
     get_delta_constraints, get_alaska_constraints, get_jetblue_constraints,
     get_turkish_constraints, FILM_CONSTRAINT_KEYS,
 )
-from utils import flights_to_tensors, constraint_to_tensor, state_to_vec as _state_to_vec_orig
+from utils import flights_to_tensors, constraint_to_tensor, set_skip_decoder_constraint
 from evaluation.set_partition import solve_set_covering
 from rollout import set_environment
 
@@ -72,24 +72,13 @@ TABLE3_AIRLINES = {
 }
 
 
-def make_blind_state_to_vec(fixed_constraint):
-    """실제 constraint 대신 fixed_constraint(delta)를 항상 넣는 state_to_vec 래퍼."""
-    def blind(state, encoder, constraint, device=None, include_total_legs=True):
-        return _state_to_vec_orig(state, encoder, fixed_constraint,
-                                   device=device, include_total_legs=include_total_legs)
-    return blind
-
-
-def bypass_decoder_constraint(fixed_constraint):
-    """train.py / rollout.py 모듈 전역의 state_to_vec을 delta 고정 래퍼로 교체."""
-    blind = make_blind_state_to_vec(fixed_constraint)
-    train_mod.state_to_vec = blind
-    rollout_mod.state_to_vec = blind
+def bypass_decoder_constraint(_fixed_constraint=None):
+    """단일·batch rollout의 decoder constraint 입력을 모두 0으로 고정함."""
+    set_skip_decoder_constraint(True)
 
 
 def restore_state_to_vec():
-    train_mod.state_to_vec = _state_to_vec_orig
-    rollout_mod.state_to_vec = _state_to_vec_orig
+    set_skip_decoder_constraint(False)
 
 
 def run_greedy_stage(encoder, decoder, airport_map, base, device, label):
