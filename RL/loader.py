@@ -13,6 +13,13 @@ def convert_time(hhmm):
     return h + m / 60
 
 
+def scheduled_local_datetime(flight_date, hhmm):
+    """BTS 날짜와 HHMM을 결합하여 DST 판정에 사용할 실제 현지시각을 만듦."""
+    return pd.Timestamp(flight_date).normalize() + pd.to_timedelta(
+        convert_time(hhmm), unit="h"
+    )
+
+
 # UTC offset per airport (minutes, standard time). BTS CRS_DEP_TIME/CRS_ARR_TIME are each
 # airport's local time, so for connections between airports in different time zones, subtracting
 # dep_time directly yields a negative/bogus gap and masks out connections that are actually
@@ -178,7 +185,11 @@ def load_flights(path, limit=50, seed=42, n_days_max=None):
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
     # 공항별 현지시각을 UTC 절대시각으로 맞춰 서로 다른 시간대의 연결시간을 비교함.
     df["dep_time"] -= df.apply(
-        lambda row: utc_offset_hours(row["ORIGIN"], row["FL_DATE"]), axis=1
+        lambda row: utc_offset_hours(
+            row["ORIGIN"],
+            scheduled_local_datetime(row["FL_DATE"], row["CRS_DEP_TIME"]),
+        ),
+        axis=1,
     )
     # CRS_ELAPSED_TIME (minutes, block time) is timezone-independent -> adding it to dep_time
     # keeps arr_time on the same basis
@@ -294,7 +305,11 @@ def load_flights_rolling(
     df["dep_time"] = df["CRS_DEP_TIME"].apply(convert_time) + df["day_offset"] * 24
     # BTS 데이터는 항상 UTC 절대시각으로 맞춤. Turkish는 이 로더를 사용하지 않음.
     df["dep_time"] -= df.apply(
-        lambda row: utc_offset_hours(row["ORIGIN"], row["FL_DATE"]), axis=1
+        lambda row: utc_offset_hours(
+            row["ORIGIN"],
+            scheduled_local_datetime(row["FL_DATE"], row["CRS_DEP_TIME"]),
+        ),
+        axis=1,
     )
     df["arr_time"] = df["dep_time"] + df["CRS_ELAPSED_TIME"] / 60.0
 

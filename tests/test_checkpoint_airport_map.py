@@ -1,6 +1,9 @@
 import unittest
 
-from RL.loader import airport_map_hash, validate_airport_map, bases_to_ids
+from RL.loader import (
+    airport_map_hash, validate_airport_map, bases_to_ids,
+    scheduled_local_datetime, utc_offset_hours,
+)
 
 
 class CheckpointAirportMapTest(unittest.TestCase):
@@ -27,6 +30,12 @@ class CheckpointAirportMapTest(unittest.TestCase):
     def test_missing_configured_base_is_not_silently_dropped(self):
         with self.assertRaisesRegex(ValueError, "configured base"):
             bases_to_ids(["ATL", "LAX"], {"ATL": 0})
+
+    def test_dst_offset_uses_scheduled_departure_time(self):
+        before = scheduled_local_datetime("2019-03-10", 130)
+        after = scheduled_local_datetime("2019-03-10", 330)
+        self.assertEqual(utc_offset_hours("JFK", before), -5.0)
+        self.assertEqual(utc_offset_hours("JFK", after), -4.0)
 
 
 if __name__ == "__main__":
