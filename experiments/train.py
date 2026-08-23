@@ -140,28 +140,62 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
     total_legs_sum = 0
     n_zero_mask = 0
 
-    max_steps = len(flights) * 20  # 무한루프 방지 (flight당 최대 20 step)
+    max_steps = len(flights) * 100  # dead-end 재시작 반영해 여유있게
     step_count = 0
+    current_pairing_ids = []  # 현재(아직 EndPairing 안 된) pairing에 쓰인 flight id들
+    blocked_ids = set()  # 막혀서 버려진 flight id -- 이 episode 안에서는 다시 못 고름
+    # (reward pump 방지: assigned만 풀어주면 같은 flight를 다시 골라 LEG_PER_PAIRING_BONUS를
+    # 또 받을 수 있음. get_mask에는 assigned|blocked를 합쳐서 넘기고, coverage/reward
+    # 계산에 쓰는 진짜 assigned는 완성된 pairing만 반영하도록 분리함.)
     while True:
         step_count += 1
         if step_count > max_steps:
             raise RuntimeError(
                 f"training rollout max_steps 초과: steps={step_count}, flights={len(flights)}"
             )
-        mask_list = get_mask(state, flights, assigned, constraint)
+        mask_assigned = assigned if not blocked_ids else {
+            **assigned, **{fid: True for fid in blocked_ids}
+        }
+        mask_list = get_mask(state, flights, mask_assigned, constraint)
         mask = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
-        # 합법 action이 없으면 임의 위치 이동 없이 미커버 상태로 episode를 종료함.
+        # 합법 action이 없으면 -- base에서 다시 시작할 수 있는 미배정 flight가 남아있는 한
+        # episode 전체를 끝내지 않고, 막힌 (미완성) pairing만 버리고 base에서 재시작한다.
         no_flight     = sum(mask_list[:-2]) == 0
         no_end_duty   = mask_list[-2] == 0
         no_end_pairing = mask_list[-1] == 0
         if no_flight and no_end_duty and no_end_pairing:
-            unassigned = [f for f in flights if not assigned[f["id"]]]
+            # 막힌 pairing에 쓰인 flight는 완성된 게 아니므로 coverage/reward 계산에서
+            # 빠져야 하지만(다시 미배정), reward pump를 막기 위해 이 episode 안에서
+            # 다시 고르지는 못 하게 영구 차단한다.
+            blocked_ids.update(current_pairing_ids)
+            for fid in current_pairing_ids:
+                assigned[fid] = False
+            current_pairing_ids = []
+            unassigned = [f for f in flights if not assigned[f["id"]] and f["id"] not in blocked_ids]
             if not unassigned:
                 break
-            # CPP에서 합법 action이 없으면 relocation하지 않고 미커버 상태로 종료함.
             n_zero_mask += 1
-            break
+            base = constraint["base_airport"]
+            base_unassigned = [f for f in unassigned if f["origin"] == base]
+            if not base_unassigned or n_zero_mask > config.MAX_ZERO_MASK_RESTARTS:
+                break
+            next_time = min(f["dep_time"] for f in base_unassigned)
+            state = {
+                **state,
+                "current_airport":    base,
+                "current_time":       next_time,
+                "duty_time":          0.0,
+                "duty_start_time":    next_time,
+                "legs":               0,
+                "total_legs":         0,
+                "duty_period":        0,
+                "is_resting":         False,
+                "rest_end_time":      None,
+                "pairing_start":      True,
+                "pairing_start_time": next_time,
+            }
+            continue
 
         # decoder
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
@@ -190,6 +224,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
         if action == n_flights + 1:
             n_pairings += 1
             total_legs_sum += state.get("total_legs", 0)
+            current_pairing_ids = []  # pairing 완성됨 -- 다음 pairing부터 새로 추적
             state, r, done = step(state, action, flights, assigned, constraint)
             total_reward += r
             if done:
@@ -197,6 +232,7 @@ def run_episode(flights, constraint, encoder, decoder, encoded, greedy=False):
             continue
 
         # flight action
+        current_pairing_ids.append(flights[action]["id"])
         state, r, done = step(state, action, flights, assigned, constraint)
         total_reward += r
 
@@ -312,8 +348,9 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         "rest_end_time":      None,
     }
 
-    max_steps  = len(flights) * 20
+    max_steps  = len(flights) * 100  # dead-end 재시작 반영해 여유있게
     step_count = 0
+    zero_mask_restarts = 0
 
     while True:
         step_count += 1
@@ -326,8 +363,35 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         mask      = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
         if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
-            # 미복귀 partial pairing은 CPP column으로 저장하지 않음.
-            break
+            # 미복귀 partial pairing은 CPP column으로 저장하지 않음(버림). 다만 base에서
+            # 다시 시작할 미배정 flight가 남아있으면 rollout 전체를 끝내지 않고 이어감 --
+            # 그래야 pool이 첫 dead-end에서 끊기지 않고 여러 pairing을 계속 모을 수 있음.
+            zero_mask_restarts += 1
+            abandoned_ids = set(current_legs)
+            for fid in abandoned_ids:
+                assigned[fid] = False
+            unassigned = [f for f in flights if not assigned[f["id"]]]
+            base_unassigned = [f for f in base_start_candidates(unassigned) if f["id"] not in abandoned_ids]
+            if not base_unassigned or zero_mask_restarts > config.MAX_ZERO_MASK_RESTARTS:
+                break
+            next_first = sorted(base_unassigned, key=lambda f: f["dep_time"])[0]
+            assigned[next_first["id"]] = True
+            start_new(next_first)
+            state = {
+                "current_airport":    next_first["dest"],
+                "current_time":       next_first["arr_time"],
+                "duty_time":          next_first["arr_time"] - next_first["dep_time"],
+                "duty_start_time":    next_first["dep_time"],
+                "legs":               1,
+                "total_legs":         1,
+                "remaining":          sum(1 for v in assigned.values() if not v),
+                "pairing_start":      False,
+                "duty_period":        0,
+                "pairing_start_time": next_first["dep_time"],
+                "is_resting":         False,
+                "rest_end_time":      None,
+            }
+            continue
 
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         gap_bias  = flight_gap_bias(state, flights, constraint, device=DEVICE)
@@ -385,11 +449,13 @@ class _DualPoolCtx:
     pool은 salvage_doomed/base 회전이 없는 더 단순한 원본 로직을 그대로 따른다."""
 
     __slots__ = ("assigned", "current_legs", "pairing_dep", "pairing_fly",
-                "pairing_last_arr", "pairing_rest", "state", "pairings", "finished")
+                "pairing_last_arr", "pairing_rest", "state", "pairings", "finished",
+                "zero_mask_restarts")
 
     def __init__(self, flights):
         self.assigned = {f["id"]: False for f in flights}
         self.current_legs = []
+        self.zero_mask_restarts = 0
         self.pairing_dep = None
         self.pairing_fly = 0.0
         self.pairing_last_arr = 0.0
@@ -430,9 +496,10 @@ def _dual_pool_start_new(ctx, f):
     ctx.pairing_rest = 0.0
 
 
-def _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint):
+def _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint, exclude_ids=None):
     unassigned = [f for f in flights if not ctx.assigned[f["id"]]]
-    base_flights = [f for f in unassigned if f["origin"] == episode_base]
+    base_flights = [f for f in unassigned if f["origin"] == episode_base
+                    and (not exclude_ids or f["id"] not in exclude_ids)]
     return [f for f in base_flights if can_reach_any_base(
         constraint["_base_reaches"], f, f["dep_time"],
         constraint["max_pairing_days"], duty_period=0,
@@ -440,8 +507,8 @@ def _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint):
     )]
 
 
-def _dual_pool_begin(flights, ctx, episode_base, constraint):
-    base_flights = _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint)
+def _dual_pool_begin(flights, ctx, episode_base, constraint, exclude_ids=None):
+    base_flights = _dual_pool_base_start_candidates(flights, ctx, episode_base, constraint, exclude_ids)
     if not base_flights:
         return False
     first = sorted(base_flights, key=lambda f: f["dep_time"])[0]
@@ -480,7 +547,7 @@ def _rollout_batch_dual_pool(flights, constraint, encoder, decoder, encoded, B, 
             ctx.finished = True
 
     _incl_total = decoder.state_mlp[0].weight.shape[1] > 78
-    max_steps = len(flights) * 20
+    max_steps = len(flights) * 100  # dead-end 재시작 반영해 여유있게
     step_counts = [0] * B
     n_flights = len(flights)
 
@@ -501,9 +568,19 @@ def _rollout_batch_dual_pool(flights, constraint, encoder, decoder, encoded, B, 
                     "dual-pool batch rollout max_steps 초과: "
                     f"episode={i}, steps={step_counts[i]}, flights={len(flights)}"
                 )
-            # 합법 action이 없으면 임의 위치 이동 없이 미커버 상태로 종료함(run_episode()와 동일).
+            # 합법 action이 없으면 -- run_episode()/_rollout_with_pairings()와 동일하게,
+            # 막힌 pairing만 버리고(미배정으로 되돌리되 이번 재시작 후보에서는 제외)
+            # base에서 재시작함. 재시작 횟수는 MAX_ZERO_MASK_RESTARTS로 제한.
             if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
-                ctxs[i].finished = True
+                ctx = ctxs[i]
+                ctx.zero_mask_restarts += 1
+                abandoned_ids = set(ctx.current_legs)
+                for fid in abandoned_ids:
+                    ctx.assigned[fid] = False
+                ctx.current_legs = []
+                if (ctx.zero_mask_restarts > config.MAX_ZERO_MASK_RESTARTS
+                        or not _dual_pool_begin(flights, ctx, episode_base, constraint, abandoned_ids)):
+                    ctx.finished = True
                 continue
             decide_idx.append(i)
             decide_masks.append(mask_list)
@@ -599,8 +676,10 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     n_zero_mask    = 0
     base          = constraint["base_airport"]
 
-    max_steps  = len(flights) * 20
+    max_steps  = len(flights) * 100  # dead-end 재시작 반영해 여유있게
     step_count = 0
+    current_pairing_ids = []
+    blocked_ids = set()  # reward pump 방지 -- run_episode()와 동일한 이유
 
     while True:
         step_count += 1
@@ -609,19 +688,45 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
                 f"training rollout max_steps 초과: steps={step_count}, flights={len(flights)}"
             )
 
-        mask_list  = get_mask(state, flights, assigned, constraint)
+        mask_assigned = assigned if not blocked_ids else {
+            **assigned, **{fid: True for fid in blocked_ids}
+        }
+        mask_list  = get_mask(state, flights, mask_assigned, constraint)
         mask       = torch.tensor(mask_list, dtype=torch.float32).to(DEVICE)
 
         no_flight      = sum(mask_list[:-2]) == 0
         no_end_duty    = mask_list[-2] == 0
         no_end_pairing = mask_list[-1] == 0
         if no_flight and no_end_duty and no_end_pairing:
-            unassigned = [f for f in flights if not assigned[f["id"]]]
+            # dual 학습도 run_episode()와 동일: 막힌 pairing은 미배정으로 되돌리되
+            # reward pump 방지를 위해 이 episode 안에서는 영구 차단.
+            blocked_ids.update(current_pairing_ids)
+            for fid in current_pairing_ids:
+                assigned[fid] = False
+            current_pairing_ids = []
+            unassigned = [f for f in flights if not assigned[f["id"]] and f["id"] not in blocked_ids]
             if not unassigned:
                 break
-            # dual 학습도 동일한 CPP action space에서 미커버 상태로 종료함.
             n_zero_mask += 1
-            break
+            base_unassigned = [f for f in unassigned if f["origin"] == base]
+            if not base_unassigned or n_zero_mask > config.MAX_ZERO_MASK_RESTARTS:
+                break
+            next_time = min(f["dep_time"] for f in base_unassigned)
+            state = {
+                **state,
+                "current_airport":    base,
+                "current_time":       next_time,
+                "duty_time":          0.0,
+                "duty_start_time":    next_time,
+                "legs":               0,
+                "total_legs":         0,
+                "duty_period":        0,
+                "is_resting":         False,
+                "rest_end_time":      None,
+                "pairing_start":      True,
+                "pairing_start_time": next_time,
+            }
+            continue
 
         state_vec = state_to_vec(state, encoder, constraint, device=DEVICE)
         gap_bias  = flight_gap_bias(state, flights, constraint, device=DEVICE)
@@ -643,9 +748,10 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             total_reward += r
             continue
 
-        if action == n_flights + 1:     
+        if action == n_flights + 1:
             n_pairings += 1
             total_legs_sum += state.get("total_legs", 0)
+            current_pairing_ids = []
             state, r, done = step(state, action, flights, assigned, constraint)
             total_reward += r
             if done:
@@ -653,6 +759,7 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             continue
 
         flight_id = flights[action]["id"]
+        current_pairing_ids.append(flight_id)
         _dw = dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT  # w_dual(e)
         state, r, done = step(state, action, flights, assigned, constraint)
         _nu_exc = dh_dual_vars.get(flight_id, 0.0) if dh_dual_vars else 0.0
