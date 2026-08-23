@@ -108,7 +108,7 @@ def validate_airport_map(airport_map, n_airports=None):
     return normalized
 
 
-def bases_to_ids(bases, airport_map):
+def bases_to_ids(bases, airport_map, strict=True):
     """Convert a list of base code strings to integer IDs.
 
     Args:
@@ -118,10 +118,12 @@ def bases_to_ids(bases, airport_map):
     Returns:
         A list of integer IDs. Codes not present in airport_map are dropped with a warning.
     """
-    ids = [airport_map[b] for b in bases if b in airport_map]
     missing = [b for b in bases if b not in airport_map]
     if missing:
+        if strict:
+            raise ValueError(f"configured base가 airport_map에 없음: {missing}")
         print(f"[bases_to_ids] warning: bases not in airport_map were excluded: {missing}")
+    ids = [airport_map[b] for b in bases if b in airport_map]
     if not ids:
         raise ValueError(f"No valid bases found. bases={bases}")
     return ids

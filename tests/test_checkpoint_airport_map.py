@@ -1,6 +1,6 @@
 import unittest
 
-from RL.loader import airport_map_hash, validate_airport_map
+from RL.loader import airport_map_hash, validate_airport_map, bases_to_ids
 
 
 class CheckpointAirportMapTest(unittest.TestCase):
@@ -23,6 +23,10 @@ class CheckpointAirportMapTest(unittest.TestCase):
             validate_airport_map({"ATL": "0", "LAX": "1"}, n_airports=2),
             {"ATL": 0, "LAX": 1},
         )
+
+    def test_missing_configured_base_is_not_silently_dropped(self):
+        with self.assertRaisesRegex(ValueError, "configured base"):
+            bases_to_ids(["ATL", "LAX"], {"ATL": 0})
 
 
 if __name__ == "__main__":

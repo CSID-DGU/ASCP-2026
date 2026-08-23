@@ -397,7 +397,9 @@ def collect_pool_full(windows, base_ids, constraint, encoder, decoder,
                 if candidates:
                     inject = min(candidates,
                                  key=lambda f: abs(f["dep_time"] - chunk[0]["dep_time"]))
-                    new_chunk = sorted([{**inject}] + list(chunk[:-1]),
+                    # base flight를 보조 context로 추가하되 기존 flight를 제거하지 않음.
+                    # 크기 제한보다 전체 flight universe 보존이 우선임.
+                    new_chunk = sorted([{**inject}] + list(chunk),
                                        key=lambda f: f["dep_time"])
                     chunks[c_idx] = new_chunk
 
