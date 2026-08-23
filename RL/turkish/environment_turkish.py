@@ -243,18 +243,16 @@ def get_mask_batch(states, flights, assigneds, constraint=None, stage=3):
         dep_t.unsqueeze(0).expand(B, N),
         pairing_start_time_b.unsqueeze(1).expand(B, N),
     )
-    cond5 = torch.zeros(B, N, dtype=torch.bool)
-    for reach in base_reaches.values():
-        reach_time_t = torch.tensor(
-            [reach["time"].get(fid, INF) for fid in flight_ids], dtype=torch.float64
-        )
-        reach_duty_t = torch.tensor(
-            [reach["duty_crossings"].get(fid, INF) for fid in flight_ids], dtype=torch.float64
-        )
-        has_reach = (reach_time_t != INF).unsqueeze(0)  # (1, N)
-        time_ok = ((arr_t.unsqueeze(0) + reach_time_t.unsqueeze(0) - ps_time) / 24.0) <= max_pd
-        duty_ok = (duty_period_b.unsqueeze(1) + reach_duty_t.unsqueeze(0)) <= max_duty_periods
-        cond5 = cond5 | (has_reach & time_ok & duty_ok)
+    cond5 = torch.tensor([
+        [can_reach_any_base(
+            base_reaches, f,
+            f["dep_time"] if states[b].get("pairing_start", False)
+            else states[b].get("pairing_start_time", states[b]["current_time"]),
+            max_pd, duty_period=states[b].get("duty_period", 0),
+            max_duty_periods=max_duty_periods,
+        ) for f in flights]
+        for b in range(B)
+    ], dtype=torch.bool)
 
     valid = cond1 & cond2 & cond3a & cond3b & cond4 & cond5
     mask_flights = valid & (~assigned_b)  # (B, N)

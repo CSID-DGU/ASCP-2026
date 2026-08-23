@@ -23,6 +23,17 @@
 INF = float("inf")
 
 
+def _pareto_labels(labels):
+    """시간과 duty crossing을 동시에 지배당하지 않는 label만 유지함."""
+    kept = []
+    best_crossings = INF
+    for elapsed, crossings in sorted(set(labels)):
+        if crossings < best_crossings:
+            kept.append((elapsed, crossings))
+            best_crossings = crossings
+    return kept
+
+
 def build_base_reach(flights, base_ap, constraint):
     """Compute two lower bounds on the cost of returning to base_ap from each flight's arrival point.
 
@@ -70,37 +81,31 @@ def build_base_reach(flights, base_ap, constraint):
     for f in flights:
         by_origin.setdefault(f["origin"], []).append(f)
 
-    D, C = {}, {}
+    labels = {}
     for f in sorted(flights, key=lambda x: -x["dep_time"]):
         if f["dest"] == base_ap:
-            D[f["id"]], C[f["id"]] = 0.0, 0
+            labels[f["id"]] = [(0.0, 0)]
             continue
 
-        best_t, best_c = INF, INF
+        candidates = []
         arr = f["arr_time"]
         for g in by_origin.get(f["dest"], ()):
             gap = g["dep_time"] - arr
             if gap < min_conn:
                 continue
-            # A gap that exceeds max_conn but is still below min_rest is
-            # legal neither as a same-duty connection nor as rest, so this
-            # connection must be excluded from the bound entirely -- otherwise
-            # duty_crossings would optimistically treat an infeasible path as feasible.
             if gap > max_conn and gap < min_rest:
                 continue
-            d_next = D.get(g["id"])
-            if d_next is None or d_next == INF:
-                continue
-            cand_t = gap + (g["arr_time"] - g["dep_time"]) + d_next
-            if cand_t < best_t:
-                best_t = cand_t
-            c_next = C[g["id"]]
-            cand_c = c_next + (1 if gap > max_conn else 0)
-            if cand_c < best_c:
-                best_c = cand_c
-        D[f["id"]], C[f["id"]] = best_t, best_c
+            crossing = 1 if gap > max_conn else 0
+            for next_time, next_crossings in labels.get(g["id"], ()):
+                candidates.append((
+                    gap + (g["arr_time"] - g["dep_time"]) + next_time,
+                    crossing + next_crossings,
+                ))
+        labels[f["id"]] = _pareto_labels(candidates)
 
-    return {"time": D, "duty_crossings": C}
+    D = {fid: min((t for t, _ in values), default=INF) for fid, values in labels.items()}
+    C = {fid: min((c for _, c in values), default=INF) for fid, values in labels.items()}
+    return {"time": D, "duty_crossings": C, "labels": labels}
 
 
 def can_reach_base(reach, flight, pairing_start_time, max_pairing_days,
@@ -119,6 +124,15 @@ def can_reach_base(reach, flight, pairing_start_time, max_pairing_days,
     if reach is None:
         return True
     fid = flight["id"]
+    labels = reach.get("labels", {}).get(fid)
+    if labels is not None:
+        return any(
+            (flight["arr_time"] + elapsed - pairing_start_time) / 24.0 <= max_pairing_days
+            and (duty_period is None or max_duty_periods is None
+                 or duty_period + crossings <= max_duty_periods)
+            for elapsed, crossings in labels
+        )
+
     d = reach["time"].get(fid, INF)
     if d == INF:
         return False

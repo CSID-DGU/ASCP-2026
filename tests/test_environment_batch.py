@@ -17,7 +17,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
 from environment import get_mask, get_mask_batch  # noqa: E402
-from base_reach import build_base_reach  # noqa: E402
+from base_reach import build_base_reach, can_reach_base  # noqa: E402
 
 
 BASE, A, C = 0, 1, 2
@@ -105,6 +105,21 @@ class GetMaskBatchEquivalenceTests(unittest.TestCase):
         constraint = _make_constraint(max_duty=13.0)
         actual = get_mask_batch([], FLIGHTS, [], constraint, stage=3)
         self.assertEqual(actual, [])
+
+
+class JointReachabilityTests(unittest.TestCase):
+    def test_time_and_duty_bounds_must_come_from_same_path(self):
+        flights = [
+            {"id": 0, "origin": 9, "dest": 1, "dep_time": 0.0, "arr_time": 1.0},
+            {"id": 1, "origin": 1, "dest": 0, "dep_time": 11.0, "arr_time": 12.0},
+            {"id": 2, "origin": 1, "dest": 2, "dep_time": 2.0, "arr_time": 7.0},
+            {"id": 3, "origin": 2, "dest": 0, "dep_time": 8.0, "arr_time": 13.0},
+        ]
+        constraint = {"min_conn": 0.5, "max_conn": 2.0, "min_rest": 10.0}
+        reach = build_base_reach(flights, 0, constraint)
+        self.assertFalse(can_reach_base(
+            reach, flights[0], 0.0, 0.52, duty_period=0, max_duty_periods=0
+        ))
 
 
 if __name__ == "__main__":
