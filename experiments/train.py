@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "RL"))
 import torch
 import torch.optim as optim
+from collections import defaultdict
 from torch.distributions import Categorical
 import wandb
 
@@ -84,6 +85,24 @@ def _is_better_checkpoint(coverage_pct, avg_pairings, best_coverage_pct, best_av
             and avg_pairings < best_avg_pairings
         )
     )
+
+
+def _airline_selection_score(histories, expected_airlines, window=25):
+    """모든 항공사의 최근 성능에서 worst coverage와 평균 pairing을 계산함."""
+    if any(len(histories.get(a, [])) < window for a in expected_airlines):
+        return None
+    per_airline = {
+        airline: {
+            "coverage_pct": sum(v["coverage_pct"] for v in histories[airline][-window:]) / window,
+            "avg_pairings": sum(v["n_pairings"] for v in histories[airline][-window:]) / window,
+        }
+        for airline in expected_airlines
+    }
+    return {
+        "coverage_pct": min(v["coverage_pct"] for v in per_airline.values()),
+        "avg_pairings": sum(v["avg_pairings"] for v in per_airline.values()) / len(per_airline),
+        "per_airline": per_airline,
+    }
 
 
 def _prepare_cpp_constraint(flights, constraint):
@@ -671,6 +690,8 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
     best_coverage_pct = -1.0
     greedy_pairings   = []
     greedy_coverages  = []
+    airline_histories = defaultdict(list)
+    expected_airlines = tuple((checkpoint_metadata or {}).get("airlines") or [config.AIRLINE])
     dual_vars         = {}
     dh_dual_vars      = {}
     lp_value          = None
@@ -732,6 +753,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
 
         greedy_pairings.append(metrics_g["n_pairings"])
         greedy_coverages.append(metrics_g["coverage_pct"])
+        airline_histories[sampled_airline].append(metrics_g)
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
         entropy_coef = max(entropy_start * (1.0 - ep / n_episodes), entropy_end)
@@ -747,12 +769,14 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
 
         avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
         coverage25 = sum(greedy_coverages[-25:]) / min(len(greedy_coverages), 25)
+        selection_score = _airline_selection_score(airline_histories, expected_airlines)
 
-        if len(greedy_pairings) >= 25 and _is_better_checkpoint(
-            coverage25, avg25, best_coverage_pct, best_avg_pairings
+        if selection_score is not None and _is_better_checkpoint(
+            selection_score["coverage_pct"], selection_score["avg_pairings"],
+            best_coverage_pct, best_avg_pairings,
         ):
-            best_avg_pairings = avg25
-            best_coverage_pct = coverage25
+            best_avg_pairings = selection_score["avg_pairings"]
+            best_coverage_pct = selection_score["coverage_pct"]
             ckpt_path = os.path.join(save_dir, "phase2_best.pt")
             torch.save({
                 "encoder":           encoder.state_dict(),
@@ -761,6 +785,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 "episode":           ep,
                 "best_avg_pairings": best_avg_pairings,
                 "best_coverage_pct": best_coverage_pct,
+                "best_per_airline": selection_score["per_airline"],
                 "time_basis":        "turkish_native" if config.AIRLINE == "turkish" else "utc",
                 **(checkpoint_metadata or {}),
             }, ckpt_path)
@@ -813,6 +838,8 @@ def run_curriculum_stage(
     best_coverage_pct = -1.0
     greedy_pairings = []
     greedy_coverages = []
+    airline_histories = defaultdict(list)
+    expected_airlines = tuple((checkpoint_metadata or {}).get("airlines") or [config.AIRLINE])
 
     print(f"\n{'='*60}")
     print(f"Curriculum Stage {stage}: max_duty_periods={constraint_override['max_duty_periods']}, "
@@ -870,6 +897,7 @@ def run_curriculum_stage(
 
         greedy_pairings.append(metrics_g["n_pairings"])
         greedy_coverages.append(metrics_g["coverage_pct"])
+        airline_histories[sampled_airline].append(metrics_g)
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
         entropy_coef = max(entropy_start * (1.0 - ep / n_episodes), entropy_end)
@@ -885,13 +913,15 @@ def run_curriculum_stage(
 
         avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
         coverage25 = sum(greedy_coverages[-25:]) / min(len(greedy_coverages), 25)
+        selection_score = _airline_selection_score(airline_histories, expected_airlines)
 
-        if len(greedy_pairings) >= 25:
+        if selection_score is not None:
             if _is_better_checkpoint(
-                coverage25, avg25, best_coverage_pct, best_avg_pairings
+                selection_score["coverage_pct"], selection_score["avg_pairings"],
+                best_coverage_pct, best_avg_pairings,
             ):
-                best_avg_pairings = avg25
-                best_coverage_pct = coverage25
+                best_avg_pairings = selection_score["avg_pairings"]
+                best_coverage_pct = selection_score["coverage_pct"]
                 ckpt_path = os.path.join(save_dir, f"stage{stage}_best.pt")
                 torch.save({
                     "encoder":           encoder.state_dict(),
@@ -900,6 +930,7 @@ def run_curriculum_stage(
                     "episode":           ep,
                     "best_avg_pairings": best_avg_pairings,
                     "best_coverage_pct": best_coverage_pct,
+                    "best_per_airline": selection_score["per_airline"],
                     "time_basis":        "turkish_native" if config.AIRLINE == "turkish" else "utc",
                     **(checkpoint_metadata or {}),
                 }, ckpt_path)
