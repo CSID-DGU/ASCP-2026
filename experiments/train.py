@@ -75,6 +75,17 @@ def _set_device(device_str: str):
     DEVICE = torch.device(device_str)
 
 
+def _is_better_checkpoint(coverage_pct, avg_pairings, best_coverage_pct, best_avg_pairings):
+    """CPP 목적 순서대로 coverage를 먼저, pairing 수를 그다음 비교함."""
+    return (
+        coverage_pct > best_coverage_pct + 1e-9
+        or (
+            abs(coverage_pct - best_coverage_pct) <= 1e-9
+            and avg_pairings < best_avg_pairings
+        )
+    )
+
+
 def _prepare_cpp_constraint(flights, constraint):
     """일반 base 또는 Turkish HB1/HB2 집합에 대한 reachability를 구성함."""
     c = dict(constraint)
@@ -657,7 +668,9 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
     best_avg_pairings = init_best
+    best_coverage_pct = -1.0
     greedy_pairings   = []
+    greedy_coverages  = []
     dual_vars         = {}
     dh_dual_vars      = {}
     lp_value          = None
@@ -718,6 +731,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             )
 
         greedy_pairings.append(metrics_g["n_pairings"])
+        greedy_coverages.append(metrics_g["coverage_pct"])
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
         entropy_coef = max(entropy_start * (1.0 - ep / n_episodes), entropy_end)
@@ -732,9 +746,13 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         optimizer.step()
 
         avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
+        coverage25 = sum(greedy_coverages[-25:]) / min(len(greedy_coverages), 25)
 
-        if len(greedy_pairings) >= 25 and avg25 < best_avg_pairings:
+        if len(greedy_pairings) >= 25 and _is_better_checkpoint(
+            coverage25, avg25, best_coverage_pct, best_avg_pairings
+        ):
             best_avg_pairings = avg25
+            best_coverage_pct = coverage25
             ckpt_path = os.path.join(save_dir, "phase2_best.pt")
             torch.save({
                 "encoder":           encoder.state_dict(),
@@ -742,6 +760,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 "stage":             "phase2",
                 "episode":           ep,
                 "best_avg_pairings": best_avg_pairings,
+                "best_coverage_pct": best_coverage_pct,
                 "time_basis":        "turkish_native" if config.AIRLINE == "turkish" else "utc",
                 **(checkpoint_metadata or {}),
             }, ckpt_path)
@@ -791,7 +810,9 @@ def run_curriculum_stage(
     checkpoint_metadata=None,
 ):
     best_avg_pairings = float("inf")
+    best_coverage_pct = -1.0
     greedy_pairings = []
+    greedy_coverages = []
 
     print(f"\n{'='*60}")
     print(f"Curriculum Stage {stage}: max_duty_periods={constraint_override['max_duty_periods']}, "
@@ -848,6 +869,7 @@ def run_curriculum_stage(
             )
 
         greedy_pairings.append(metrics_g["n_pairings"])
+        greedy_coverages.append(metrics_g["coverage_pct"])
         advantage = (reward_s - reward_g) / (abs(reward_g) + 1e-6)
 
         entropy_coef = max(entropy_start * (1.0 - ep / n_episodes), entropy_end)
@@ -862,10 +884,14 @@ def run_curriculum_stage(
         optimizer.step()
 
         avg25 = sum(greedy_pairings[-25:]) / min(len(greedy_pairings), 25)
+        coverage25 = sum(greedy_coverages[-25:]) / min(len(greedy_coverages), 25)
 
         if len(greedy_pairings) >= 25:
-            if avg25 < best_avg_pairings:
+            if _is_better_checkpoint(
+                coverage25, avg25, best_coverage_pct, best_avg_pairings
+            ):
                 best_avg_pairings = avg25
+                best_coverage_pct = coverage25
                 ckpt_path = os.path.join(save_dir, f"stage{stage}_best.pt")
                 torch.save({
                     "encoder":           encoder.state_dict(),
@@ -873,6 +899,7 @@ def run_curriculum_stage(
                     "stage":             stage,
                     "episode":           ep,
                     "best_avg_pairings": best_avg_pairings,
+                    "best_coverage_pct": best_coverage_pct,
                     "time_basis":        "turkish_native" if config.AIRLINE == "turkish" else "utc",
                     **(checkpoint_metadata or {}),
                 }, ckpt_path)
@@ -1335,15 +1362,23 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
     # 여부가 아니라 avg_pairings 값 자체를 직접 비교해야 함(존재 여부만 보면 항상 phase2가
     # 선택돼버려 이 로직이 무력화됨).
     _phase2_ckpt_path = os.path.join(save_dir, "phase2_best.pt")
-    if os.path.exists(_phase2_ckpt_path) and _p2_best < _s3_best:
+    _phase2_wins = False
+    if os.path.exists(_phase2_ckpt_path):
         _phase2_ckpt = torch.load(_phase2_ckpt_path, map_location=DEVICE, weights_only=True)
+        _phase2_wins = _is_better_checkpoint(
+            float(_phase2_ckpt.get("best_coverage_pct", -1.0)),
+            float(_phase2_ckpt.get("best_avg_pairings", float("inf"))),
+            float(_film_ckpt.get("best_coverage_pct", -1.0)),
+            float(_film_ckpt.get("best_avg_pairings", float("inf"))),
+        )
+    if _phase2_wins:
         encoder.load_state_dict(_phase2_ckpt["encoder"])
         decoder.load_state_dict(_phase2_ckpt["decoder"])
-        print(f"최종 모델: phase2_best.pt 사용 (avg_pairings={_p2_best:.1f} < stage3 {_s3_best:.1f})")
+        print("최종 모델: legal coverage 우선 비교에서 phase2_best.pt 사용")
     else:
         encoder.load_state_dict(_film_ckpt["encoder"])
         decoder.load_state_dict(_film_ckpt["decoder"])
-        print(f"최종 모델: stage3_best.pt 사용 (Phase 2 {_p2_best:.1f}가 {_s3_best:.1f} 기록을 못 넘김)")
+        print("최종 모델: legal coverage 우선 비교에서 stage3_best.pt 사용")
 
     # ── 최종 모델 저장 ────────────────────────────────────────────────
     torch.save({
