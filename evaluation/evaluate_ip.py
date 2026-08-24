@@ -582,7 +582,8 @@ def validate_rescue_columns_current_run(rescue_columns, flights_by_id, constrain
 def solve_pool_completion(
     pool, n_total, *, lambda_excess=1.0, time_limit=300,
     reposition_penalty=None, reserve_penalty=None,
-    artificial_penalty=None, report_path=None, rescue_columns=None, verbose=False,
+    artificial_penalty=None, report_path=None, rescue_columns=None,
+    auto_operational=False, verbose=False,
 ):
     """수집된 pool을 V2 단계별 master로 풀고 legacy 출력 호환 필드를 추가함."""
     if rescue_columns:
@@ -591,6 +592,7 @@ def solve_pool_completion(
         pool, range(n_total), lambda_excess=lambda_excess,
         time_limit=time_limit, reposition_penalty=reposition_penalty,
         reserve_penalty=reserve_penalty, artificial_penalty=artificial_penalty,
+        auto_operational=auto_operational,
         verbose=verbose,
     )
     report = build_completion_report(stages, range(n_total))
@@ -732,6 +734,7 @@ def evaluate_full(
     completion_report_path=None,
     rescue_pool_path=None,
     auto_rescue=True,
+    auto_operational=False,
     reposition_penalty=None,
     reserve_penalty=None,
     artificial_penalty=None,
@@ -1053,6 +1056,7 @@ def evaluate_full(
             pool, n_total, lambda_excess=lambda_dh, time_limit=ip_time_limit,
             reposition_penalty=reposition_penalty, reserve_penalty=reserve_penalty,
             artificial_penalty=artificial_penalty,
+            auto_operational=auto_operational,
             report_path=completion_report_path, rescue_columns=rescue_columns, verbose=True,
         )
         print(render_completion_table(result["completion_report"]), flush=True)
@@ -1249,6 +1253,8 @@ if __name__ == "__main__":
     parser.add_argument("--no-auto-rescue", action="store_false", dest="auto_rescue",
                         help="--full-flight-master에서 rescue candidate 자동 생성 비활성화 "
                              "(--rescue-pool-path 미지정 시 기본은 자동 생성)")
+    parser.add_argument("--auto-operational", action="store_true",
+                        help="실제 eligibility 입력이 없을 때 미커버 flight 전체를 reposition/reserve 가능하다고 보는 proxy를 명시적으로 활성화")
     parser.add_argument("--completion-report-path", default=None,
                         help="V2 completion JSON 저장 경로")
     parser.add_argument("--reposition-penalty", type=float, default=None)
@@ -1306,6 +1312,7 @@ if __name__ == "__main__":
         completion_report_path=args.completion_report_path,
         rescue_pool_path=args.rescue_pool_path,
         auto_rescue=args.auto_rescue,
+        auto_operational=args.auto_operational,
         reposition_penalty=args.reposition_penalty,
         reserve_penalty=args.reserve_penalty,
         artificial_penalty=args.artificial_penalty,

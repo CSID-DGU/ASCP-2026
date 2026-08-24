@@ -16,27 +16,37 @@ class EvaluateIpCompletionTests(unittest.TestCase):
         result = solve_pool_completion(pool, 2, artificial_penalty=100)
         self.assertEqual(result["coverage"], 0.5)
         self.assertEqual(result["completion_coverage"], 1.0)
-        # flight 1은 policy/salvage/rescue 후보가 없어 operational 단계에서
-        # reposition/reserve 대상으로 자동 채워짐(completion_runner.py 수정) --
-        # reposition(Cmax*2)이 artificial(100)보다 훨씬 싸서 reposition으로 해결됨.
-        self.assertEqual(result["reposition_flight_ids"], [1])
-        self.assertEqual(result["artificial_flight_ids"], [])
+        self.assertEqual(result["reposition_flight_ids"], [])
+        self.assertEqual(result["artificial_flight_ids"], [1])
         self.assertEqual(result["uncoverable"], 0)
         self.assertEqual(result["mip_obj"], result["mip_objective"])
         operational = result["completion_report"]["stages"][3]
+        self.assertFalse(operational["operational_stage_has_inputs"])
+        self.assertTrue(operational["solve_reused"])
+
+    def test_auto_operational_is_explicit_opt_in(self):
+        pool = [{
+            "column_id": "policy-0", "legs": [0], "cost": 2.0,
+            "source_type": "policy", "is_legal": True,
+        }]
+        result = solve_pool_completion(
+            pool, 2, artificial_penalty=100, auto_operational=True,
+        )
+        self.assertEqual(result["reposition_flight_ids"], [1])
+        self.assertEqual(result["artificial_flight_ids"], [])
+        operational = result["completion_report"]["stages"][3]
         self.assertTrue(operational["operational_stage_has_inputs"])
+        self.assertTrue(operational["auto_operational"])
 
     def test_report_is_saved_under_requested_result_path(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result" / "completion.json"
             solve_pool_completion([], 2, artificial_penalty=7, report_path=output)
             loaded = json.loads(output.read_text(encoding="utf-8"))
-        # pool이 비어 두 flight 다 policy/salvage/rescue 후보가 없음 -> operational
-        # 단계에서 reposition/reserve 대상으로 자동 채워짐. reposition(Cmax*2=2.0)이
-        # artificial(7)보다 싸서 reposition으로 해결되고 artificial_count=0이 됨.
         operational = loaded["stages"][3]
-        self.assertEqual(operational["reposition_flight_ids"], [0, 1])
-        self.assertEqual(loaded["artificial_count"], 0)
+        self.assertFalse(operational["operational_stage_has_inputs"])
+        self.assertTrue(operational["solve_reused"])
+        self.assertEqual(loaded["artificial_count"], 2)
         self.assertEqual(loaded["completion_coverage"], 1.0)
 
 

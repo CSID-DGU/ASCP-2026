@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Dict, Iterable, List, Sequence
 
 from evaluation.full_flight_master import FullFlightInputError, calibrate_completion_penalties, solve_full_flight_master, validate_master_inputs
@@ -55,11 +56,16 @@ def solve_completion_stages(
     universe_set = set(universe)
     calibrated = calibrate_completion_penalties(columns)
     options = dict(master_options)
+    # 실제 운항 eligibility 자료가 없는 실행에서 모든 미커버 flight를 임의로
+    # reposition/reserve 가능하다고 간주하지 않음. 명시적 opt-in일 때만 proxy 사용.
+    auto_operational = bool(options.pop("auto_operational", False))
     for key, value in calibrated.items():
         if options.get(key) is None:
             options[key] = value
     results = []
     previous_candidate_covered = set()
+    previous_solve_signature = None
+    previous_solve_result = None
 
     for stage_name, sources, allow_reposition, allow_reserve, allow_artificial in STAGES:
         stage_columns = [column for column in columns if column.get("source_type") in sources]
@@ -72,27 +78,39 @@ def solve_completion_stages(
         previous_candidate_covered = candidate_covered
         candidate_uncovered = universe_set - candidate_covered
 
-        # allow_reposition/allow_reserve만 켜져 있고 reposition_flight_ids/
-        # reserve_flight_ids를 호출자가 안 넘겨주면 solve_full_flight_master()가
-        # 대상 집합을 빈 set으로 봐서 reposition/reserve 변수를 하나도 안 만듦
-        # (operational 단계가 사실상 rescue 단계와 동일한 결과만 냄). 이 stage의
-        # 후보 pairing만으로 못 덮는 flight(candidate_uncovered)를 기본 대상으로
-        # 자동 채워서, 호출자가 명시적으로 override하지 않는 한 operational/artificial
-        # 단계가 실제로 동작하게 함.
+        # 실제 eligibility 입력이 있거나 proxy 사용을 명시한 경우에만 operational
+        # 변수를 엶. 기본 실행에서는 남은 flight를 artificial로 투명하게 보고함.
         stage_options = dict(options)
-        if allow_reposition and stage_options.get("reposition_flight_ids") is None:
+        if auto_operational and allow_reposition and stage_options.get("reposition_flight_ids") is None:
             stage_options["reposition_flight_ids"] = sorted(candidate_uncovered)
-        if allow_reserve and stage_options.get("reserve_flight_ids") is None:
+        if auto_operational and allow_reserve and stage_options.get("reserve_flight_ids") is None:
             stage_options["reserve_flight_ids"] = sorted(candidate_uncovered)
 
-        result = solve_full_flight_master(
-            stage_columns,
-            universe,
-            allow_reposition=allow_reposition,
-            allow_reserve=allow_reserve,
-            allow_artificial=allow_artificial,
-            **stage_options,
+        reposition_targets = tuple(sorted(stage_options.get("reposition_flight_ids") or ()))
+        reserve_targets = tuple(sorted(stage_options.get("reserve_flight_ids") or ()))
+        solve_signature = (
+            tuple(column.get("column_id") for column in stage_columns),
+            reposition_targets if allow_reposition else (),
+            reserve_targets if allow_reserve else (),
+            bool(allow_artificial),
         )
+        if solve_signature == previous_solve_signature:
+            result = deepcopy(previous_solve_result)
+            result["solve_reused"] = True
+            result["reused_from_stage"] = results[-1]["stage"]
+        else:
+            result = solve_full_flight_master(
+                stage_columns,
+                universe,
+                allow_reposition=allow_reposition,
+                allow_reserve=allow_reserve,
+                allow_artificial=allow_artificial,
+                **stage_options,
+            )
+            result["solve_reused"] = False
+            result["reused_from_stage"] = None
+            previous_solve_signature = solve_signature
+            previous_solve_result = deepcopy(result)
         result["stage"] = stage_name
         result["allowed_sources"] = sorted(sources)
         result["candidate_covered_flight_ids"] = sorted(candidate_covered)
@@ -108,6 +126,7 @@ def solve_completion_stages(
                 or stage_options.get("reserve_flight_ids")
             )
         )
+        result["auto_operational"] = auto_operational
         results.append(result)
 
     return results
