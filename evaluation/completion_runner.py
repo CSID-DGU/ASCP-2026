@@ -70,6 +70,20 @@ def solve_completion_stages(
         if not previous_candidate_covered.issubset(candidate_covered):
             raise RuntimeError("누적 stage candidate coverage가 감소함")
         previous_candidate_covered = candidate_covered
+        candidate_uncovered = universe_set - candidate_covered
+
+        # allow_reposition/allow_reserve만 켜져 있고 reposition_flight_ids/
+        # reserve_flight_ids를 호출자가 안 넘겨주면 solve_full_flight_master()가
+        # 대상 집합을 빈 set으로 봐서 reposition/reserve 변수를 하나도 안 만듦
+        # (operational 단계가 사실상 rescue 단계와 동일한 결과만 냄). 이 stage의
+        # 후보 pairing만으로 못 덮는 flight(candidate_uncovered)를 기본 대상으로
+        # 자동 채워서, 호출자가 명시적으로 override하지 않는 한 operational/artificial
+        # 단계가 실제로 동작하게 함.
+        stage_options = dict(options)
+        if allow_reposition and stage_options.get("reposition_flight_ids") is None:
+            stage_options["reposition_flight_ids"] = sorted(candidate_uncovered)
+        if allow_reserve and stage_options.get("reserve_flight_ids") is None:
+            stage_options["reserve_flight_ids"] = sorted(candidate_uncovered)
 
         result = solve_full_flight_master(
             stage_columns,
@@ -77,12 +91,12 @@ def solve_completion_stages(
             allow_reposition=allow_reposition,
             allow_reserve=allow_reserve,
             allow_artificial=allow_artificial,
-            **options,
+            **stage_options,
         )
         result["stage"] = stage_name
         result["allowed_sources"] = sorted(sources)
         result["candidate_covered_flight_ids"] = sorted(candidate_covered)
-        result["candidate_uncovered_flight_ids"] = sorted(universe_set - candidate_covered)
+        result["candidate_uncovered_flight_ids"] = sorted(candidate_uncovered)
         result["candidate_coverage"] = (
             len(candidate_covered) / len(universe) if universe else 1.0
         )
@@ -90,8 +104,8 @@ def solve_completion_stages(
             stage_name == "operational"
             and (
                 any(c.get("source_type") in {"reposition", "reserve"} for c in stage_columns)
-                or options.get("reposition_flight_ids")
-                or options.get("reserve_flight_ids")
+                or stage_options.get("reposition_flight_ids")
+                or stage_options.get("reserve_flight_ids")
             )
         )
         results.append(result)
