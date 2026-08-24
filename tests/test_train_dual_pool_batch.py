@@ -39,6 +39,29 @@ class Phase2DualNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(signal, {0: 1.0, 1: 0.25})
 
+    def test_zero_keeps_universe_and_removes_signal(self):
+        signal = train.normalize_phase2_dual_signal(
+            {0: 10.0, 1: 20.0}, {0: 1.0}, mode="zero"
+        )
+        self.assertEqual(signal, {0: 0.0, 1: 0.0})
+
+    def test_uncovered_only_marks_only_artificial_flights(self):
+        signal = train.normalize_phase2_dual_signal(
+            {0: 10.0, 1: 20.0, 2: 30.0}, mode="uncovered-only",
+            uncovered_flight_ids=[1],
+        )
+        self.assertEqual(signal, {0: 0.0, 1: 1.0, 2: 0.0})
+
+    def test_shuffled_preserves_values_but_changes_mapping(self):
+        real = train.normalize_phase2_dual_signal(
+            {0: 10.0, 1: 5.0, 2: 1.0}, mode="real"
+        )
+        shuffled = train.normalize_phase2_dual_signal(
+            {0: 10.0, 1: 5.0, 2: 1.0}, mode="shuffled", shuffle_seed=1
+        )
+        self.assertEqual(sorted(real.values()), sorted(shuffled.values()))
+        self.assertNotEqual(real, shuffled)
+
 
 class _DummyLayer:
     weight = torch.zeros((1, 78))

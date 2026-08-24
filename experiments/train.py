@@ -832,12 +832,24 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     }
 
 
-def normalize_phase2_dual_signal(coverage_duals, excess_duals=None, mode="net"):
-    """LP 비용 단위와 무관하게 Phase 2 reward에 넣을 dual을 [-1, 1]로 맞춤."""
+def normalize_phase2_dual_signal(
+    coverage_duals, excess_duals=None, mode="real",
+    uncovered_flight_ids=None, shuffle_seed=0,
+):
+    """Phase2 ablation별 flight 신호를 만들고 [-1, 1] 범위로 맞춤."""
     excess_duals = excess_duals or {}
-    if mode == "coverage_only":
+    mode = {"net": "real", "coverage_only": "coverage-only"}.get(mode, mode)
+    if mode == "zero":
+        return {flight_id: 0.0 for flight_id in coverage_duals}
+    if mode == "uncovered-only":
+        uncovered = set(uncovered_flight_ids or ())
+        return {
+            flight_id: 1.0 if flight_id in uncovered else 0.0
+            for flight_id in coverage_duals
+        }
+    if mode == "coverage-only":
         raw = {flight_id: float(value) for flight_id, value in coverage_duals.items()}
-    elif mode == "net":
+    elif mode in ("real", "shuffled"):
         raw = {
             flight_id: float(value) - float(excess_duals.get(flight_id, 0.0))
             for flight_id, value in coverage_duals.items()
@@ -845,17 +857,24 @@ def normalize_phase2_dual_signal(coverage_duals, excess_duals=None, mode="net"):
     else:
         raise ValueError(f"지원하지 않는 Phase 2 dual mode: {mode}")
     scale = max([abs(value) for value in raw.values()] + [1.0])
-    return {flight_id: max(-1.0, min(1.0, value / scale)) for flight_id, value in raw.items()}
+    normalized = {
+        flight_id: max(-1.0, min(1.0, value / scale))
+        for flight_id, value in raw.items()
+    }
+    if mode == "shuffled":
+        keys = sorted(normalized)
+        values = [normalized[key] for key in keys]
+        random.Random(shuffle_seed).shuffle(values)
+        normalized = dict(zip(keys, values))
+    return normalized
 
 
 def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, flight_sampler,
                global_step_offset=0, entropy_start=0.01, entropy_end=0.005,
                constraint_sampler=None, init_best=float("inf"), dual_weight_override=None,
-               dual_mode="net", checkpoint_metadata=None):
-    # dual_mode: "net"(기본, 기존 동작) = π^cov - ν^exc를 그대로 씀.
-    # "coverage_only" = ν^exc(deadhead dual)를 0으로 고정 — coverage dual(π^cov)만 반영.
-    # dual-ablation 3분할(off/coverage_only/net) 중 off는 기존 --dual-weight 0으로 이미 커버됨.
-    assert dual_mode in ("net", "coverage_only"), f"unknown dual_mode: {dual_mode}"
+               dual_mode="real", checkpoint_metadata=None):
+    dual_mode = {"net": "real", "coverage_only": "coverage-only"}.get(dual_mode, dual_mode)
+    assert dual_mode in ("zero", "uncovered-only", "shuffled", "real", "coverage-only"), f"unknown dual_mode: {dual_mode}"
     from evaluation.set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
@@ -906,6 +925,8 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             raw_excess_duals = lp_result["dh_dual_vars"] if lp_result is not None else {}
             dual_vars = normalize_phase2_dual_signal(
                 coverage_duals, raw_excess_duals, mode=dual_mode,
+                uncovered_flight_ids=(lp_result or {}).get("artificial_flight_ids", []),
+                shuffle_seed=ep,
             )
             # net 계산과 정규화를 한 번에 끝냈으므로 rollout에서 다시 차감하지 않음.
             dh_dual_vars = {}
@@ -985,6 +1006,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             "phase2/dual_weight":         _eff_dw,
             "phase2/gap_weight":          decoder.gap_weight.item(),
             "phase2/lp_value":            lp_value if lp_value is not None else float("nan"),
+            "phase2/artificial_count":    len((lp_result or {}).get("artificial_flight_ids", [])),
         }, step=global_step_offset + ep)
 
         if ep % 25 == 0:
@@ -1155,7 +1177,7 @@ def run_curriculum_stage(
 
 
 def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_constraint=False,
-          ckpt_dir=None, from_stage2=False, turkish_files=None, dual_weight=None, dual_mode="net"):
+          ckpt_dir=None, from_stage2=False, turkish_files=None, dual_weight=None, dual_mode="real"):
     WINDOW_DAYS = (
         max(config.AIRLINE_WINDOW_DAYS[a] for a in config.MULTI_AIRLINES)
         if multi_airline else config.AIRLINE_WINDOW_DAYS[config.AIRLINE]
@@ -1225,8 +1247,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
     tag += "-nofilm" if skip_film else ""
     tag += "-nodecoderc" if skip_decoder_constraint else ""
     tag += "-nodual" if dual_weight == 0 else ""
-    tag += "-covonly" if dual_mode == "coverage_only" else ""
-    run_name = "phase2-only" if phase2_only else tag
+    tag += f"-dual-{dual_mode}"
+    run_name = f"phase2-{dual_mode}" if phase2_only else tag
     wandb.init(
         project="ASCP-2026-paper",
         name=run_name,
@@ -1658,10 +1680,13 @@ if __name__ == "__main__":
     parser.add_argument("--dual-weight", type=float, default=None,
                         help="Phase2 CG dual reward 가중치를 config.PHASE2_DUAL_WEIGHT(기본 0.6) 대신 "
                              "이 값으로 덮어씀. 0을 주면 CG-dual 완전히 비활성화.")
-    parser.add_argument("--dual-mode", default="net", choices=["net", "coverage_only"],
-                        help="CG-dual ablation 3분할용. net(기본) = coverage dual(π^cov) - "
-                             "deadhead dual(ν^exc) 그대로 사용(현재 버전). coverage_only = "
-                             "ν^exc를 0으로 고정해 π^cov만 반영. off는 --dual-weight 0으로 커버.")
+    parser.add_argument(
+        "--dual-mode", default="real",
+        choices=["zero", "uncovered-only", "shuffled", "real", "coverage-only", "net", "coverage_only"],
+        help="Phase2 ablation. zero=LP 계산은 유지하고 신호 0, uncovered-only=artificial flight만 1, "
+             "shuffled=real 신호를 flight 간 섞음, real=coverage-excess net dual. "
+             "coverage-only와 legacy net/coverage_only도 호환함.",
+    )
     parser.add_argument("--data-path", default=None,
                         help="CSV 경로. 미지정 시 config.AIRLINE_DATA[airline] 사용. "
                              "delta-small 등 대체 데이터셋으로 학습/이어받기할 때 지정")

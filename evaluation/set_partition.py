@@ -52,7 +52,7 @@ def solve_lp_relaxation(
       - rc_j >= 0: unlikely to be in the optimal solution -> eligible for
         removal by column_reduction
 
-    Returns: { lp_value, dual_vars, reduced_costs, status }
+    Returns: { lp_value, dual_vars, reduced_costs, artificial_flight_ids, status }
     None: if the LP fails to solve
     """
     if not pairings and flight_ids is None:
@@ -113,12 +113,18 @@ def solve_lp_relaxation(
         pairings[j]["cost"] - sum(mu_cov.get(i, 0.0) for i in pairings[j]["legs"])
         for j in range(real_pairing_count)
     ]
+    artificial_flight_ids = sorted(
+        pairings[j]["legs"][0]
+        for j in range(real_pairing_count, M)
+        if (x[j].value() or 0.0) > 1e-8
+    )
 
     return {
         "lp_value":      pulp.value(prob.objective),
         "dual_vars":     mu_cov,
         "dh_dual_vars":  nu_exc,
         "reduced_costs": reduced_costs,
+        "artificial_flight_ids": artificial_flight_ids,
         "status":        pulp.LpStatus[prob.status],
     }
 
