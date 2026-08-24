@@ -83,17 +83,19 @@ def _solver(time_limit: int, use_gurobi: bool, verbose: bool):
 def calibrate_completion_penalties(columns: Sequence[Dict]) -> Dict[str, float]:
     """현재 pool cost scale을 기준으로 completion penalty 초기값을 산정함.
 
-    scale은 정상 운항 pairing(policy/salvage)의 cost로만 계산함. rescue column은
-    _compute_cost()에서 IP_DEADHEAD_PENALTY+IP_PAIRING_FIXED_COST가 무조건
-    더해지고 BFS가 타이트한 연결을 보장하지 않아 dead_time도 policy pairing보다
-    훨씬 크게 나올 수 있음 -- rescue를 포함해서 scale을 잡으면 rescue candidate
-    하나의 비정상적으로 높은 cost가 rescue와 무관한 모든 flight의 reposition/
-    reserve/artificial penalty까지 같이 부풀려버림(실측: rescue candidate 하나가
-    cost=80대면 scale이 그만큼 뛰어 페널티 구조 전체가 왜곡됨).
+    scale은 순수 policy pairing의 cost로만 계산함. salvage/rescue column은 둘 다
+    RL/rollout.py::emit_prefix()/completion/rescue_generator.py::_compute_cost()에서
+    IP_DEADHEAD_PENALTY+IP_PAIRING_FIXED_COST가 무조건 더해지는 "억지로 만들어진"
+    column이라(is_deadhead=True) cost가 policy pairing보다 크게 나올 수 있음 --
+    특히 rescue는 BFS가 타이트한 연결을 보장하지 않아 dead_time까지 훨씬 커질 수
+    있음. 이런 column을 포함해서 scale을 잡으면 그중 하나의 비정상적으로 높은
+    cost가 그것과 무관한 모든 flight의 reposition/reserve/artificial penalty까지
+    같이 부풀려버림(실측: rescue candidate 하나가 cost=80대면 scale이 그만큼 뛰어
+    페널티 구조 전체가 왜곡됨).
     """
     finite_costs = []
     for column in columns:
-        if column.get("source_type") not in ("policy", "salvage"):
+        if column.get("source_type") != "policy":
             continue
         try:
             cost = float(column.get("cost", 0.0))
