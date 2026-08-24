@@ -61,6 +61,7 @@ from evaluation.dual_feedback import (
     solve_full_universe_lp, build_dual_signal, merge_unique_columns,
 )
 from evaluation.completion_runner import merge_rescue_columns, solve_completion_stages
+from completion.rescue_generator import generate_rescue_candidates
 from evaluation.completion_report import build_completion_report, render_completion_table, save_completion_report
 from evaluation.validator import validate_pairing
 from evaluation.validation_report import aggregate_by_source_per_chunk
@@ -730,6 +731,7 @@ def evaluate_full(
     full_flight_master=False,
     completion_report_path=None,
     rescue_pool_path=None,
+    auto_rescue=True,
     reposition_penalty=None,
     reserve_penalty=None,
     artificial_penalty=None,
@@ -1025,6 +1027,28 @@ def evaluate_full(
             rescue_columns = validate_rescue_columns_current_run(
                 rescue_columns, flights_by_id, constraint, base_ids
             )
+        elif auto_rescue:
+            # rescue_generator: policy/salvage 후보가 아예 없는 flight마다 "허용 base ->
+            # target -> 허용 base"로 legal한 pairing을 예산 제한 BFS로 찾아본다. rescue는
+            # (operational/artificial과 달리) 진짜 legal 근무로 인정되는 마지막 단계라 여기서
+            # 최대한 시도해볼 가치가 있음
+            covered = {leg for p in pool for leg in p["legs"]}
+            uncovered_flight_ids = [fid for fid in range(n_total) if fid not in covered]
+            print(f"\nGenerating rescue candidates (uncovered={len(uncovered_flight_ids)})...", flush=True)
+            rescue_pool = {}
+            for base_id in base_ids:
+                base_constraint = {**constraint, "base_airport": base_id}
+                generated = generate_rescue_candidates(flights_by_id, base_constraint, uncovered_flight_ids)
+                for candidate in generated["candidates"]:
+                    key = tuple(sorted(candidate["legs"]))
+                    if key not in rescue_pool or candidate["cost"] < rescue_pool[key]["cost"]:
+                        rescue_pool[key] = candidate
+            rescue_columns = list(rescue_pool.values())
+            print(f"  rescue candidates: {len(rescue_columns)} (bases tried: {len(base_ids)})", flush=True)
+            if rescue_columns:
+                rescue_columns = validate_rescue_columns_current_run(
+                    rescue_columns, flights_by_id, constraint, base_ids
+                )
         result = solve_pool_completion(
             pool, n_total, lambda_excess=lambda_dh, time_limit=ip_time_limit,
             reposition_penalty=reposition_penalty, reserve_penalty=reserve_penalty,
@@ -1221,7 +1245,10 @@ if __name__ == "__main__":
     parser.add_argument("--full-flight-master", action="store_true",
                         help="전체 flight constraint와 단계별 completion master 사용")
     parser.add_argument("--rescue-pool-path", default=None,
-                        help="찬주 generator가 저장한 rescue column JSON 경로")
+                        help="generator가 저장한 rescue column JSON 경로 -- 주면 자동 생성 대신 이 파일을 씀")
+    parser.add_argument("--no-auto-rescue", action="store_false", dest="auto_rescue",
+                        help="--full-flight-master에서 rescue candidate 자동 생성 비활성화 "
+                             "(--rescue-pool-path 미지정 시 기본은 자동 생성)")
     parser.add_argument("--completion-report-path", default=None,
                         help="V2 completion JSON 저장 경로")
     parser.add_argument("--reposition-penalty", type=float, default=None)
@@ -1278,6 +1305,7 @@ if __name__ == "__main__":
         full_flight_master=args.full_flight_master,
         completion_report_path=args.completion_report_path,
         rescue_pool_path=args.rescue_pool_path,
+        auto_rescue=args.auto_rescue,
         reposition_penalty=args.reposition_penalty,
         reserve_penalty=args.reserve_penalty,
         artificial_penalty=args.artificial_penalty,
