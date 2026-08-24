@@ -56,7 +56,7 @@ _GET_CONSTRAINT = {
     "turkish": get_turkish_constraints_hb,  # HB1/HB2 cross-base return contract
 }
 from model import FlightEncoder, PointerDecoder
-from evaluation.set_partition import solve_set_covering, solve_lp_relaxation
+from evaluation.set_partition import solve_set_covering, solve_lp_relaxation, column_reduction
 from evaluation.dual_feedback import (
     solve_full_universe_lp, build_dual_signal, merge_unique_columns,
 )
@@ -994,6 +994,19 @@ def evaluate_full(
         os.makedirs(os.path.dirname(dual_trace_path) or ".", exist_ok=True)
         with open(dual_trace_path, "w", encoding="utf-8") as handle:
             json.dump(dual_trace, handle, indent=2)
+
+    if not full_flight_master:
+        print(f"\nColumn reduction (pool={len(pool)})...", flush=True)
+        _lp_for_reduction = solve_lp_relaxation(
+            pool, lambda_dh=lambda_dh, flight_ids=range(n_total),
+            artificial_cost=(artificial_penalty if artificial_penalty is not None else 1000.0),
+        )
+        if _lp_for_reduction is not None:
+            _before_reduction = len(pool)
+            pool = column_reduction(pool, _lp_for_reduction["reduced_costs"])
+            print(f"  {_before_reduction} -> {len(pool)} pairings", flush=True)
+        else:
+            print("  [warn] LP relaxation failed to solve -- skipping column reduction", flush=True)
 
     print(f"\nSolving IP (n_flights={n_total}, pool={len(pool)}, time_limit={ip_time_limit}s, lambda_dh={lambda_dh})...", flush=True)
     if full_flight_master:
