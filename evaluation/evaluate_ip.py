@@ -703,12 +703,21 @@ def save_result_json(path, result, checkpoint_path, airline, eval_mode):
 
 # ── 5. Main evaluation function ──────────────────────────────────────────────
 
+def _resolve_window_days(airline, requested_window_days):
+    """명시값이 없으면 항공사별 학습 window 설정을 그대로 사용함."""
+    return (
+        config.AIRLINE_WINDOW_DAYS[airline]
+        if requested_window_days is None
+        else requested_window_days
+    )
+
+
 def evaluate_full(
     checkpoint_path,
     airline="delta",
     data_path=None,
     n_rollouts_per_chunk=15,
-    window_days=5,
+    window_days=None,
     subset_size=config.EPISODE_MAX_FLIGHTS,
     bases=None,
     ip_time_limit=3600,
@@ -758,6 +767,7 @@ def evaluate_full(
         # OMP_NUM_THREADS, so pin it explicitly here as well.
         torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", 4)))
     set_environment(airline)
+    window_days = _resolve_window_days(airline, window_days)
 
     wandb_run = None
     # C3 "기존 checkpoint 평가와 신규 strict 평가를 서로 다른 mode 이름으로 저장" --
@@ -1133,11 +1143,7 @@ def evaluate_multi_airline(checkpoint_path, *, summary_path=None, **kwargs):
     results = {}
     for airline in config.MULTI_AIRLINES:
         airline_kwargs = dict(kwargs)
-        airline_kwargs["window_days"] = (
-            requested_window
-            if requested_window is not None
-            else config.AIRLINE_WINDOW_DAYS[airline]
-        )
+        airline_kwargs["window_days"] = _resolve_window_days(airline, requested_window)
         for key in ("completion_report_path", "dual_trace_path", "save_json_path"):
             airline_kwargs[key] = _airline_output_path(kwargs.get(key), airline)
         print(f"\n{'#' * 72}\n# MULTI EVAL: {airline}\n{'#' * 72}", flush=True)
@@ -1174,7 +1180,7 @@ if __name__ == "__main__":
     parser.add_argument("--n-rollouts-per-chunk", type=int, default=15,
                         help="Stochastic rollouts per chunk. Each window is split into sequential subset_size-sized chunks (default: 15)")
     parser.add_argument("--window-days", type=int, default=None,
-                        help="Window size in days. single default=5; multi default=airline별 6/6/8")
+                        help="Window size in days. 미지정 시 항공사별 설정(delta=6, alaska=6, jetblue=8)")
     parser.add_argument("--subset-size", type=int, default=config.EPISODE_MAX_FLIGHTS,
                         help=f"Flights per rollout (default: {config.EPISODE_MAX_FLIGHTS})")
     parser.add_argument("--ip-time-limit", type=int, default=3600,
@@ -1272,5 +1278,4 @@ if __name__ == "__main__":
             **common_kwargs,
         )
     else:
-        common_kwargs["window_days"] = args.window_days or 5
         evaluate_full(airline=args.airline, **common_kwargs)

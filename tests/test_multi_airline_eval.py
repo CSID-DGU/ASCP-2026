@@ -5,6 +5,12 @@ from evaluation import evaluate_ip
 
 
 class MultiAirlineEvalTests(unittest.TestCase):
+    def test_default_windows_follow_airline_config(self):
+        self.assertEqual(evaluate_ip._resolve_window_days("delta", None), 6)
+        self.assertEqual(evaluate_ip._resolve_window_days("alaska", None), 6)
+        self.assertEqual(evaluate_ip._resolve_window_days("jetblue", None), 8)
+        self.assertEqual(evaluate_ip._resolve_window_days("delta", 9), 9)
+
     def test_runs_each_bts_airline_with_own_window_and_paths(self):
         calls = []
 
