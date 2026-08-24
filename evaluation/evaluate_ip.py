@@ -778,7 +778,11 @@ def evaluate_full(
         wandb_run = wandb.init(
             project=wandb_project,
             job_type="eval",
-            name=f"eval-{eval_mode}-{airline}-{os.path.basename(checkpoint_path)}",
+            name=(
+                f"eval-{eval_mode}-{airline}-"
+                f"{'one-shot' if dual_iterations == 0 else dual_mode}-"
+                f"{os.path.basename(checkpoint_path)}"
+            ),
             config=dict(
                 checkpoint=checkpoint_path, airline=airline,
                 subset_size=subset_size, window_days=window_days,
@@ -787,6 +791,10 @@ def evaluate_full(
                 time_basis="turkish_native" if airline == "turkish" else "utc",
                 eval_mode=eval_mode,
                 strict_validation=strict_validation,
+                dual_iterations=dual_iterations,
+                dual_weight=dual_weight,
+                dual_mode=dual_mode,
+                dual_artificial_penalty=dual_artificial_penalty,
             ),
         )
 
@@ -1109,17 +1117,64 @@ def evaluate_full(
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
+def _airline_output_path(path, airline):
+    """multi CLI에서 항공사별 결과가 서로 덮어쓰지 않게 suffix를 붙임."""
+    if path is None:
+        return None
+    root, ext = os.path.splitext(path)
+    return f"{root}_{airline}{ext}"
+
+
+def evaluate_multi_airline(checkpoint_path, *, summary_path=None, **kwargs):
+    """한 호출에서 multi checkpoint를 세 BTS 항공사에 각각 독립 평가함."""
+    if kwargs.get("data_path") is not None:
+        raise ValueError("--airline multi에서는 항공사별 기본 data path를 사용해야 함")
+    requested_window = kwargs.pop("window_days", None)
+    results = {}
+    for airline in config.MULTI_AIRLINES:
+        airline_kwargs = dict(kwargs)
+        airline_kwargs["window_days"] = (
+            requested_window
+            if requested_window is not None
+            else config.AIRLINE_WINDOW_DAYS[airline]
+        )
+        for key in ("completion_report_path", "dual_trace_path", "save_json_path"):
+            airline_kwargs[key] = _airline_output_path(kwargs.get(key), airline)
+        print(f"\n{'#' * 72}\n# MULTI EVAL: {airline}\n{'#' * 72}", flush=True)
+        results[airline] = evaluate_full(
+            checkpoint_path=checkpoint_path,
+            airline=airline,
+            **airline_kwargs,
+        )
+    if summary_path:
+        os.makedirs(os.path.dirname(summary_path) or ".", exist_ok=True)
+        summary = {
+            airline: {
+                "status": result.get("status"),
+                "coverage": result.get("coverage"),
+                "completion_coverage": result.get("completion_coverage"),
+                "artificial_count": result.get("artificial_count"),
+                "mip_obj": result.get("mip_obj"),
+                "n_pairings": result.get("n_pairings"),
+            }
+            for airline, result in results.items()
+        }
+        with open(summary_path, "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, ensure_ascii=False, indent=2, default=str)
+    return results
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Full monthly-schedule flight-coverage evaluation")
     parser.add_argument("checkpoint", help="Checkpoint file path (e.g. checkpoints/jbkwcdk3/phase2_best.pt)")
-    parser.add_argument("--airline",   default="delta", choices=["delta", "alaska", "jetblue", "turkish"])
+    parser.add_argument("--airline",   default="delta", choices=["delta", "alaska", "jetblue", "turkish", "multi"])
     parser.add_argument("--data-path", default=None,
                         help="CSV path. Uses config.AIRLINE_DATA[airline] if unset. "
                              "Set this for small-scale sample evaluation (e.g. RL/data/sample_DL_*.csv)")
     parser.add_argument("--n-rollouts-per-chunk", type=int, default=15,
                         help="Stochastic rollouts per chunk. Each window is split into sequential subset_size-sized chunks (default: 15)")
-    parser.add_argument("--window-days", type=int, default=5,
-                        help="Window size in days. 1 is recommended for small-scale (1-week) data (default: 5)")
+    parser.add_argument("--window-days", type=int, default=None,
+                        help="Window size in days. single default=5; multi default=airline별 6/6/8")
     parser.add_argument("--subset-size", type=int, default=config.EPISODE_MAX_FLIGHTS,
                         help=f"Flights per rollout (default: {config.EPISODE_MAX_FLIGHTS})")
     parser.add_argument("--ip-time-limit", type=int, default=3600,
@@ -1172,6 +1227,8 @@ if __name__ == "__main__":
                              "re-score a past run later; pass --no-save-json to opt out.")
     parser.add_argument("--no-save-json", action="store_true",
                         help="Skip saving the JSON result entirely (by default it's always saved).")
+    parser.add_argument("--multi-summary-path", default=None,
+                        help="--airline multi 실행의 항공사별 핵심 지표 summary JSON")
     args = parser.parse_args()
 
     ckpt = args.checkpoint
@@ -1180,9 +1237,8 @@ if __name__ == "__main__":
         if os.path.exists(candidate):
             ckpt = candidate
 
-    evaluate_full(
+    common_kwargs = dict(
         checkpoint_path=ckpt,
-        airline=args.airline,
         data_path=args.data_path,
         n_rollouts_per_chunk=args.n_rollouts_per_chunk,
         window_days=args.window_days,
@@ -1200,7 +1256,8 @@ if __name__ == "__main__":
         reposition_penalty=args.reposition_penalty,
         reserve_penalty=args.reserve_penalty,
         artificial_penalty=args.artificial_penalty,
-        dual_iterations=args.dual_iterations, dual_weight=args.dual_weight,
+        dual_iterations=args.dual_iterations,
+        dual_weight=args.dual_weight,
         dual_mode=args.dual_mode,
         dual_artificial_penalty=args.dual_artificial_penalty,
         dual_trace_path=args.dual_trace_path,
@@ -1209,3 +1266,11 @@ if __name__ == "__main__":
         save_json_path=args.save_json,
         no_save_json=args.no_save_json,
     )
+    if args.airline == "multi":
+        evaluate_multi_airline(
+            summary_path=args.multi_summary_path,
+            **common_kwargs,
+        )
+    else:
+        common_kwargs["window_days"] = args.window_days or 5
+        evaluate_full(airline=args.airline, **common_kwargs)
