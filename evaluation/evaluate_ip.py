@@ -997,9 +997,15 @@ def evaluate_full(
 
     if not full_flight_master:
         print(f"\nColumn reduction (pool={len(pool)})...", flush=True)
+        if artificial_penalty is None:
+            _legal_costs = [float(p["cost"]) for p in pool
+                            if math.isfinite(float(p.get("cost", 0.0))) and float(p.get("cost", 0.0)) >= 0]
+            _reduction_artificial_penalty = max([1.0] + _legal_costs) * 2.0
+        else:
+            _reduction_artificial_penalty = artificial_penalty
         _lp_for_reduction = solve_lp_relaxation(
             pool, lambda_dh=lambda_dh, flight_ids=range(n_total),
-            artificial_cost=(artificial_penalty if artificial_penalty is not None else 1000.0),
+            artificial_cost=_reduction_artificial_penalty,
         )
         if _lp_for_reduction is not None:
             _before_reduction = len(pool)
