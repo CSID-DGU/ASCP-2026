@@ -22,6 +22,7 @@ from completion.rescue_generator import (  # noqa: E402
     NO_ALLOWED_BASE,
     WINDOW_BOUNDARY,
     PAIRING_DURATION_LIMIT,
+    SEARCH_BUDGET_EXHAUSTED,
 )
 from validator import validate_pairing  # noqa: E402
 from evaluation.full_flight_master import validate_master_inputs  # noqa: E402
@@ -188,6 +189,73 @@ class FailureCaseTests(unittest.TestCase):
         result = generate_rescue_candidates(flights, CONSTRAINT, [10, 1])
         covered_targets = {c["repair_target_flights"][0] for c in result["candidates"]}
         self.assertEqual(covered_targets | set(result["failures"].keys()), {10, 1})
+
+
+class SearchWindowPruningTests(unittest.TestCase):
+    """successors()의 max_pairing_days 시간 상한이 유효 후보를 자르지 않는지 확인.
+
+    _valid_gap()은 "gap >= min_rest"를 상한 없이 허용하므로, 컷이 없으면 스케줄
+    끝까지 successor로 펼쳐진다. 컷이 잘라내는 건 어차피 max_pairing_days를 넘겨
+    validate_pairing()에서 탈락할 후보뿐이어야 한다.
+    """
+
+    def test_far_future_connection_is_not_used(self):
+        # target(A->B) 이후 base 복귀편이 max_pairing_days(5일=120h)를 한참 넘겨서만
+        # 존재하면, 컷 유무와 무관하게 rescue 실패로 끝나야 함
+        flights = {
+            1: _f(1, BASE, A, 0.0, 2.0),
+            2: _f(2, A, B, 3.0, 5.0),          # target
+            3: _f(3, B, BASE, 500.0, 502.0),   # ~20일 뒤 -> pairing 기간 초과
+        }
+        result = generate_rescue_candidates(flights, CONSTRAINT, [2])
+        self.assertEqual(result["candidates"], [])
+        self.assertIn(2, result["failures"])
+
+    def test_within_window_connection_still_found(self):
+        # 같은 구조지만 복귀편이 window 안( <=120h )이면 정상적으로 후보가 나와야 함
+        flights = {
+            1: _f(1, BASE, A, 0.0, 2.0),
+            2: _f(2, A, B, 3.0, 5.0),        # target
+            3: _f(3, B, BASE, 20.0, 22.0),   # rest 후 같은 pairing 안에서 복귀 가능
+        }
+        result = generate_rescue_candidates(flights, CONSTRAINT, [2])
+        self.assertEqual(result["failures"], {})
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(result["candidates"][0]["legs"], [1, 2, 3])
+
+    def test_budget_not_wasted_on_far_future_nodes(self):
+        # 컷의 실질 효과: 예산이 far-future 노드 pop에 소진되지 않아야 함.
+        # target(A->B) 이후 base 복귀편이 없고, B에서 출발하는 편이 전부
+        # max_pairing_days 밖(500h~)에만 잔뜩 있는 상황.
+        # 컷이 없으면 그 노드들을 pop하다 예산(=3)을 다 태워
+        # SEARCH_BUDGET_EXHAUSTED("이유 모름")로 보고하지만,
+        # 컷이 있으면 펼칠 노드가 없어 실제 사유 NO_BASE_SUFFIX로 분류돼야 한다.
+        flights = {
+            1: _f(1, BASE, A, 0.0, 2.0),
+            2: _f(2, A, B, 3.0, 5.0),  # target
+        }
+        for i in range(20):  # B에서 나가지만 전부 window 밖 -> 컷 대상
+            flights[100 + i] = _f(100 + i, B, A, 500.0 + i, 502.0 + i)
+        result = generate_rescue_candidates(
+            flights, CONSTRAINT, [2], search_budget_per_target=3
+        )
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(result["failures"][2], NO_BASE_SUFFIX)
+        self.assertNotEqual(result["failures"][2], SEARCH_BUDGET_EXHAUSTED)
+
+    def test_prefix_does_not_expand_past_target_departure(self):
+        # target보다 늦게 출발하는 base 편(4)은 prefix로 쓸 수 없음 -- 컷이 이를
+        # 미리 걷어내도 정상 경로(1)는 그대로 살아 있어야 함
+        flights = {
+            1: _f(1, BASE, A, 0.0, 2.0),      # 유효 prefix
+            2: _f(2, A, B, 3.0, 5.0),         # target
+            3: _f(3, B, BASE, 6.0, 8.0),
+            4: _f(4, BASE, A, 50.0, 52.0),    # target 이후 출발 -> prefix 불가
+        }
+        result = generate_rescue_candidates(flights, CONSTRAINT, [2])
+        self.assertEqual(result["failures"], {})
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(result["candidates"][0]["legs"], [1, 2, 3])
 
 
 if __name__ == "__main__":

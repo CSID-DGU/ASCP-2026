@@ -9,8 +9,22 @@ suffix(target 직후 -> 허용 base) 3단계로 legal한 pairing 후보를 예�
 
 flight/constraint dict 포맷은 evaluation/validator.py와 동일함.
 
+BFS는 successors()의 dep_limit으로 max_pairing_days 밖 구간을 미리 잘라낸다.
+_valid_gap()이 "gap >= min_rest"를 상한 없이 허용하기 때문에, 이 컷이 없으면
+한 달치 스케줄 전체가 유효한 연결로 펼쳐진다(BTS delta 실측: 노드당 successor
+평균 3,112개, ATL 최대 18,734개 -> uncovered 3,920개 x base 7개에 약 9시간).
+컷이 배제하는 건 어차피 validate_pairing()에서 탈락할 조합뿐이라, 채택되는
+candidate(leg 시퀀스/cost)와 해결되는 target 집합은 컷 적용 전과 동일하다
+(BTS delta ATL/DTW/MSP 실측, 소요 시간은 2.3~4.3배 단축).
+
+단, 실패 사유 코드는 일부 target에서 더 정확해질 수 있다(개선). _search_chains()의
+budget은 pop 횟수를 세므로, 컷이 없으면 쓸모없는 far-future 노드를 pop하다 예산을
+소진해 SEARCH_BUDGET_EXHAUSTED("이유 모름")로 보고하던 것이, 컷 적용 후에는 탐색을
+완주해 실제 사유(PAIRING_DURATION_LIMIT/NO_BASE_PREFIX 등)를 짚는다.
+(MSP 실측: 40개 target 중 3개가 이 방향으로 바뀜, 실패라는 결과 자체는 동일)
+
 # TODO(추후 조정): search_budget_per_target/max_prefix_legs/max_suffix_legs는 작은 값으로
-# 시작함 -- 실제 데이터셋에서 rescue 성공률 보고 조정 필요 (v2-chanju.md §4)
+# 시작함 -- 실제 데이터셋에서 rescue 성공률 보고 조정 필요 
 """
 
 from collections import Counter, deque
@@ -174,12 +188,26 @@ def generate_rescue_candidates(
 
     by_origin = _index_by_origin(flights, flights.keys())
 
-    def successors(fid):
+    def successors(fid, dep_limit=float("inf")):
+        """fid 다음에 이어붙일 수 있는 flight를 yield.
+
+        dep_limit: 이 시각 이후에 출발하는 flight는 펼치지 않음. _valid_gap()이
+        "gap >= min_rest"를 상한 없이 허용하기 때문에, 상한이 없으면 한 달 뒤
+        출발편까지 유효한 연결로 보고 스케줄 전체를 탐색하게 된다(실측: 노드당
+        successor 평균 3,112개, ATL 최대 18,734개). 어차피 max_pairing_days를
+        넘는 조합은 마지막 validate_pairing()에서 전부 걸러지므로, 여기서 미리
+        자르면 채택되는 candidate는 그대로면서 탐색량만 줄어든다(모듈 docstring의
+        실측 참고).
+        by_origin은 dep_time 오름차순이라 상한을 넘는 순간 break해도 안전하다.
+        """
         f = flights[fid]
         for g_id in by_origin.get(f["dest"], []):
+            g = flights[g_id]
+            if g["dep_time"] > dep_limit:
+                break
             if g_id == fid:
                 continue
-            gap = flights[g_id]["dep_time"] - f["arr_time"]
+            gap = g["dep_time"] - f["arr_time"]
             if _valid_gap(gap, min_conn, max_conn, min_rest):
                 yield g_id
 
@@ -210,8 +238,13 @@ def generate_rescue_candidates(
                     return False
                 return _valid_gap(_target["dep_time"] - g["arr_time"], min_conn, max_conn, min_rest)
 
+            # prefix는 target 직전까지 이어지는 구간이라, target보다 늦게 출발하는
+            # flight를 펼칠 필요가 없다.
+            def prefix_successors(fid, _limit=target["dep_time"]):
+                return successors(fid, _limit)
+
             for chain in _search_chains(
-                prefix_start_ids, is_prefix_goal, successors,
+                prefix_start_ids, is_prefix_goal, prefix_successors,
                 max_prefix_legs, search_budget_per_target, prefix_stats,
             ):
                 prefix_options.append(chain)
@@ -241,13 +274,21 @@ def generate_rescue_candidates(
         if target["dest"] in allowed_return_bases:
             suffix_options.append([])
         else:
-            suffix_start_ids = list(successors(target_id))
+            # suffix가 아무리 길어져도 pairing 전체가 max_pairing_days를 넘으면
+            # validate_pairing()에서 탈락한다. pairing 시작은 prefix가 있으면
+            # target보다 이르므로 "target 출발 + window"는 실제 상한보다 느슨한
+            # (=유효 후보를 자르지 않는) 안전한 컷이다.
+            suffix_limit = target["dep_time"] + window_hours
+            suffix_start_ids = list(successors(target_id, suffix_limit))
 
             def is_suffix_goal(fid):
                 return flights[fid]["dest"] in allowed_return_bases
 
+            def suffix_successors(fid, _limit=suffix_limit):
+                return successors(fid, _limit)
+
             for chain in _search_chains(
-                suffix_start_ids, is_suffix_goal, successors,
+                suffix_start_ids, is_suffix_goal, suffix_successors,
                 max_suffix_legs, search_budget_per_target, suffix_stats,
             ):
                 suffix_options.append(chain)
@@ -255,8 +296,12 @@ def generate_rescue_candidates(
                     break
 
         if not suffix_options:
-            # suffix_start_ids는 window로 걸러지지 않으므로(target 직후 successors 전체),
-            # 비어 있으면 스케줄 경계가 아니라 진짜로 이어지는 flight가 없다는 뜻.
+            # suffix_start_ids가 비어 있으면 target 직후로 이어지는 flight가
+            # (max_pairing_days 안에) 없다는 뜻. window 컷이 잘라내는 건 어차피
+            # pairing 기간을 초과해 validate_pairing()에서 탈락할 후보뿐이므로
+            # "rescue 실패"라는 결과는 컷 적용 전과 같다 -- 다만 컷 덕분에 예산을
+            # 덜 태우게 되어, 예전에 SEARCH_BUDGET_EXHAUSTED로 뭉뚱그려지던 일부
+            # target이 여기서 더 구체적인 사유로 분류될 수 있다(모듈 docstring 참고).
             if suffix_stats["budget_exhausted"]:
                 failures[target_id] = SEARCH_BUDGET_EXHAUSTED
             else:
