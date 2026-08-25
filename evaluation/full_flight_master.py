@@ -71,13 +71,13 @@ def validate_master_inputs(
 
 
 
-def _solver(time_limit: int, use_gurobi: bool, verbose: bool):
+def _solver(time_limit: int, use_gurobi: bool, verbose: bool, threads: int = 1):
     if use_gurobi:
         try:
             return pulp.GUROBI(timeLimit=time_limit, msg=int(verbose))
         except Exception:
             pass
-    return pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=int(verbose))
+    return pulp.PULP_CBC_CMD(timeLimit=time_limit, threads=threads, msg=int(verbose))
 
 
 def calibrate_completion_penalties(columns: Sequence[Dict]) -> Dict[str, float]:
@@ -125,6 +125,7 @@ def solve_full_flight_master(
     reposition_flight_ids: Iterable[int] | None = None,
     reserve_flight_ids: Iterable[int] | None = None,
     time_limit: int = 300,
+    threads: int = 1,
     use_gurobi: bool = False,
     verbose: bool = False,
 ) -> Dict:
@@ -174,6 +175,32 @@ def solve_full_flight_master(
             "objective_breakdown": {"pairing": 0.0, "excess": 0.0, "reposition": 0.0, "reserve": 0.0, "artificial": 0.0},
         }
 
+    available = {flight_id for column in enabled_columns for flight_id in column["legs"]}
+    if allow_reposition:
+        available.update(reposition_targets)
+    if allow_reserve:
+        available.update(reserve_targets)
+    impossible = universe_set - available
+    if impossible and not allow_artificial:
+        zero_by_source = {source: 0 for source in sorted(SUPPORTED_SOURCE_TYPES)}
+        return {
+            "selected": [], "selected_column_ids": [], "n_pairings": 0,
+            "status": "Infeasible", "is_feasible": False, "mip_objective": None,
+            "pairing_cost": 0.0, "excess_cost": 0.0,
+            "reposition_cost": 0.0, "reserve_cost": 0.0, "artificial_cost": 0.0,
+            "covered_flight_ids": [], "operational_covered_flight_ids": [],
+            "uncovered_flight_ids": sorted(universe_set), "penalties": penalties,
+            "selected_count_by_source": zero_by_source,
+            "selected_cost_by_source": {source: 0.0 for source in zero_by_source},
+            "objective_breakdown": {"pairing": 0.0, "excess": 0.0, "reposition": 0.0, "reserve": 0.0, "artificial": 0.0},
+            "coverage": 0.0, "operational_completion_coverage": 0.0,
+            "completion_coverage": 0.0, "excess_flight_ids": [], "excess_count": 0,
+            "reposition_flight_ids": [], "reserve_flight_ids": [],
+            "artificial_flight_ids": [], "artificial_count": 0,
+            "solve_skipped": True,
+            "structural_infeasible_flight_ids": sorted(impossible),
+        }
+
     by_flight = defaultdict(list)
     for j, column in enumerate(enabled_columns):
         for flight_id in column["legs"]:
@@ -208,7 +235,9 @@ def solve_full_flight_master(
         problem += cover_sum + completion_sum >= 1, f"cover_{flight_id}"
         problem += excess[flight_id] >= cover_sum - 1, f"excess_{flight_id}"
 
-    problem.solve(_solver(time_limit, use_gurobi, verbose))
+    if threads < 1:
+        raise FullFlightInputError("threads는 1 이상이어야 함")
+    problem.solve(_solver(time_limit, use_gurobi, verbose, threads))
     status = pulp.LpStatus[problem.status]
     is_feasible = status in {"Optimal", "Feasible"}
     selected = [

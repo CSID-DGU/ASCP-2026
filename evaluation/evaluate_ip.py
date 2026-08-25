@@ -581,6 +581,7 @@ def validate_rescue_columns_current_run(rescue_columns, flights_by_id, constrain
 
 def solve_pool_completion(
     pool, n_total, *, lambda_excess=1.0, time_limit=300,
+    threads=1,
     reposition_penalty=None, reserve_penalty=None,
     artificial_penalty=None, report_path=None, rescue_columns=None,
     auto_operational=False, verbose=False,
@@ -591,6 +592,7 @@ def solve_pool_completion(
     stages = solve_completion_stages(
         pool, range(n_total), lambda_excess=lambda_excess,
         time_limit=time_limit, reposition_penalty=reposition_penalty,
+        threads=threads,
         reserve_penalty=reserve_penalty, artificial_penalty=artificial_penalty,
         auto_operational=auto_operational,
         verbose=verbose,
@@ -724,6 +726,7 @@ def evaluate_full(
     subset_size=config.EPISODE_MAX_FLIGHTS,
     bases=None,
     ip_time_limit=3600,
+    ip_threads=1,
     lambda_dh=10.0,
     device="cpu",
     turkish_files=None,
@@ -803,6 +806,7 @@ def evaluate_full(
                 subset_size=subset_size, window_days=window_days,
                 n_rollouts_per_chunk=n_rollouts_per_chunk,
                 ip_time_limit=ip_time_limit, lambda_dh=lambda_dh,
+                ip_threads=ip_threads,
                 time_basis="turkish_native" if airline == "turkish" else "utc",
                 eval_mode=eval_mode,
                 strict_validation=strict_validation,
@@ -1054,6 +1058,7 @@ def evaluate_full(
                 )
         result = solve_pool_completion(
             pool, n_total, lambda_excess=lambda_dh, time_limit=ip_time_limit,
+            threads=ip_threads,
             reposition_penalty=reposition_penalty, reserve_penalty=reserve_penalty,
             artificial_penalty=artificial_penalty,
             auto_operational=auto_operational,
@@ -1232,6 +1237,8 @@ if __name__ == "__main__":
                         help=f"Flights per rollout (default: {config.EPISODE_MAX_FLIGHTS})")
     parser.add_argument("--ip-time-limit", type=int, default=3600,
                         help="CBC solver time limit in seconds (default: 3600)")
+    parser.add_argument("--ip-threads", type=int, default=1,
+                        help="CBC solver threads (default: 1)")
     parser.add_argument("--lambda-dh", type=float, default=10.0,
                         help="DH penalty weight (default: 10.0)")
     parser.add_argument("--device", default="cpu")
@@ -1302,6 +1309,7 @@ if __name__ == "__main__":
         window_days=args.window_days,
         subset_size=args.subset_size,
         ip_time_limit=args.ip_time_limit,
+        ip_threads=args.ip_threads,
         lambda_dh=args.lambda_dh,
         device=args.device,
         turkish_files=args.turkish_files,

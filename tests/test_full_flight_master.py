@@ -1,6 +1,7 @@
 """V2 full-flight master 단위 테스트."""
 
 import unittest
+from unittest.mock import patch
 
 from evaluation.full_flight_master import FullFlightInputError, calibrate_completion_penalties, solve_full_flight_master, validate_master_inputs
 from evaluation.completion_runner import merge_rescue_columns, solve_completion_stages
@@ -225,6 +226,26 @@ class PenaltyCalibrationTests(unittest.TestCase):
         result = solve_full_flight_master([], [10], allow_artificial=True)
         self.assertEqual(result["penalties"]["artificial_penalty"], 8)
         self.assertEqual(result["artificial_cost"], 8)
+
+
+
+class SolverPerformanceTests(unittest.TestCase):
+    def test_structural_infeasibility_skips_model_construction(self):
+        with patch("evaluation.full_flight_master.pulp.LpProblem") as problem_mock:
+            result = solve_full_flight_master([_column(legs=[10])], [10, 20])
+        problem_mock.assert_not_called()
+        self.assertTrue(result["solve_skipped"])
+        self.assertEqual(result["structural_infeasible_flight_ids"], [20])
+
+    def test_threads_are_forwarded_to_cbc(self):
+        with patch("evaluation.full_flight_master.pulp.PULP_CBC_CMD") as solver_mock:
+            from evaluation.full_flight_master import _solver
+            _solver(60, False, False, threads=8)
+        solver_mock.assert_called_once_with(timeLimit=60, threads=8, msg=0)
+
+    def test_rejects_non_positive_threads(self):
+        with self.assertRaisesRegex(FullFlightInputError, "threads"):
+            solve_full_flight_master([_column(legs=[10])], [10], threads=0)
 
 
 if __name__ == "__main__":
