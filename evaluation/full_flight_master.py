@@ -73,10 +73,14 @@ def validate_master_inputs(
 
 def _solver(time_limit: int, use_gurobi: bool, verbose: bool, threads: int = 1):
     if use_gurobi:
-        try:
-            return pulp.GUROBI(timeLimit=time_limit, msg=int(verbose))
-        except Exception:
-            pass
+        # Gurobi를 명시한 실행은 라이선스/설치 오류를 CBC로 숨기지 않음.
+        # warm start와 Threads를 함께 전달해 root relaxation과 MIP 탐색에 활용함.
+        return pulp.GUROBI(
+            timeLimit=time_limit,
+            threads=threads,
+            warmStart=True,
+            msg=int(verbose),
+        )
     return pulp.PULP_CBC_CMD(timeLimit=time_limit, threads=threads, msg=int(verbose))
 
 
@@ -235,12 +239,35 @@ def solve_full_flight_master(
         problem += cover_sum + completion_sum >= 1, f"cover_{flight_id}"
         problem += excess[flight_id] >= cover_sum - 1, f"excess_{flight_id}"
 
+    if allow_artificial:
+        # 모든 flight를 artificial로 처리하는 자명한 feasible 해를 초기값으로 제공함.
+        # Gurobi가 최초 incumbent를 찾는 데 쓰는 root heuristic 시간을 줄이기 위함.
+        for variable in x:
+            variable.setInitialValue(0)
+        for variable in excess.values():
+            variable.setInitialValue(0)
+        for variable in reposition.values():
+            variable.setInitialValue(0)
+        for variable in reserve.values():
+            variable.setInitialValue(0)
+        for variable in artificial.values():
+            variable.setInitialValue(1)
+
     if threads < 1:
         raise FullFlightInputError("threads는 1 이상이어야 함")
     problem.solve(_solver(time_limit, use_gurobi, verbose, threads))
     solution_status = getattr(problem, "sol_status", pulp.LpSolutionNoSolutionFound)
-    is_optimal = solution_status == pulp.LpSolutionOptimal
-    is_feasible = solution_status in {pulp.LpSolutionOptimal, pulp.LpSolutionIntegerFeasible}
+    solver_model = getattr(problem, "solverModel", None)
+    gurobi_status = getattr(solver_model, "Status", None) if use_gurobi else None
+    gurobi_solution_count = getattr(solver_model, "SolCount", 0) if use_gurobi else 0
+    if use_gurobi:
+        # PuLP는 Gurobi TIME_LIMIT 상태에서 incumbent가 있어도 Not Solved로
+        # 매핑할 수 있으므로 native Status/SolCount로 feasible 여부를 보정함.
+        is_optimal = gurobi_status == 2
+        is_feasible = is_optimal or gurobi_solution_count > 0
+    else:
+        is_optimal = solution_status == pulp.LpSolutionOptimal
+        is_feasible = solution_status in {pulp.LpSolutionOptimal, pulp.LpSolutionIntegerFeasible}
     status = "Optimal" if is_optimal else ("Feasible" if is_feasible else pulp.LpStatus[problem.status])
     selected = [
         enabled_columns[j] for j, variable in enumerate(x)
@@ -293,6 +320,8 @@ def solve_full_flight_master(
         "selected_column_ids": [column["column_id"] for column in selected],
         "n_pairings": len(selected), "status": status, "is_feasible": is_feasible,
         "is_optimal": is_optimal, "pulp_status": pulp.LpStatus[problem.status],
+        "solver": "gurobi" if use_gurobi else "cbc",
+        "gurobi_status": gurobi_status, "gurobi_solution_count": gurobi_solution_count,
         "pulp_solution_status": pulp.LpSolution.get(solution_status, str(solution_status)),
         "mip_objective": pulp.value(problem.objective) if is_feasible else None,
         "pairing_cost": pairing_cost, "excess_cost": excess_cost,

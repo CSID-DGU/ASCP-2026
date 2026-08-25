@@ -259,6 +259,52 @@ class SolverPerformanceTests(unittest.TestCase):
             _solver(60, False, False, threads=8)
         solver_mock.assert_called_once_with(timeLimit=60, threads=8, msg=0)
 
+    def test_threads_and_warm_start_are_forwarded_to_gurobi(self):
+        with patch("evaluation.full_flight_master.pulp.GUROBI") as solver_mock:
+            from evaluation.full_flight_master import _solver
+            _solver(60, True, False, threads=8)
+        solver_mock.assert_called_once_with(
+            timeLimit=60, threads=8, warmStart=True, msg=0
+        )
+
+    def test_artificial_stage_has_trivial_warm_start(self):
+        captured = {}
+
+        def fake_solve(problem, _solver):
+            captured.update({variable.name: variable.varValue for variable in problem.variables()})
+            problem.status = 1
+            problem.sol_status = 1
+            return 1
+
+        with patch("evaluation.full_flight_master.pulp.LpProblem.solve", new=fake_solve):
+            solve_full_flight_master(
+                [_column(legs=[10])], [10], allow_artificial=True
+            )
+        self.assertEqual(captured["x_0"], 0)
+        self.assertEqual(captured["artificial_10"], 1)
+        self.assertEqual(captured["excess_10"], 0)
+
+    def test_gurobi_time_limit_with_incumbent_is_feasible(self):
+        class NativeModel:
+            Status = 9
+            SolCount = 1
+
+        def fake_solve(problem, _solver):
+            problem.status = 0
+            problem.sol_status = 0
+            problem.solverModel = NativeModel()
+            return 0
+
+        with patch("evaluation.full_flight_master.pulp.LpProblem.solve", new=fake_solve):
+            result = solve_full_flight_master(
+                [_column(legs=[10])], [10], allow_artificial=True, use_gurobi=True
+            )
+        self.assertEqual(result["status"], "Feasible")
+        self.assertTrue(result["is_feasible"])
+        self.assertFalse(result["is_optimal"])
+        self.assertEqual(result["gurobi_status"], 9)
+        self.assertEqual(result["gurobi_solution_count"], 1)
+
     def test_rejects_non_positive_threads(self):
         with self.assertRaisesRegex(FullFlightInputError, "threads"):
             solve_full_flight_master([_column(legs=[10])], [10], threads=0)
