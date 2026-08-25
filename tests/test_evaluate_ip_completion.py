@@ -89,6 +89,14 @@ class RescueCurrentRunValidationTests(unittest.TestCase):
             [self.candidate()], self.flights, self.constraint, [10]
         )
         self.assertEqual(result[0]["_gen_base_airport"], 10)
+        self.assertEqual(result[0]["fly"], 2.0)
+        self.assertEqual(result[0]["elapsed"], 3.0)
+        self.assertEqual(result[0]["dead_time"], 1.0)
+        self.assertEqual(result[0]["n_legs"], 2)
+        self.assertEqual(result[0]["n_duties"], 1)
+        self.assertEqual(result[0]["intra_duty_gap"], 1.0)
+        self.assertEqual(result[0]["inter_duty_excess"], 0.0)
+        self.assertEqual(result[0]["duty_break_indices"], [])
 
     def test_stale_constraint_hash_is_rejected(self):
         candidate = self.candidate()

@@ -575,6 +575,40 @@ def validate_rescue_columns_current_run(rescue_columns, flights_by_id, constrain
             raise ValueError(f"rescue-{index}: constraint_hash가 현재 실행과 다릅니다.")
         rescue["is_legal"] = True
         rescue["_gen_base_airport"] = start_base
+        # rescue schema의 필수 계약은 cost/legs 중심이지만, 공통 결과 집계는
+        # policy pairing과 동일한 시간 metric을 요구함. 현재 flight 기록으로 다시
+        # 계산해 외부 rescue 파일의 누락되거나 오래된 metric도 신뢰하지 않음.
+        first = flights_by_id[legs[0]]
+        last = flights_by_id[legs[-1]]
+        fly = sum(
+            flights_by_id[fid]["arr_time"] - flights_by_id[fid]["dep_time"]
+            for fid in legs
+        )
+        elapsed = last["arr_time"] - first["dep_time"]
+        min_rest = current_constraint["min_rest"]
+        intra_gap = 0.0
+        inter_excess = 0.0
+        n_rest = 0
+        duty_break_indices = []
+        for leg_index, (prev_id, curr_id) in enumerate(zip(legs, legs[1:]), start=1):
+            gap = flights_by_id[curr_id]["dep_time"] - flights_by_id[prev_id]["arr_time"]
+            if gap >= min_rest:
+                n_rest += 1
+                duty_break_indices.append(leg_index)
+                inter_excess += max(gap - min_rest, 0.0)
+            else:
+                intra_gap += max(gap, 0.0)
+        rescue.update({
+            "fly": fly,
+            "elapsed": elapsed,
+            "dead_time": max(elapsed - fly - min_rest * n_rest, 0.0),
+            "is_deadhead": True,
+            "n_legs": len(legs),
+            "n_duties": n_rest + 1,
+            "intra_duty_gap": intra_gap,
+            "inter_duty_excess": inter_excess,
+            "duty_break_indices": duty_break_indices,
+        })
         validated.append(rescue)
     return validated
 
