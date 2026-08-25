@@ -162,7 +162,7 @@ def solve_full_flight_master(
     if not universe:
         return {
             "selected": [], "selected_column_ids": [], "n_pairings": 0,
-            "status": "Empty", "is_feasible": True, "mip_objective": 0.0,
+            "status": "Empty", "is_feasible": True, "is_optimal": True, "mip_objective": 0.0,
             "pairing_cost": 0.0, "excess_cost": 0.0,
             "reposition_cost": 0.0, "reserve_cost": 0.0, "artificial_cost": 0.0,
             "covered_flight_ids": [], "uncovered_flight_ids": [],
@@ -185,7 +185,7 @@ def solve_full_flight_master(
         zero_by_source = {source: 0 for source in sorted(SUPPORTED_SOURCE_TYPES)}
         return {
             "selected": [], "selected_column_ids": [], "n_pairings": 0,
-            "status": "Infeasible", "is_feasible": False, "mip_objective": None,
+            "status": "Infeasible", "is_feasible": False, "is_optimal": False, "mip_objective": None,
             "pairing_cost": 0.0, "excess_cost": 0.0,
             "reposition_cost": 0.0, "reserve_cost": 0.0, "artificial_cost": 0.0,
             "covered_flight_ids": [], "operational_covered_flight_ids": [],
@@ -238,8 +238,10 @@ def solve_full_flight_master(
     if threads < 1:
         raise FullFlightInputError("threads는 1 이상이어야 함")
     problem.solve(_solver(time_limit, use_gurobi, verbose, threads))
-    status = pulp.LpStatus[problem.status]
-    is_feasible = status in {"Optimal", "Feasible"}
+    solution_status = getattr(problem, "sol_status", pulp.LpSolutionNoSolutionFound)
+    is_optimal = solution_status == pulp.LpSolutionOptimal
+    is_feasible = solution_status in {pulp.LpSolutionOptimal, pulp.LpSolutionIntegerFeasible}
+    status = "Optimal" if is_optimal else ("Feasible" if is_feasible else pulp.LpStatus[problem.status])
     selected = [
         enabled_columns[j] for j, variable in enumerate(x)
         if is_feasible and (variable.value() or 0.0) > 0.5
@@ -290,6 +292,8 @@ def solve_full_flight_master(
         "selected": selected,
         "selected_column_ids": [column["column_id"] for column in selected],
         "n_pairings": len(selected), "status": status, "is_feasible": is_feasible,
+        "is_optimal": is_optimal, "pulp_status": pulp.LpStatus[problem.status],
+        "pulp_solution_status": pulp.LpSolution.get(solution_status, str(solution_status)),
         "mip_objective": pulp.value(problem.objective) if is_feasible else None,
         "pairing_cost": pairing_cost, "excess_cost": excess_cost,
         "reposition_cost": reposition_cost, "reserve_cost": reserve_cost,

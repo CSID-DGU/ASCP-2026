@@ -237,6 +237,22 @@ class SolverPerformanceTests(unittest.TestCase):
         self.assertTrue(result["solve_skipped"])
         self.assertEqual(result["structural_infeasible_flight_ids"], [20])
 
+    def test_time_limited_incumbent_is_feasible_not_optimal(self):
+        def fake_solve(problem, _solver):
+            problem.status = 1
+            problem.sol_status = 2
+            return 1
+
+        with patch("evaluation.full_flight_master.pulp.LpProblem.solve", new=fake_solve):
+            result = solve_full_flight_master(
+                [_column(legs=[10])], [10], allow_artificial=True
+            )
+        self.assertEqual(result["status"], "Feasible")
+        self.assertTrue(result["is_feasible"])
+        self.assertFalse(result["is_optimal"])
+        self.assertEqual(result["pulp_status"], "Optimal")
+        self.assertEqual(result["pulp_solution_status"], "Solution Found")
+
     def test_threads_are_forwarded_to_cbc(self):
         with patch("evaluation.full_flight_master.pulp.PULP_CBC_CMD") as solver_mock:
             from evaluation.full_flight_master import _solver
