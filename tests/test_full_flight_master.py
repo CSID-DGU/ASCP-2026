@@ -257,7 +257,9 @@ class SolverPerformanceTests(unittest.TestCase):
         with patch("evaluation.full_flight_master.pulp.PULP_CBC_CMD") as solver_mock:
             from evaluation.full_flight_master import _solver
             _solver(60, False, False, threads=8)
-        solver_mock.assert_called_once_with(timeLimit=60, threads=8, msg=0)
+        solver_mock.assert_called_once_with(
+            timeLimit=60, threads=8, warmStart=True, msg=0
+        )
 
     def test_threads_and_warm_start_are_forwarded_to_gurobi(self):
         with patch("evaluation.full_flight_master.pulp.GUROBI") as solver_mock:

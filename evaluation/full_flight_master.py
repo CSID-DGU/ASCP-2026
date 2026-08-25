@@ -81,7 +81,9 @@ def _solver(time_limit: int, use_gurobi: bool, verbose: bool, threads: int = 1):
             warmStart=True,
             msg=int(verbose),
         )
-    return pulp.PULP_CBC_CMD(timeLimit=time_limit, threads=threads, msg=int(verbose))
+    return pulp.PULP_CBC_CMD(
+        timeLimit=time_limit, threads=threads, warmStart=True, msg=int(verbose)
+    )
 
 
 def calibrate_completion_penalties(columns: Sequence[Dict]) -> Dict[str, float]:
