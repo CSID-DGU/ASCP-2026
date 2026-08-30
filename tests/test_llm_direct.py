@@ -7,7 +7,10 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "RL"))
 
-from evaluation.llm_direct import evaluate_direct_solution  # noqa: E402
+from evaluation.llm_direct import (  # noqa: E402
+    build_legacy_forced_100,
+    evaluate_direct_solution,
+)
 
 
 CONSTRAINT = {
@@ -101,6 +104,26 @@ class DirectEvaluationTests(unittest.TestCase):
             "DECLARED_BASE_MISMATCH",
             result["invalid_pairings"][0]["violation_codes"],
         )
+
+    def test_forced_100_is_always_a_separate_non_primary_view(self):
+        direct = self.evaluate([record(1, [1, 2, 3])], [4, 5, 6])
+        forced = build_legacy_forced_100(direct, FLIGHTS)
+        self.assertFalse(direct["solution_feasible"])
+        self.assertEqual(direct["legal_union_coverage"], 0.5)
+        self.assertEqual(forced["synthetic_completion_coverage"], 1.0)
+        self.assertEqual(forced["forced_flight_ids"], [4, 5, 6])
+        self.assertFalse(forced["is_legal_solution"])
+        self.assertFalse(forced["use_as_primary_result"])
+
+    def test_forced_100_keeps_previous_duplicate_policy(self):
+        direct = self.evaluate(
+            [record(1, [1, 2, 3]), record(2, [1, 2, 3])],
+            [4, 5, 6],
+        )
+        forced = build_legacy_forced_100(direct, FLIGHTS)
+        self.assertEqual(forced["duplicate_legal_flight_ids"], [1, 2, 3])
+        self.assertEqual(forced["legacy_valid_pairing_count"], 0)
+        self.assertEqual(forced["forced_flight_ids"], [1, 2, 3, 4, 5, 6])
 
 
 if __name__ == "__main__":

@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Sequence
 
 from evaluation.llm_scoring import score_submitted_pairing
 from evaluation.validator import VALIDATOR_VERSION, constraint_hash
+
+try:
+    import config
+except ModuleNotFoundError:
+    from RL import config
 
 
 DECLARED_BASE_MISMATCH = "DECLARED_BASE_MISMATCH"
@@ -66,6 +71,71 @@ def aggregate_direct_metrics(scored_pairings: Sequence[Dict]) -> Dict:
         "ftc_pct": total_intra_gap / total_fly * 100.0 if total_fly else 0.0,
         "avg_legs_per_pairing": total_legs / n_pairings if n_pairings else 0.0,
         "avg_duties_per_pairing": total_duties / n_pairings if n_pairings else 0.0,
+    }
+
+
+def build_legacy_forced_100(direct_result: Dict, flights: Dict[int, Dict]) -> Dict:
+    """기존 forced-singleton 수치를 primary direct 결과와 분리해 계산함."""
+    universe = set(flights)
+    legal_pairings = list(direct_result["legal_pairings"])
+    legal_counts = Counter(
+        flight_id for pairing in legal_pairings for flight_id in pairing["legs"]
+    )
+    duplicate_legal_ids = {
+        flight_id for flight_id, count in legal_counts.items() if count > 1
+    }
+    # 기존 evaluator와 같이 중복 flight가 든 legal pairing을 forced 계산에서 모두 제외함.
+    legacy_valid_pairings = [
+        pairing
+        for pairing in legal_pairings
+        if not duplicate_legal_ids.intersection(pairing["legs"])
+    ]
+    legacy_covered = {
+        flight_id
+        for pairing in legacy_valid_pairings
+        for flight_id in pairing["legs"]
+        if flight_id in universe
+    }
+    forced_flight_ids = sorted(universe - legacy_covered)
+    valid_metrics = aggregate_direct_metrics(legacy_valid_pairings)
+    n_forced = len(forced_flight_ids)
+    n_pairings = len(legacy_valid_pairings) + n_forced
+    forced_fly = sum(
+        flights[flight_id]["arr_time"] - flights[flight_id]["dep_time"]
+        for flight_id in forced_flight_ids
+    )
+    total_fly = valid_metrics["total_flying_time"] + forced_fly
+    total_dead = valid_metrics["total_dead_time_within_duty"]
+    valid_legs = sum(pairing["n_legs"] for pairing in legacy_valid_pairings)
+    valid_duties = sum(pairing["n_duties"] for pairing in legacy_valid_pairings)
+    forced_unit_cost = config.IP_DEADHEAD_PENALTY + config.IP_PAIRING_FIXED_COST
+
+    return {
+        "schema_version": "legacy-forced-100-1.0",
+        "synthetic": n_forced > 0,
+        "is_legal_solution": bool(direct_result["solution_feasible"] and n_forced == 0),
+        "use_as_primary_result": False,
+        "duplicate_policy": "invalidate-all-overlapping-legal-pairings",
+        "legacy_valid_pairing_count": len(legacy_valid_pairings),
+        "duplicate_legal_flight_ids": sorted(duplicate_legal_ids),
+        "forced_flight_ids": forced_flight_ids,
+        "n_forced_pairings": n_forced,
+        "synthetic_completion_coverage": 1.0,
+        "n_pairings": n_pairings,
+        "n_deadheads": n_forced,
+        "man_days": valid_metrics["man_days"] + n_forced,
+        "total_flying_time": total_fly,
+        "total_dead_time_within_duty": total_dead,
+        "raw_dead_time_for_cost": valid_metrics["raw_dead_time_for_cost"],
+        "ftc_pct": total_dead / total_fly * 100.0 if total_fly else 0.0,
+        "total_cost": valid_metrics["total_cost"] + n_forced * forced_unit_cost,
+        "avg_legs_per_pairing": (
+            (valid_legs + n_forced) / n_pairings if n_pairings else 0.0
+        ),
+        "avg_duties_per_pairing": (
+            (valid_duties + n_forced) / n_pairings if n_pairings else 0.0
+        ),
+        "forced_unit_cost": forced_unit_cost,
     }
 
 
