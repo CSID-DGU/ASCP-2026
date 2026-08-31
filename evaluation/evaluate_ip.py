@@ -1005,6 +1005,9 @@ def evaluate_full(
         lp_feedback = solve_full_universe_lp(
             pool, range(n_total), lambda_excess=lambda_dh,
             artificial_penalty=_artificial_penalty,
+            solver=ip_solver,
+            threads=ip_threads,
+            time_limit=ip_time_limit,
         )
         signal = build_dual_signal(lp_feedback, dual_mode)
 

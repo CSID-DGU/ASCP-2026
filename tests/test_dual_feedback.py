@@ -13,6 +13,12 @@ from model.decoder import PointerDecoder
 
 
 class FullUniverseDualTests(unittest.TestCase):
+    def test_unknown_solver_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "지원하지 않는 LP solver"):
+            solve_full_universe_lp(
+                [{"legs": [0], "cost": 1.0}], [0], solver="unknown"
+            )
+
     def test_uncovered_flight_remains_in_lp_with_artificial_dual(self):
         result = solve_full_universe_lp(
             [{"legs": [0], "cost": 2.0}], [0, 1], artificial_penalty=100.0

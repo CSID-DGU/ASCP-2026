@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 import math
 import random
+import time
 from typing import Callable, Dict, Iterable, List, Sequence
 
 import pulp
@@ -20,6 +21,9 @@ def solve_full_universe_lp(
     *,
     lambda_excess: float = 1.0,
     artificial_penalty: float = 1000.0,
+    solver: str = "cbc",
+    threads: int = 1,
+    time_limit: float | None = None,
     verbose: bool = False,
 ) -> Dict:
     """후보가 없는 flight도 artificial slack으로 포함한 LP를 풂."""
@@ -73,9 +77,37 @@ def solve_full_universe_lp(
         problem += cover_sum + artificial[flight_id] >= 1, f"cover_{flight_id}"
         problem += excess[flight_id] >= cover_sum - 1, f"excess_{flight_id}"
 
-    problem.solve(pulp.PULP_CBC_CMD(msg=int(verbose)))
+    if solver == "gurobi":
+        lp_solver = pulp.GUROBI(
+            mip=False, msg=bool(verbose), timeLimit=time_limit,
+            Threads=max(1, int(threads)),
+        )
+    elif solver == "cbc":
+        lp_solver = pulp.PULP_CBC_CMD(
+            mip=False, msg=int(verbose), timeLimit=time_limit,
+            threads=max(1, int(threads)),
+        )
+    else:
+        raise DualFeedbackError(f"지원하지 않는 LP solver: {solver}")
+
+    started = time.monotonic()
+    print(
+        f"[dual-lp] solver={solver}, columns={len(normalized)}, "
+        f"flights={len(universe)}, threads={max(1, int(threads))}, "
+        f"time_limit={time_limit}",
+        flush=True,
+    )
+    problem.solve(lp_solver)
+    elapsed = time.monotonic() - started
+    print(
+        f"[dual-lp] status={pulp.LpStatus[problem.status]}, elapsed={elapsed:.1f}s",
+        flush=True,
+    )
     if problem.status != pulp.LpStatusOptimal:
-        raise DualFeedbackError(f"LP solve 실패: {pulp.LpStatus[problem.status]}")
+        raise DualFeedbackError(
+            f"LP solve 실패: {pulp.LpStatus[problem.status]} "
+            f"(solver={solver}, elapsed={elapsed:.1f}s)"
+        )
 
     coverage_dual = {
         flight_id: float(problem.constraints[f"cover_{flight_id}"].pi or 0.0)
@@ -168,6 +200,9 @@ def run_iterative_dual_feedback(
     max_iterations: int = 3,
     lambda_excess: float = 1.0,
     artificial_penalty: float = 1000.0,
+    solver: str = "cbc",
+    threads: int = 1,
+    time_limit: float | None = None,
 ) -> Dict:
     """LP→dual→candidate 생성→병합을 반복하고 trace를 반환함."""
     pool = [dict(column) for column in initial_columns]
@@ -177,6 +212,9 @@ def run_iterative_dual_feedback(
             pool, all_flight_ids,
             lambda_excess=lambda_excess,
             artificial_penalty=artificial_penalty,
+            solver=solver,
+            threads=threads,
+            time_limit=time_limit,
         )
         entry = {
             "iteration": iteration,
