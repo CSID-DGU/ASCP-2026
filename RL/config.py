@@ -128,7 +128,7 @@ CHECKPOINT_COVERAGE_TOL_PCT = 1.0
 
 MIN_LEGS_FOR_PAIRING = 3      # target minimum legs per pairing
 MIN_LEGS_PENALTY = -3.0       # extra EndPairing penalty when total_legs < MIN_LEGS_FOR_PAIRING
-PHASE2_DUAL_WEIGHT   = 0.6   # w_dual(e) target weight (Eq. 10) for the net-dual reward term
+PHASE2_DUAL_WEIGHT   = 0.1   # w_dual(e) target weight (Eq. 10) for the net-dual reward term
 
 # Reward shaping
 LEG_CONN_BONUS = 1.5          # 연결 flight 추가 시 즉각 보너스 (h 단위, dead_time 패널티와 동일 스케일)
