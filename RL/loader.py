@@ -41,10 +41,10 @@ _UTC_OFFSET_MIN = {
     **{ap: -600 for ap in ['ADK', 'HNL', 'KOA', 'LIH', 'OGG']},
     **{ap: -540 for ap in ['ADQ', 'ANC', 'BET', 'BRW', 'CDV', 'FAI', 'JNU', 'KTN', 'OME', 'OTZ',
                             'PSG', 'SCC', 'SIT', 'WRG', 'YAK']},
-    **{ap: -480 for ap in ['BLI', 'BUR', 'GEG', 'LAS', 'LAX', 'LGB', 'OAK', 'ONT', 'PDX', 'PSP',
+    **{ap: -480 for ap in ['BLI', 'BUR', 'GEG', 'LAS', 'LAX', 'LGB', 'OAK', 'ONT', 'PDX', 'PSC', 'PSP',
                             'RNO', 'SAN', 'SBA', 'SEA', 'SFO', 'SJC', 'SMF', 'SNA']},
-    **{ap: -420 for ap in ['ABQ', 'BIL', 'BOI', 'BZN', 'COS', 'DEN', 'EGE', 'ELP', 'FCA', 'HDN',
-                            'JAC', 'MSO', 'MTJ', 'PHX', 'SLC', 'TUS']},
+    **{ap: -420 for ap in ['ABQ', 'BIL', 'BOI', 'BZN', 'COS', 'DEN', 'EGE', 'ELP', 'FCA', 'GTF', 'HDN',
+                            'JAC', 'MSO', 'MTJ', 'PHX', 'RAP', 'SLC', 'TUS']},
     **{ap: -360 for ap in ['ATW', 'AUS', 'BHM', 'BIS', 'BNA', 'BTR', 'CID', 'DAL', 'DFW', 'DSM',
                             'ECP', 'FAR', 'FSD', 'GPT', 'GRB', 'HOU', 'HSV', 'IAH', 'ICT', 'JAN',
                             'LFT', 'LIT', 'MCI', 'MDW', 'MEM', 'MKE', 'MOB', 'MSN', 'MSP', 'MSY',
@@ -55,7 +55,7 @@ _UTC_OFFSET_MIN = {
                             'GRR', 'GSO', 'GSP', 'HPN', 'IAD', 'ILM', 'IND', 'JAX', 'JFK', 'LEX',
                             'LGA', 'MCO', 'MDT', 'MHT', 'MIA', 'MLB', 'MYR', 'ORF', 'PBI', 'PHF',
                             'ORH', 'PHL', 'PIT', 'PVD', 'PWM', 'RDU', 'RIC', 'ROA', 'ROC', 'RSW',
-                            'SAV', 'SDF', 'SRQ', 'SWF', 'SYR', 'TLH', 'TPA', 'TRI', 'TYS']},
+                            'SAV', 'SDF', 'SRQ', 'SWF', 'SYR', 'TLH', 'TPA', 'TRI', 'TVC', 'TYS']},
     **{ap: -240 for ap in ['BQN', 'PSE', 'SJU', 'STT', 'STX']},
 }
 
