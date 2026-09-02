@@ -107,7 +107,9 @@ def get_mask_physical_only(state, flights, assigned, constraint=None, stage=3):
         mask[config.END_DUTY] = 1
 
     # min_pairing_legs 하드 제약 제거됨 (RL/environment.py와 동일, 2026-09-02)
-    mask[config.END_PAIRING] = 1
+    # 0-leg(빈) pairing 종료만 방지 (RL/environment.py와 동일, 2026-09-02)
+    if state.get("total_legs", 0) > 0:
+        mask[config.END_PAIRING] = 1
 
     return mask.tolist()
 

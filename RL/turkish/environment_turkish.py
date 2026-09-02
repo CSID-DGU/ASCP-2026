@@ -122,7 +122,8 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
     # END_PAIRING (mask[-1] = mask[N+1])
     pairing_elapsed_days = (state["current_time"] - pairing_start_time) / 24.0
     can_end_pairing = (
-        pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
+        state.get("total_legs", 0) > 0  # 0-leg(빈) pairing 종료 방지 -- min_pairing_legs 제거 후에도 최소한의 하한
+        and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
     # Turkish pairing은 HB1/HB2 중 어느 home base에서도 종료 가능함.
     if state["current_airport"] not in base_id_set:
@@ -187,6 +188,7 @@ def get_mask_batch(states, flights, assigneds, constraint=None, stage=3):
         [s.get("pairing_start_time", s["current_time"]) for s in states], dtype=torch.float64
     )
     legs_b       = torch.tensor([s.get("legs", 0) for s in states], dtype=torch.float64)
+    total_legs_b = torch.tensor([s.get("total_legs", 0) for s in states], dtype=torch.float64)
 
     assigned_b = torch.tensor(
         [[bool(a.get(fid, False)) for fid in flight_ids] for a in assigneds]
@@ -265,7 +267,8 @@ def get_mask_batch(states, flights, assigneds, constraint=None, stage=3):
     pairing_elapsed_days = (current_time_b - pairing_start_time_b) / 24.0
     in_base_set = torch.isin(current_airport_b, torch.tensor(sorted(base_id_set), dtype=torch.long))
     can_end_pairing = (
-        (pairing_elapsed_days <= max_pd)
+        (total_legs_b > 0)  # 0-leg(빈) pairing 종료 방지 -- min_pairing_legs 제거 후에도 최소한의 하한
+        & (pairing_elapsed_days <= max_pd)
         & in_base_set
     )  # (B,)
 
