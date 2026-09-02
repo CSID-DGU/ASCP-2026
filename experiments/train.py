@@ -1177,7 +1177,8 @@ def run_curriculum_stage(
 
 
 def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_constraint=False,
-          ckpt_dir=None, from_stage2=False, turkish_files=None, dual_weight=None, dual_mode="real"):
+          ckpt_dir=None, from_stage2=False, turkish_files=None, dual_weight=None, dual_mode="real",
+          airport_universe_paths=None):
     WINDOW_DAYS = (
         max(config.AIRLINE_WINDOW_DAYS[a] for a in config.MULTI_AIRLINES)
         if multi_airline else config.AIRLINE_WINDOW_DAYS[config.AIRLINE]
@@ -1214,7 +1215,16 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
             airport_map  = build_airport_map_turkish(df=_turkish_df)
         else:
             DATA_PATH   = config.AIRLINE_DATA[config.AIRLINE]
-            airport_map = build_airport_map(DATA_PATH)
+            if airport_universe_paths:
+                # 학습은 DATA_PATH만 쓰되, 공항 embedding 사전은 seasonal transfer 평가에
+                # 쓸 다른 달(2월/8월 등)까지 합쳐 미리 잡는다. 학습에 안 나온 공항은 그냥
+                # 학습되지 않은 embedding으로 남고, 이게 "본 적 없는 공항"의 정확한 표현이다.
+                # (미리 안 잡으면 evaluate_ip.py가 unknown airport로 평가를 거부함)
+                _map_paths = [DATA_PATH] + [p for p in airport_universe_paths if p != DATA_PATH]
+                airport_map = build_airport_map(_map_paths)
+                print(f"airport universe: {len(_map_paths)}개 경로 통합 -> {_map_paths}")
+            else:
+                airport_map = build_airport_map(DATA_PATH)
         base_ids   = bases_to_ids(airline_bases, airport_map)
         n_airports = len(airport_map)
         print(f"airports: {n_airports}개, airline: {config.AIRLINE}, bases: {airline_bases}")
@@ -1692,6 +1702,11 @@ if __name__ == "__main__":
                              "delta-small 등 대체 데이터셋으로 학습/이어받기할 때 지정")
     parser.add_argument("--seed", type=int, default=None,
                         help="random/torch seed 고정 (재현 가능한 학습용). 미지정 시 시드 고정 안 함")
+    parser.add_argument("--airport-universe-paths", default=None,
+                        help="공항 embedding 사전을 만들 때 합칠 CSV 경로들(콤마 구분). 단일 항공사 학습 전용. "
+                             "학습 rollout은 --data-path만 쓰고, 사전만 넓힌다. "
+                             "예: 1월로 학습하되 2, 8월 seasonal eval까지 하려면 "
+                             "--airport-universe-paths RL/data/delta_2019_02.csv,RL/data/delta_2019_08.csv")
     args = parser.parse_args()
     if args.seed is not None:
         random.seed(args.seed)
@@ -1709,7 +1724,15 @@ if __name__ == "__main__":
     print(f"time_basis: {'Turkish 전용 시각' if config.AIRLINE == 'turkish' and not args.multi_airline else 'UTC (BTS 고정)'}")
     print(f"log: {args.log}")
     _turkish_files = [f.strip() for f in args.turkish_files.split(",")] if args.turkish_files else None
+    _universe_paths = (
+        [p.strip() for p in args.airport_universe_paths.split(",") if p.strip()]
+        if args.airport_universe_paths else None
+    )
+    if _universe_paths and args.multi_airline:
+        parser.error("--airport-universe-paths는 단일 항공사 학습 전용입니다 "
+                     "(--multi-airline은 이미 3항공사 통합 사전을 씀)")
     train(phase2_only=args.phase2_only, multi_airline=args.multi_airline, skip_film=args.skip_film,
           skip_decoder_constraint=args.skip_decoder_constraint,
           ckpt_dir=args.ckpt_dir, from_stage2=args.from_stage2, turkish_files=_turkish_files,
-          dual_weight=args.dual_weight, dual_mode=args.dual_mode)
+          dual_weight=args.dual_weight, dual_mode=args.dual_mode,
+          airport_universe_paths=_universe_paths)
