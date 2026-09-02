@@ -14,7 +14,7 @@ REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
 OUT_DIR = os.path.join(DATA_DIR, "small-scale")
 
 run = wandb.init(
-    project="ASCP-2026-paper",
+    project="ASCP-2026-journal",
     job_type="data-quality",
     name="data-quality-analysis",
 )

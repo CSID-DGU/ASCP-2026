@@ -766,7 +766,7 @@ def evaluate_full(
     device="cpu",
     turkish_files=None,
     use_wandb=False,
-    wandb_project="ASCP-2026-paper",
+    wandb_project="ASCP-2026-journal",
     compute_gap=False,
     full_flight_master=False,
     completion_report_path=None,
@@ -1293,7 +1293,7 @@ if __name__ == "__main__":
                              "if unset. If given explicitly, uses those files in full with no date filter.")
     parser.add_argument("--wandb", action="store_true",
                         help="Log the eval config + console output + final result metrics to wandb (job_type=eval)")
-    parser.add_argument("--wandb-project", default="ASCP-2026-paper")
+    parser.add_argument("--wandb-project", default="ASCP-2026-journal")
     parser.add_argument("--compute-gap", action="store_true",
                         help="After solving the MIP, also solve the LP relaxation over the same "
                              "pool to compute Gap%%=(MIP_obj-LP_obj)/LP_obj*100 (same definition as "

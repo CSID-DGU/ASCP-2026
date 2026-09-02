@@ -1255,7 +1255,7 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
     tag += f"-dual-{dual_mode}"
     run_name = f"phase2-{dual_mode}" if phase2_only else tag
     wandb.init(
-        project="ASCP-2026-paper",
+        project="ASCP-2026-journal",
         name=run_name,
         config={
             "airline":            "multi" if multi_airline else config.AIRLINE,
