@@ -17,7 +17,6 @@ DEFAULT_CONSTRAINTS = {
     "min_rest":         10.0,   # duty 간 최소 휴식 (h) — FAR 117 §117.25
     "max_duty_periods":    2,   # pairing당 최대 overnight rest 수 (overnight 횟수 기준)
     "max_pairing_days":    5,   # pairing 최대 기간 (일) — BTS p95 추정
-    "min_pairing_legs":    2,   # END_PAIRING 허용 최소 leg 수 (항공사별 override)
     "pairing_cost":      5.0,   # END_PAIRING reward 패널티
     "uncovered_penalty": 10.0,  # 미배정 flight 1개당 패널티
     "base_penalty":     500.0,

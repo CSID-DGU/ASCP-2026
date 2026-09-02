@@ -11,5 +11,4 @@ TURKISH_CONSTRAINTS = {
     "min_rest":        10.0,  # min rest per EASA FTL SS ORO.FTL.235 (h)
     "max_duty_periods":   2,  # max overnight rests per pairing
     "max_pairing_days":   3,  # max pairing length (days)
-    "min_pairing_legs":   2,  # min legs required for END_PAIRING -- narrow max_conn makes 3-leg hard to achieve
 }

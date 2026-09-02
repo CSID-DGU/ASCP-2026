@@ -9,6 +9,5 @@ ALASKA_CONSTRAINTS = {
     "min_rest":        10.0,  # min rest between duties (h) -- FAR 117 SS117.25
     "max_duty_periods":   2,  # max overnight rests per pairing (i.e. number of overnights)
     "max_pairing_days":   5,  # max pairing length (days) -- BTS p95 estimate
-    "min_pairing_legs":   3,  # min legs required for END_PAIRING -- blocks 2-leg Nash
     # base_airport excluded -- injected per episode
 }

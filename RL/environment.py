@@ -137,12 +137,9 @@ def get_mask(state, flights, assigned, constraint=None, stage=3):
         mask[config.END_DUTY] = 1
 
     # EndPairing (mask[-1] = mask[N+1])
-    # min_pairing_legs: airline-specific (Delta/Alaska/JetBlue=3, Turkish=2)
     pairing_elapsed_days = (state["current_time"] - pairing_start_time) / 24.0
-    min_pairing_legs = c.get("min_pairing_legs", 2)
     can_end_pairing = (
-        state.get("total_legs", 0) >= min_pairing_legs
-        and pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
+        pairing_elapsed_days <= c.get("max_pairing_days", config.DEFAULT_CONSTRAINTS["max_pairing_days"])
     )
     # CPP pairing은 base에 도착한 상태에서만 종료 가능함.
     if state["current_airport"] != base_ap:
@@ -179,7 +176,6 @@ def get_mask_batch(states, flights, assigneds, constraint=None, stage=3):
     max_legs         = c.get("max_legs", config.DEFAULT_CONSTRAINTS["max_legs"])
     min_conn         = c.get("min_conn", config.DEFAULT_CONSTRAINTS["min_conn"])
     max_conn         = c.get("max_conn", config.DEFAULT_CONSTRAINTS["max_conn"])
-    min_pairing_legs = c.get("min_pairing_legs", 2)
     custom_max_duty  = c.get("max_duty")
 
     # ── flight별 공유 텐서 (N,) ──────────────────────────────────────────
@@ -207,7 +203,6 @@ def get_mask_batch(states, flights, assigneds, constraint=None, stage=3):
         [s.get("pairing_start_time", s["current_time"]) for s in states], dtype=torch.float64
     )
     legs_b       = torch.tensor([s.get("legs", 0) for s in states], dtype=torch.float64)
-    total_legs_b = torch.tensor([s.get("total_legs", 0) for s in states], dtype=torch.float64)
 
     assigned_b = torch.tensor(
         [[bool(a.get(fid, False)) for fid in flight_ids] for a in assigneds]
@@ -287,8 +282,7 @@ def get_mask_batch(states, flights, assigneds, constraint=None, stage=3):
     # ── EndPairing ────────────────────────────────────────────────────────
     pairing_elapsed_days = (current_time_b - pairing_start_time_b) / 24.0
     can_end_pairing = (
-        (total_legs_b >= min_pairing_legs)
-        & (pairing_elapsed_days <= max_pd)
+        (pairing_elapsed_days <= max_pd)
         & (current_airport_b == base_ap)
     )  # (B,)
 

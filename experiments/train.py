@@ -308,15 +308,12 @@ def _rollout_with_pairings(flights, constraint, encoder, decoder, encoded, greed
         if len(current_legs) < 1 or pairing_dep is None:
             return
         elapsed   = pairing_last_arr - pairing_dep
-        n_legs    = len(current_legs)
         # 일반 항공사는 동일 base, Turkish는 HB1/HB2 home-base 집합 복귀를 허용함.
         allowed_returns = set(constraint.get("base_ids") or [episode_base]) \
             if constraint.get("allow_cross_base_return") else {episode_base}
         if flight_by_id[current_legs[0]]["origin"] != episode_base \
                 or flight_by_id[current_legs[-1]]["dest"] not in allowed_returns:
             raise ValueError("허용 home base로 복귀하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
-        if n_legs < constraint["min_pairing_legs"]:
-            raise ValueError("최소 leg 수를 충족하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
         if elapsed / 24.0 > constraint["max_pairing_days"]:
             raise ValueError("최대 pairing 기간을 초과한 pairing은 dual pool에 저장할 수 없습니다.")
         dead_time = max(elapsed - pairing_fly - pairing_rest, 0.0)
@@ -513,8 +510,6 @@ def _dual_pool_flush_pairing(ctx, flight_by_id, constraint, episode_base, is_for
     if flight_by_id[ctx.current_legs[0]]["origin"] != episode_base \
             or flight_by_id[ctx.current_legs[-1]]["dest"] not in allowed_returns:
         raise ValueError("허용 home base로 복귀하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
-    if n_legs < constraint["min_pairing_legs"]:
-        raise ValueError("최소 leg 수를 충족하지 않은 pairing은 dual pool에 저장할 수 없습니다.")
     if elapsed / 24.0 > constraint["max_pairing_days"]:
         raise ValueError("최대 pairing 기간을 초과한 pairing은 dual pool에 저장할 수 없습니다.")
     dead_time = max(elapsed - ctx.pairing_fly - ctx.pairing_rest, 0.0)
@@ -1416,13 +1411,6 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
         return _constraint_for_episode(
             sampled_airline, base_airport,
             max_duty_periods=1, max_pairing_days=1, base_penalty=5.0,
-            # 항공사 기본 min_pairing_legs(예: Delta=3, 2-leg Nash 방지용)는 단일 duty +
-            # 무경험 정책 조합에서 사실상 통과 불가능한 조건이 됨(실측: avg 6 pairings/3.25%
-            # coverage). Stage1 목적은 기본 연결 패턴 학습이라 legality만 2로 완화 --
-            # reward shaping(config.MIN_LEGS_FOR_PAIRING/MIN_LEGS_PENALTY)은 항공사 무관하게
-            # 여전히 3편 미만 pairing에 페널티를 매겨 2-leg 스팸 유인은 없음(실측: avg 49.75
-            # pairings/17.48% coverage). Stage2/3/Phase2는 항공사 기본값 그대로 유지.
-            min_pairing_legs=2,
         )
 
     def stage2_constraint(sampled_airline, base_airport):
@@ -1475,11 +1463,8 @@ def train(phase2_only=False, multi_airline=False, skip_film=False, skip_decoder_
             # base_penalty는 stage1/2에서 5.0(원래값) 고정 — stage3/phase2부터 config.py의
             # 현재값(500.0)을 그대로 물려받는다. x2gcdva5(stage1/2, p5)를 이어받는 기존
             # run들과 동일 조건을 신규 seed에서도 재현하기 위함.
-            # min_pairing_legs=2: stage1_constraint()와 동일 이유(항공사 기본값 3은
-            # 단일 duty 조합에서 사실상 통과 불가능, reward shaping이 2-leg 스팸을
-            # 별도로 막아줌 -- 상세 근거는 stage1_constraint() 주석 참조)
             stage1_c = {**base_constraint, "max_duty_periods": 1, "max_pairing_days": 1,
-                       "base_penalty": 5.0, "min_pairing_legs": 2}
+                       "base_penalty": 5.0}
             run_curriculum_stage(1, encoder, decoder, optimizer,
                                  n_episodes=1000, constraint_override=stage1_c,
                                  save_dir=save_dir, flight_sampler=flight_sampler,

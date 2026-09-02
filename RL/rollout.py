@@ -54,7 +54,6 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
     # 모든 pairing은 허용 base에서 시작하고 해당 pairing의 base로 복귀해야 함.
     all_bases      = list(constraint.get("base_ids") or [constraint["base_airport"]])
     min_rest         = constraint.get("min_rest", 10.0)
-    min_pairing_legs = constraint.get("min_pairing_legs", 2)
 
     _reach_cache = {}
     if constraint.get("_base_reach") is not None:
@@ -98,8 +97,6 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
             if cur_c.get("allow_cross_base_return") else {pairing_start_ap}
         if flight_by_id[current_legs[-1]]["dest"] not in allowed_returns:
             raise ValueError("허용 home base로 복귀하지 않은 pairing은 저장할 수 없습니다.")
-        if n_legs < min_pairing_legs:
-            raise ValueError("최소 leg 수를 충족하지 않은 pairing은 저장할 수 없습니다.")
         if elapsed / 24.0 > cur_c["max_pairing_days"]:
             raise ValueError("최대 pairing 기간을 초과한 pairing은 저장할 수 없습니다.")
         dead_time = max(elapsed - fly - pairing_rest, 0.0)
@@ -194,7 +191,6 @@ def rollout_with_pairings(flights, constraint, encoder, decoder, encoded,
         for i, r in enumerate(leg_recs):
             elapsed_days = (r["arr"] - leg_recs[0]["dep"]) / 24.0
             if (r["dest"] in allowed_returns
-                    and i + 1 >= min_pairing_legs
                     and elapsed_days <= cur_c["max_pairing_days"]):
                 k = i + 1
                 prefix_end_ap = r["dest"]
@@ -397,7 +393,7 @@ class _RolloutCtx:
         self.finished = False
 
 
-def _flush_pairing(ctx, flight_by_id, min_pairing_legs, is_forced=False):
+def _flush_pairing(ctx, flight_by_id, is_forced=False):
     if len(ctx.current_legs) < 1 or ctx.pairing_dep is None:
         return
     elapsed = ctx.pairing_last_arr - ctx.pairing_dep
@@ -407,8 +403,6 @@ def _flush_pairing(ctx, flight_by_id, min_pairing_legs, is_forced=False):
         if ctx.cur_c.get("allow_cross_base_return") else {ctx.pairing_start_ap}
     if flight_by_id[ctx.current_legs[-1]]["dest"] not in allowed_returns:
         raise ValueError("허용 home base로 복귀하지 않은 pairing은 저장할 수 없습니다.")
-    if n_legs < min_pairing_legs:
-        raise ValueError("최소 leg 수를 충족하지 않은 pairing은 저장할 수 없습니다.")
     if elapsed / 24.0 > ctx.cur_c["max_pairing_days"]:
         raise ValueError("최대 pairing 기간을 초과한 pairing은 저장할 수 없습니다.")
     dead_time = max(elapsed - fly - ctx.pairing_rest, 0.0)
@@ -476,7 +470,7 @@ def _emit_prefix(ctx, recs, end_ap, start_ap, min_rest):
     })
 
 
-def _salvage_doomed(ctx, min_pairing_legs, min_rest):
+def _salvage_doomed(ctx, min_rest):
     k = 0
     prefix_end_ap = None
     allowed_returns = set(ctx.cur_c.get("base_ids") or [ctx.episode_base]) \
@@ -484,7 +478,6 @@ def _salvage_doomed(ctx, min_pairing_legs, min_rest):
     for i, r in enumerate(ctx.leg_recs):
         elapsed_days = (r["arr"] - ctx.leg_recs[0]["dep"]) / 24.0
         if (r["dest"] in allowed_returns
-                and i + 1 >= min_pairing_legs
                 and elapsed_days <= ctx.cur_c["max_pairing_days"]):
             k = i + 1
             prefix_end_ap = r["dest"]
@@ -567,7 +560,7 @@ def _begin_pairing(ctx, flights, all_bases, constraint_for):
 
 
 def _apply_action(ctx, action, flights, flight_by_id, all_bases, constraint_for,
-                  min_rest, min_pairing_legs):
+                  min_rest):
     if action == len(flights):             # EndDuty
         ctx.pairing_rest     += min_rest
         ctx.pairing_n_duties += 1
@@ -575,7 +568,7 @@ def _apply_action(ctx, action, flights, flight_by_id, all_bases, constraint_for,
         return
 
     if action == len(flights) + 1:         # EndPairing
-        _flush_pairing(ctx, flight_by_id, min_pairing_legs, is_forced=False)
+        _flush_pairing(ctx, flight_by_id, is_forced=False)
         if not _begin_pairing(ctx, flights, all_bases, constraint_for):
             ctx.finished = True
         return
@@ -597,7 +590,7 @@ def _apply_action(ctx, action, flights, flight_by_id, all_bases, constraint_for,
     ctx.state, _, done = step(ctx.state, action, flights, ctx.assigned, ctx.cur_c)
     if done:
         if not ctx.state.get("pairing_start", False):
-            _flush_pairing(ctx, flight_by_id, min_pairing_legs, is_forced=False)
+            _flush_pairing(ctx, flight_by_id, is_forced=False)
         ctx.finished = True
 
 
@@ -622,7 +615,6 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
     flight_by_id = {f["id"]: f for f in flights}
     all_bases = list(constraint.get("base_ids") or [constraint["base_airport"]])
     min_rest = constraint.get("min_rest", 10.0)
-    min_pairing_legs = constraint.get("min_pairing_legs", 2)
     # 무한루프 방지(rollout_with_pairings()와 동일한 안전장치, episode별로 독립 집계).
     max_steps = len(flights) * 20
 
@@ -679,7 +671,7 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
                     )
                 if sum(mask_list[:-2]) == 0 and mask_list[-2] == 0 and mask_list[-1] == 0:
                     # 위치와 무관하게 마지막 합법 base 복귀 prefix만 보존함.
-                    _salvage_doomed(ctx, min_pairing_legs, min_rest)
+                    _salvage_doomed(ctx, min_rest)
                     if not _begin_pairing(ctx, flights, all_bases, constraint_for):
                         ctx.finished = True
                     # base/state가 바뀌었을 수 있어 이번 timestep엔 액션을 뽑지 않고
@@ -722,7 +714,7 @@ def rollout_batch(flights, constraint, encoder, decoder, encoded, B=50,
             for ctx, action in zip(d_ctxs, actions):
                 # CPP invariant 위반은 후보 수 감소로 조용히 숨기지 않음.
                 _apply_action(ctx, action, flights, flight_by_id, all_bases,
-                              constraint_for, min_rest, min_pairing_legs)
+                              constraint_for, min_rest)
 
     return [ctx.pairings for ctx in ctxs]
 

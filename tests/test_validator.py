@@ -25,7 +25,6 @@ from validator import (  # noqa: E402
     MAX_LEGS_FAILURE,
     MAX_DUTIES_FAILURE,
     MAX_PAIRING_DAYS_FAILURE,
-    MIN_PAIRING_LEGS_FAILURE,
     TIME_ORDER_FAILURE,
 )
 
@@ -45,7 +44,6 @@ CONSTRAINT = {
     "min_rest": 10.0,
     "max_duty": 13.0, "max_legs": 8,
     "max_duty_periods": 2, "max_pairing_days": 5,
-    "min_pairing_legs": 2,
 }
 
 # Turkish HB1/HB2 비대칭 복귀: HB1(base=BASE)에서 출발해서 HB2(=OTHER)로 끝나는 pairing.
@@ -193,13 +191,6 @@ class ViolationCodeFixtureTests(unittest.TestCase):
         result = validate_pairing({"legs": [0, 1]}, FLIGHTS_VALID, constraint)
         self.assertFalse(result["is_valid"])
         self.assertIn(MAX_PAIRING_DAYS_FAILURE, result["violation_codes"])
-
-    def test_min_pairing_legs_failure_is_caught(self):
-        # 기존 정상 2-leg pairing에 min_pairing_legs만 3으로 올려서 위반 유도
-        constraint = {**CONSTRAINT, "min_pairing_legs": 3}
-        result = validate_pairing({"legs": [0, 1]}, FLIGHTS_VALID, constraint)
-        self.assertFalse(result["is_valid"])
-        self.assertIn(MIN_PAIRING_LEGS_FAILURE, result["violation_codes"])
 
     def test_time_order_failure_is_caught(self):
         # leg1의 출발(3.0)이 leg0의 도착(7.0)보다 이름 -- 시간 역순

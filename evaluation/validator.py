@@ -173,7 +173,6 @@ def _check_duty_and_pairing_limits(legs, duties, flights, constraint, violations
     max_legs         = constraint.get("max_legs", _rl_config.DEFAULT_CONSTRAINTS["max_legs"])
     max_duty_periods = constraint.get("max_duty_periods", _rl_config.DEFAULT_CONSTRAINTS["max_duty_periods"])
     max_pairing_days = constraint.get("max_pairing_days", _rl_config.DEFAULT_CONSTRAINTS["max_pairing_days"])
-    min_pairing_legs = constraint.get("min_pairing_legs", _rl_config.DEFAULT_CONSTRAINTS["min_pairing_legs"])
 
     for duty in duties:
         if len(duty) > max_legs:
@@ -192,8 +191,9 @@ def _check_duty_and_pairing_limits(legs, duties, flights, constraint, violations
     if pairing_days > max_pairing_days:
         violations.append(MAX_PAIRING_DAYS_FAILURE)
 
-    if len(legs) < min_pairing_legs:
-        violations.append(MIN_PAIRING_LEGS_FAILURE)
+    # MIN_PAIRING_LEGS_FAILURE 체크 제거됨(2026-09-02) -- RL/airline_constraints/
+    # delta.py 주석 참조. 상수 자체는 하위 호환을 위해 남겨둠(completion/rescue_generator.py
+    # 매핑 테이블 등에서 참조 가능하나 이제 실제로 발생하지 않음).
 
 
 def validate_pairing(pairing_record: Dict, flights: Dict[int, Dict], constraint: Dict) -> Dict:
