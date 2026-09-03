@@ -63,6 +63,39 @@ class Phase2DualNormalizationTests(unittest.TestCase):
         self.assertNotEqual(real, shuffled)
 
 
+    def test_robust_real_keeps_artificial_signal_without_crushing_covered_values(self):
+        signal = train.normalize_phase2_dual_signal(
+            {0: 1000.0, 1: 8.0, 2: 4.0, 3: 2.0},
+            mode="robust-real", uncovered_flight_ids=[0],
+        )
+        self.assertEqual(signal[0], 1.0)
+        self.assertEqual(signal[1], 1.0)
+        self.assertEqual(signal[2], 0.5)
+        self.assertEqual(signal[3], 0.25)
+
+    def test_robust_real_uses_net_dual_for_covered_flights(self):
+        signal = train.normalize_phase2_dual_signal(
+            {0: 1000.0, 1: 8.0, 2: 4.0},
+            {1: 2.0, 2: 6.0},
+            mode="robust-real", uncovered_flight_ids=[0],
+        )
+        self.assertEqual(signal[0], 1.0)
+        self.assertEqual(signal[1], 1.0)
+        self.assertLess(signal[2], 0.0)
+
+    def test_robust_shuffled_preserves_robust_value_distribution(self):
+        robust = train.normalize_phase2_dual_signal(
+            {0: 1000.0, 1: 8.0, 2: 4.0, 3: 2.0},
+            mode="robust-real", uncovered_flight_ids=[0],
+        )
+        shuffled = train.normalize_phase2_dual_signal(
+            {0: 1000.0, 1: 8.0, 2: 4.0, 3: 2.0},
+            mode="robust-shuffled", uncovered_flight_ids=[0], shuffle_seed=1,
+        )
+        self.assertEqual(sorted(robust.values()), sorted(shuffled.values()))
+        self.assertNotEqual(robust, shuffled)
+
+
 class _DummyLayer:
     weight = torch.zeros((1, 78))
 

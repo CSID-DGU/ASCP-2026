@@ -1,6 +1,7 @@
 import os
 import sys
 import random
+import math
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "RL"))
 import torch
@@ -844,19 +845,41 @@ def normalize_phase2_dual_signal(
         }
     if mode == "coverage-only":
         raw = {flight_id: float(value) for flight_id, value in coverage_duals.items()}
-    elif mode in ("real", "shuffled"):
+    elif mode in ("real", "shuffled", "robust-real", "robust-shuffled"):
         raw = {
             flight_id: float(value) - float(excess_duals.get(flight_id, 0.0))
             for flight_id, value in coverage_duals.items()
         }
     else:
         raise ValueError(f"지원하지 않는 Phase 2 dual mode: {mode}")
-    scale = max([abs(value) for value in raw.values()] + [1.0])
-    normalized = {
-        flight_id: max(-1.0, min(1.0, value / scale))
-        for flight_id, value in raw.items()
-    }
-    if mode == "shuffled":
+    if mode in ("robust-real", "robust-shuffled"):
+        # Artificial singleton의 큰 dual이 정상 후보들의 신호를 0에 가깝게 누르지 않도록
+        # 커버 가능한 flight만으로 95백분위 스케일을 계산하고 미커버 flight는 1로 고정함.
+        uncovered = set(uncovered_flight_ids or ())
+        covered_abs = sorted(
+            abs(value) for flight_id, value in raw.items()
+            if flight_id not in uncovered and abs(value) > 1e-12
+        )
+        if covered_abs:
+            percentile_index = max(0, math.ceil(0.95 * len(covered_abs)) - 1)
+            scale = max(covered_abs[percentile_index], 1e-8)
+        else:
+            scale = 1.0
+        normalized = {
+            flight_id: (
+                1.0 if flight_id in uncovered
+                else max(-1.0, min(1.0, value / scale))
+            )
+            for flight_id, value in raw.items()
+        }
+    else:
+        scale = max([abs(value) for value in raw.values()] + [1.0])
+        normalized = {
+            flight_id: max(-1.0, min(1.0, value / scale))
+            for flight_id, value in raw.items()
+        }
+
+    if mode in ("shuffled", "robust-shuffled"):
         keys = sorted(normalized)
         values = [normalized[key] for key in keys]
         random.Random(shuffle_seed).shuffle(values)
@@ -869,7 +892,10 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                constraint_sampler=None, init_best=float("inf"), dual_weight_override=None,
                dual_mode="real", checkpoint_metadata=None):
     dual_mode = {"net": "real", "coverage_only": "coverage-only"}.get(dual_mode, dual_mode)
-    assert dual_mode in ("zero", "uncovered-only", "shuffled", "real", "coverage-only"), f"unknown dual_mode: {dual_mode}"
+    assert dual_mode in (
+        "zero", "uncovered-only", "shuffled", "real", "coverage-only",
+        "robust-real", "robust-shuffled",
+    ), f"unknown dual_mode: {dual_mode}"
     from evaluation.set_partition import solve_lp_relaxation
 
     params            = list(encoder.parameters()) + list(decoder.parameters())
@@ -922,6 +948,19 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 coverage_duals, raw_excess_duals, mode=dual_mode,
                 uncovered_flight_ids=(lp_result or {}).get("artificial_flight_ids", []),
                 shuffle_seed=ep,
+            )
+            dual_abs_values = [abs(value) for value in dual_vars.values()]
+            dual_abs_mean = (
+                sum(dual_abs_values) / len(dual_abs_values)
+                if dual_abs_values else 0.0
+            )
+            dual_nonzero_fraction = (
+                sum(value > 1e-8 for value in dual_abs_values) / len(dual_abs_values)
+                if dual_abs_values else 0.0
+            )
+            dual_saturated_fraction = (
+                sum(value >= 1.0 - 1e-8 for value in dual_abs_values) / len(dual_abs_values)
+                if dual_abs_values else 0.0
             )
             # net 계산과 정규화를 한 번에 끝냈으므로 rollout에서 다시 차감하지 않음.
             dh_dual_vars = {}
@@ -1002,6 +1041,9 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
             "phase2/gap_weight":          decoder.gap_weight.item(),
             "phase2/lp_value":            lp_value if lp_value is not None else float("nan"),
             "phase2/artificial_count":    len((lp_result or {}).get("artificial_flight_ids", [])),
+            "phase2/dual_abs_mean":       dual_abs_mean,
+            "phase2/dual_nonzero_fraction": dual_nonzero_fraction,
+            "phase2/dual_saturated_fraction": dual_saturated_fraction,
         }, step=global_step_offset + ep)
 
         if ep % 25 == 0:
@@ -1012,6 +1054,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
                 f"greedy: p={metrics_g['n_pairings']:3d} legs={metrics_g.get('avg_legs', 0):.2f} "
                 f"(avg25={avg25:5.1f}, cov25={coverage25:5.1f}%) | "
                 f"adv: {advantage:6.3f} | dw={_eff_dw:.3f} | dual keys: {len(dual_vars)} | "
+                f"dual |x| mean: {dual_abs_mean:.3f} sat: {dual_saturated_fraction:.1%} | "
                 f"dh dual keys: {sum(1 for v in raw_excess_duals.values() if v > 0)} | lp_value: {_lp_str}"
             )
 
@@ -1678,9 +1721,14 @@ if __name__ == "__main__":
                              "이 값으로 덮어씀. 0을 주면 CG-dual 완전히 비활성화.")
     parser.add_argument(
         "--dual-mode", default="real",
-        choices=["zero", "uncovered-only", "shuffled", "real", "coverage-only", "net", "coverage_only"],
+        choices=[
+            "zero", "uncovered-only", "shuffled", "real", "coverage-only",
+            "robust-real", "robust-shuffled", "net", "coverage_only",
+        ],
         help="Phase2 ablation. zero=LP 계산은 유지하고 신호 0, uncovered-only=artificial flight만 1, "
              "shuffled=real 신호를 flight 간 섞음, real=coverage-excess net dual. "
+             "robust-real=미커버는 1로 두고 커버 가능한 flight만 95백분위 정규화, "
+             "robust-shuffled=robust-real 값의 flight 대응을 섞는 대조군. "
              "coverage-only와 legacy net/coverage_only도 호환함.",
     )
     parser.add_argument("--data-path", default=None,
