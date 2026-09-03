@@ -157,11 +157,44 @@ def normalize_dual(dual: Dict[int, float], clip: float = 5.0) -> Dict[int, float
     }
 
 
+def normalize_robust_dual(
+    dual: Dict[int, float], artificial_flight_ids: Iterable[int]
+) -> Dict[int, float]:
+    """Artificial dual을 분리하고 커버 가능한 flight를 95백분위로 정규화함."""
+    artificial = set(artificial_flight_ids)
+    covered_abs = sorted(
+        abs(float(value)) for flight_id, value in dual.items()
+        if flight_id not in artificial and abs(float(value)) > 1e-12
+    )
+    if covered_abs:
+        percentile_index = max(0, math.ceil(0.95 * len(covered_abs)) - 1)
+        scale = max(covered_abs[percentile_index], 1e-8)
+    else:
+        scale = 1.0
+    return {
+        flight_id: (
+            1.0 if flight_id in artificial
+            else max(-1.0, min(1.0, float(value) / scale))
+        )
+        for flight_id, value in dual.items()
+    }
+
+
 def build_dual_signal(lp_result: Dict, mode: str, rng=None) -> Dict[int, float]:
     """동일 LP 결과를 실험 대조군별 action signal로 변환함."""
     signal = normalize_dual(lp_result["net_dual"])
     if mode == "real":
         return signal
+    if mode in ("robust-real", "robust-shuffled"):
+        signal = normalize_robust_dual(
+            lp_result["net_dual"], lp_result["artificial_flight_ids"]
+        )
+        if mode == "robust-real":
+            return signal
+        keys = sorted(signal)
+        values = [signal[key] for key in keys]
+        (rng or random).shuffle(values)
+        return dict(zip(keys, values))
     if mode == "zero":
         return {flight_id: 0.0 for flight_id in signal}
     if mode == "uncovered-only":

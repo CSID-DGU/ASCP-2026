@@ -1316,7 +1316,14 @@ if __name__ == "__main__":
                         help="current master dual로 pool을 반복 보강할 횟수")
     parser.add_argument("--dual-weight", type=float, default=1.0,
                         help="decoder action logit에 더할 normalized dual 가중치")
-    parser.add_argument("--dual-mode", choices=["real", "zero", "uncovered-only", "shuffled", "uniform"], default="real")
+    parser.add_argument(
+        "--dual-mode",
+        choices=[
+            "real", "zero", "uncovered-only", "shuffled", "uniform",
+            "robust-real", "robust-shuffled",
+        ],
+        default="real",
+    )
     parser.add_argument("--dual-artificial-penalty", type=float, default=None,
                         help="Unset uses Cmax x2 (pool's own legal cost scale) instead of a flat value")
     parser.add_argument("--dual-trace-path", default=None)

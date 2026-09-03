@@ -76,6 +76,20 @@ class FullUniverseDualTests(unittest.TestCase):
         self.assertCountEqual(shuffled.values(), real.values())
 
 
+    def test_robust_modes_separate_artificial_scale(self):
+        lp_result = {
+            "net_dual": {10: 1000.0, 20: 8.0, 30: 4.0, 40: 2.0},
+            "artificial_flight_ids": [10],
+        }
+        robust = build_dual_signal(lp_result, "robust-real")
+        self.assertEqual(robust, {10: 1.0, 20: 1.0, 30: 0.5, 40: 0.25})
+        shuffled = build_dual_signal(
+            lp_result, "robust-shuffled", rng=random.Random(7)
+        )
+        self.assertEqual(set(shuffled), set(robust))
+        self.assertCountEqual(shuffled.values(), robust.values())
+
+
 class DecoderDualBiasTests(unittest.TestCase):
     def test_action_bias_changes_preference_without_unmasking(self):
         torch.manual_seed(0)
