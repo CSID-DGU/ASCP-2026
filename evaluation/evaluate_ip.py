@@ -1320,7 +1320,7 @@ if __name__ == "__main__":
         "--dual-mode",
         choices=[
             "real", "zero", "uncovered-only", "shuffled", "uniform",
-            "robust-real", "robust-shuffled",
+            "robust-real", "robust-shuffled", "cost-aware-real",
         ],
         default="real",
     )

@@ -95,6 +95,62 @@ class Phase2DualNormalizationTests(unittest.TestCase):
         self.assertEqual(sorted(robust.values()), sorted(shuffled.values()))
         self.assertNotEqual(robust, shuffled)
 
+    def test_cost_aware_real_uses_robust_normalization(self):
+        kwargs = {
+            "coverage_duals": {0: 1000.0, 1: 8.0, 2: 4.0, 3: 2.0},
+            "uncovered_flight_ids": [0],
+        }
+        self.assertEqual(
+            train.normalize_phase2_dual_signal(mode="cost-aware-real", **kwargs),
+            train.normalize_phase2_dual_signal(mode="robust-real", **kwargs),
+        )
+
+
+class Phase2CostAwareRewardTests(unittest.TestCase):
+    def setUp(self):
+        self.flights = [{"id": 10, "dep_time": 20.0, "arr_time": 22.0}]
+
+    def test_first_leg_has_no_ip_incremental_cost(self):
+        state = {"pairing_start": True, "current_time": 12.0}
+        self.assertEqual(
+            train._phase2_ip_aligned_reward(state, 0, self.flights, 123.0),
+            0.0,
+        )
+
+    def test_same_duty_connection_uses_gap_minus_leg_bonus(self):
+        state = {
+            "pairing_start": False,
+            "is_resting": False,
+            "current_time": 17.0,
+        }
+        self.assertAlmostEqual(
+            train._phase2_ip_aligned_reward(state, 0, self.flights, 123.0),
+            train.config.IP_LEG_BONUS - 3.0,
+        )
+
+    def test_post_rest_connection_excludes_required_rest(self):
+        state = {
+            "pairing_start": False,
+            "is_resting": True,
+            "current_time": 5.0,
+            "rest_end_time": 18.0,
+        }
+        self.assertAlmostEqual(
+            train._phase2_ip_aligned_reward(state, 0, self.flights, 123.0),
+            train.config.IP_LEG_BONUS - 2.0,
+        )
+
+    def test_end_actions_match_ip_cost(self):
+        state = {"pairing_start": False, "current_time": 20.0}
+        self.assertEqual(
+            train._phase2_ip_aligned_reward(state, 1, self.flights, 123.0),
+            0.0,
+        )
+        self.assertEqual(
+            train._phase2_ip_aligned_reward(state, 2, self.flights, 123.0),
+            -train.config.IP_PAIRING_FIXED_COST,
+        )
+
 
 class _DummyLayer:
     weight = torch.zeros((1, 78))

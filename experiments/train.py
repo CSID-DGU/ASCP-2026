@@ -689,7 +689,34 @@ def _collect_pool(flights, constraint, encoder, decoder, encoded, n_rollouts):
     return list(pool.values())
 
 
-def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False, dual_weight=None, dh_dual_vars=None):
+def _phase2_ip_aligned_reward(state, action, flights, environment_reward):
+    """Phase2 local reward를 실제 IP pairing cost의 증분값과 맞춤."""
+    n_flights = len(flights)
+    if action == n_flights:
+        return 0.0
+    if action == n_flights + 1:
+        return -float(config.IP_PAIRING_FIXED_COST)
+
+    flight = flights[action]
+    if state.get("pairing_start", False):
+        return 0.0
+
+    if state.get("is_resting", False):
+        connection_start = state.get("rest_end_time")
+        if connection_start is None:
+            return environment_reward
+    else:
+        connection_start = state["current_time"]
+    incremental_dead_time = max(
+        float(flight["dep_time"]) - float(connection_start), 0.0
+    )
+    return float(config.IP_LEG_BONUS) - incremental_dead_time
+
+
+def run_episode_with_dual(
+    flights, constraint, encoder, decoder, encoded, dual_vars, greedy=False,
+    dual_weight=None, dh_dual_vars=None, cost_aware=False,
+):
     """Phase II rollout: same environment as Phase I, but the per-step reward
     is augmented with the net-dual signal of Eq. (9)-(10):
 
@@ -698,6 +725,10 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
     dual_vars/dh_dual_vars are the cached mu^cov/nu^exc from the most recent
     restricted-master LP solve (Algorithm 1, line 6); dual_weight is
     w_dual(e), ramped up externally by run_phase2() (Algorithm 1, line 8-9).
+
+    cost_aware=True이면 curriculum shaping 대신 실제 IP column cost와 동일한
+    증분 reward를 사용함. 첫 leg는 0, 추가 leg는 IP_LEG_BONUS-증분 dead time,
+    EndDuty는 0, EndPairing은 -IP_PAIRING_FIXED_COST로 계산함.
     """
     constraint = _prepare_cpp_constraint(flights, constraint)
     assigned = {f["id"]: False for f in flights}
@@ -790,7 +821,12 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
 
         if action == n_flights:         # END_DUTY
             n_end_duties += 1
+            previous_state = state
             state, r, done = step(state, action, flights, assigned, constraint)
+            if cost_aware:
+                r = _phase2_ip_aligned_reward(
+                    previous_state, action, flights, r
+                )
             total_reward += r
             continue
 
@@ -798,7 +834,12 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
             n_pairings += 1
             total_legs_sum += state.get("total_legs", 0)
             current_pairing_ids = []
+            previous_state = state
             state, r, done = step(state, action, flights, assigned, constraint)
+            if cost_aware:
+                r = _phase2_ip_aligned_reward(
+                    previous_state, action, flights, r
+                )
             total_reward += r
             if done:
                 break
@@ -807,7 +848,12 @@ def run_episode_with_dual(flights, constraint, encoder, decoder, encoded, dual_v
         flight_id = flights[action]["id"]
         current_pairing_ids.append(flight_id)
         _dw = dual_weight if dual_weight is not None else config.PHASE2_DUAL_WEIGHT  # w_dual(e)
+        previous_state = state
         state, r, done = step(state, action, flights, assigned, constraint)
+        if cost_aware:
+            r = _phase2_ip_aligned_reward(
+                previous_state, action, flights, r
+            )
         _nu_exc = dh_dual_vars.get(flight_id, 0.0) if dh_dual_vars else 0.0
         # r~_t = r^loc_t + w_dual(e) * (mu_i^cov - nu_i^exc), Eq. (9)-(10)
         total_reward += r + (dual_vars.get(flight_id, 0.0) - _nu_exc) * _dw
@@ -845,14 +891,17 @@ def normalize_phase2_dual_signal(
         }
     if mode == "coverage-only":
         raw = {flight_id: float(value) for flight_id, value in coverage_duals.items()}
-    elif mode in ("real", "shuffled", "robust-real", "robust-shuffled"):
+    elif mode in (
+        "real", "shuffled", "robust-real", "robust-shuffled",
+        "cost-aware-real",
+    ):
         raw = {
             flight_id: float(value) - float(excess_duals.get(flight_id, 0.0))
             for flight_id, value in coverage_duals.items()
         }
     else:
         raise ValueError(f"지원하지 않는 Phase 2 dual mode: {mode}")
-    if mode in ("robust-real", "robust-shuffled"):
+    if mode in ("robust-real", "robust-shuffled", "cost-aware-real"):
         # Artificial singleton의 큰 dual이 정상 후보들의 신호를 0에 가깝게 누르지 않도록
         # 커버 가능한 flight만으로 95백분위 스케일을 계산하고 미커버 flight는 1로 고정함.
         uncovered = set(uncovered_flight_ids or ())
@@ -894,7 +943,7 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
     dual_mode = {"net": "real", "coverage_only": "coverage-only"}.get(dual_mode, dual_mode)
     assert dual_mode in (
         "zero", "uncovered-only", "shuffled", "real", "coverage-only",
-        "robust-real", "robust-shuffled",
+        "robust-real", "robust-shuffled", "cost-aware-real",
     ), f"unknown dual_mode: {dual_mode}"
     from evaluation.set_partition import solve_lp_relaxation
 
@@ -970,7 +1019,9 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         _eff_dw = _base_dw * min(1.0, (ep + 1) / max(config.PHASE2_DUAL_WARMUP, 1))
         encoded_train = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
         reward_s, log_probs, entropies, metrics_s = run_episode_with_dual(
-            flights, c, encoder, decoder, encoded_train, dual_vars, dual_weight=_eff_dw, dh_dual_vars=dh_dual_vars
+            flights, c, encoder, decoder, encoded_train, dual_vars,
+            dual_weight=_eff_dw, dh_dual_vars=dh_dual_vars,
+            cost_aware=(dual_mode == "cost-aware-real"),
         )
         if len(log_probs) == 0:
             continue
@@ -978,7 +1029,9 @@ def run_phase2(encoder, decoder, optimizer, n_episodes, constraint, save_dir, fl
         with torch.no_grad():
             encoded_g = encoder(origins, dests, dep_times, arr_times, fly_times, c_tensor)
             reward_g, _, _, metrics_g = run_episode_with_dual(
-                flights, c, encoder, decoder, encoded_g, dual_vars, greedy=True, dual_weight=_eff_dw, dh_dual_vars=dh_dual_vars
+                flights, c, encoder, decoder, encoded_g, dual_vars,
+                greedy=True, dual_weight=_eff_dw, dh_dual_vars=dh_dual_vars,
+                cost_aware=(dual_mode == "cost-aware-real"),
             )
 
         greedy_pairings.append(metrics_g["n_pairings"])
@@ -1723,12 +1776,14 @@ if __name__ == "__main__":
         "--dual-mode", default="real",
         choices=[
             "zero", "uncovered-only", "shuffled", "real", "coverage-only",
-            "robust-real", "robust-shuffled", "net", "coverage_only",
+            "robust-real", "robust-shuffled", "cost-aware-real",
+            "net", "coverage_only",
         ],
         help="Phase2 ablation. zero=LP 계산은 유지하고 신호 0, uncovered-only=artificial flight만 1, "
              "shuffled=real 신호를 flight 간 섞음, real=coverage-excess net dual. "
              "robust-real=미커버는 1로 두고 커버 가능한 flight만 95백분위 정규화, "
              "robust-shuffled=robust-real 값의 flight 대응을 섞는 대조군. "
+             "cost-aware-real=robust-real 신호와 실제 IP 증분비용 reward를 함께 사용. "
              "coverage-only와 legacy net/coverage_only도 호환함.",
     )
     parser.add_argument("--data-path", default=None,

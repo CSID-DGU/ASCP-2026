@@ -185,11 +185,11 @@ def build_dual_signal(lp_result: Dict, mode: str, rng=None) -> Dict[int, float]:
     signal = normalize_dual(lp_result["net_dual"])
     if mode == "real":
         return signal
-    if mode in ("robust-real", "robust-shuffled"):
+    if mode in ("robust-real", "robust-shuffled", "cost-aware-real"):
         signal = normalize_robust_dual(
             lp_result["net_dual"], lp_result["artificial_flight_ids"]
         )
-        if mode == "robust-real":
+        if mode in ("robust-real", "cost-aware-real"):
             return signal
         keys = sorted(signal)
         values = [signal[key] for key in keys]
